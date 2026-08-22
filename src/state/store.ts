@@ -54,10 +54,14 @@ interface AppState {
 let mseq = 1;
 const mid = () => `m${mseq++}`;
 
+// Increment whenever extraction or quantity rules change in a way that makes
+// previously saved member rows stale. Drawings are then re-extracted on open.
+const EXTRACTION_VERSION = 2;
+
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function snapshot(s: AppState): StoredProject | null {
   if (!s.projectId) return null;
-  return { id: s.projectId, name: s.projectName, updatedAt: Date.now(), sheets: s.sheets, activeSheetId: s.activeSheetId, members: s.members, settings: { drawingType: s.drawingType, workGroup: s.workGroup, quantityKey: s.quantityKey, capMode: s.capMode, outputType: s.outputType, defaultFloor: s.defaultFloor } };
+  return { id: s.projectId, name: s.projectName, updatedAt: Date.now(), sheets: s.sheets, activeSheetId: s.activeSheetId, members: s.members, extractionVersion: EXTRACTION_VERSION, settings: { drawingType: s.drawingType, workGroup: s.workGroup, quantityKey: s.quantityKey, capMode: s.capMode, outputType: s.outputType, defaultFloor: s.defaultFloor } };
 }
 function autosave(get: () => AppState): void {
   if (saveTimer) clearTimeout(saveTimer);
@@ -140,18 +144,22 @@ export const useStore = create<AppState>((set, get) => ({
   loadStoredProject: (p) => {
     const active = p.sheets.find((s) => s.id === p.activeSheetId) ?? p.sheets[0];
     const st = p.settings ?? {};
+    const needsReextract = p.extractionVersion !== EXTRACTION_VERSION && p.sheets.length > 0;
     mseq = (p.members?.length || 0) + 1;
     set({
       projectId: p.id, projectName: p.name, sheets: p.sheets, activeSheetId: p.activeSheetId, dwg: active?.dwg ?? null,
       members: p.members ?? [],
       drawingType: st.drawingType ?? 'structural', workGroup: st.workGroup ?? 'slab', quantityKey: st.quantityKey ?? 'slab_shuttering',
       capMode: st.capMode ?? 'excluded', outputType: st.outputType ?? 'member', defaultFloor: st.defaultFloor ?? 'Basement',
-      status: `Opened "${p.name}" — ${p.members?.length ?? 0} members.`,
+      status: needsReextract
+        ? `Opened "${p.name}" — recalculating with the latest extraction rules…`
+        : `Opened "${p.name}" — ${p.members?.length ?? 0} members.`,
     });
+    if (needsReextract) get().extractQuantity();
   },
   exportProjectJson: () => {
     const s = get();
-    return projectToJson({ id: s.projectId ?? `proj-${Date.now()}`, name: s.projectName, updatedAt: Date.now(), sheets: s.sheets, activeSheetId: s.activeSheetId, members: s.members, settings: { drawingType: s.drawingType, workGroup: s.workGroup, quantityKey: s.quantityKey, capMode: s.capMode, outputType: s.outputType, defaultFloor: s.defaultFloor } });
+    return projectToJson({ id: s.projectId ?? `proj-${Date.now()}`, name: s.projectName, updatedAt: Date.now(), sheets: s.sheets, activeSheetId: s.activeSheetId, members: s.members, extractionVersion: EXTRACTION_VERSION, settings: { drawingType: s.drawingType, workGroup: s.workGroup, quantityKey: s.quantityKey, capMode: s.capMode, outputType: s.outputType, defaultFloor: s.defaultFloor } });
   },
   importProjectJson: (text) => { const p = projectFromJson(text); p.id = `proj-${Date.now()}`; get().loadStoredProject(p); autosave(get); },
 }));

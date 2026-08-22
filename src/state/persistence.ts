@@ -19,6 +19,7 @@ export interface StoredProject {
   sheets: Sheet[]; // includes the NormalizedDwg per sheet
   activeSheetId: string | null;
   members: MemberRow[];
+  extractionVersion?: number;
   settings?: ProjectSettings;
 }
 

@@ -38,7 +38,7 @@ function panelThickness(box: PanelProposalBox['box'], c: Pt, thks: ThkText[]): n
   return best || nearestThickness(c, thks);
 }
 
-const BOUND_LAYERS = /beam|wall|col|pardi|cut/i;
+const BOUND_LAYERS = /beam|wall|col|pardi|rcc|cut/i;
 const CUTOUT_LAYERS = /cut|open|void|shaft|lift|duct|ots/i;
 const ALIGN_TOL = 200;
 
@@ -46,20 +46,25 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const segs: Segment[] = [...dwg.segments.filter((s) => BOUND_LAYERS.test(s.layer))];
   for (const pl of dwg.polylines.filter((p) => BOUND_LAYERS.test(p.layer)))
     for (let i = 0; i < pl.pts.length - 1; i++) segs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer });
+  for (const hatch of dwg.hatches.filter((h) => BOUND_LAYERS.test(h.layer)))
+    for (let i = 0; i < hatch.pts.length; i++) segs.push({ a: hatch.pts[i], b: hatch.pts[(i + 1) % hatch.pts.length], layer: hatch.layer });
 
   const H = segs.filter((s) => Math.abs(s.a.y - s.b.y) < ALIGN_TOL)
     .map((s) => ({ y: (s.a.y + s.b.y) / 2, x1: Math.min(s.a.x, s.b.x), x2: Math.max(s.a.x, s.b.x) }));
   const V = segs.filter((s) => Math.abs(s.a.x - s.b.x) < ALIGN_TOL)
     .map((s) => ({ x: (s.a.x + s.b.x) / 2, y1: Math.min(s.a.y, s.b.y), y2: Math.max(s.a.y, s.b.y) }));
 
-  const dims = dwg.dimensions.filter((d) => /slabs no/i.test(d.layer));
+  const dims = dwg.dimensions.filter((d) => /slabs?\s*no/i.test(d.layer));
   const Hdims = dims.filter((d) => d.dir === 'H').map((d) => d.measurement);
   const Vdims = dims.filter((d) => d.dir === 'V').map((d) => d.measurement);
-  const labels = dwg.texts.filter((t) => /^slab no$/i.test(t.layer.trim())).map((t) => ({ text: t.text, pos: t.pos }));
+  const labels = dwg.texts
+    .filter((t) => /slabs?\s*no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
+    .map((t) => ({ text: t.text.replace(/\s/g, '').toUpperCase(), pos: t.pos }));
   const cutouts = extractCutouts(dwg);
   const thicknesses = extractThicknesses(dwg);
 
   const snap = (val: number, opts: number[]) => {
+    if (!opts.length) return { v: val, ok: true }; // unmarked drawing: geometry is the source
     let best = val, bd = Infinity;
     for (const o of opts) { const d = Math.abs(o - val); if (d < bd) { bd = d; best = o; } }
     return { v: best, ok: bd <= Math.max(400, val * 0.12) };

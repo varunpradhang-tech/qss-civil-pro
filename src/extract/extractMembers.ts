@@ -35,6 +35,16 @@ function compareBeamLabels(a: string, b: string): number {
 }
 
 function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): NormalizedDwg {
+  if (workGroup === 'slab') return [...dwgs].sort((a, b) => {
+    const score = (d: NormalizedDwg) => {
+      const labels = d.texts.filter((t) => /slabs?\s*no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, ''))).length;
+      const boundaries = d.segments.filter((s) => /beam|wall|col|pardi|rcc/i.test(s.layer)).length
+        + d.polylines.filter((p) => /beam|wall|col|pardi|rcc/i.test(p.layer)).length
+        + d.hatches.filter((h) => /beam|wall|col|pardi|rcc/i.test(h.layer)).length;
+      return labels * 1000 + boundaries;
+    };
+    return score(b) - score(a);
+  })[0];
   if (workGroup !== 'beam') return [...dwgs].sort((a, b) => b.dimensions.length - a.dimensions.length)[0];
   return [...dwgs].sort((a, b) => {
     const score = (d: NormalizedDwg) => d.texts.filter((t) => /beam no/i.test(t.layer) && beamLabel(t.text)).length * 1000 + d.segments.filter((s) => /^beam$/i.test(s.layer.trim())).length;

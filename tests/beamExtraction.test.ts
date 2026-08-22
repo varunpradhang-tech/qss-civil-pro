@@ -28,12 +28,20 @@ describe('cross-sheet beam extraction', () => {
       { layer: 'TABLE-TEXT', text: 'T3B10', pos: { x: 1000, y: 1000 } },
       { layer: 'TABLE-TEXT', text: '300', pos: { x: 2760, y: 1000 } },
       { layer: 'TABLE-TEXT', text: '900', pos: { x: 3930, y: 1000 } },
+      { layer: 'TABLE-TEXT', text: 'S1A', pos: { x: 1000, y: 500 } },
+      { layer: 'TABLE-TEXT', text: '150', pos: { x: 1800, y: 500 } },
+      { layer: 'TABLE-TEXT', text: 'S6', pos: { x: 1000, y: 300 } },
+      { layer: 'TABLE-TEXT', text: '200', pos: { x: 1800, y: 300 } },
     ];
+    plan.texts.push(
+      { layer: 'SLAB NO', text: 'S1A', pos: { x: 2000, y: 1500 } },
+      { layer: 'SLAB NO', text: 'S6', pos: { x: 2000, y: -1500 } },
+    );
 
     const members = extractMembers([plan, schedule], 'beam');
     expect(members).toHaveLength(2);
     expect(members.find((m) => m.member === 'T3B2')).toMatchObject({ length: 5, breadth: 0.24, height: 0.65, needsReview: false });
-    expect(members.find((m) => m.member === 'T3B10')).toMatchObject({ length: 4, breadth: 0.3, height: 0.9, needsReview: false });
+    expect(members.find((m) => m.member === 'T3B10')).toMatchObject({ length: 4, breadth: 0.3, height: 0.9, slabCodeSide1: 'S1A', slabThicknessSide1: 0.15, slabCodeSide2: 'S6', slabThicknessSide2: 0.2, needsReview: false });
   });
 
   it('does not invent a 300x600 size when no schedule match exists', () => {

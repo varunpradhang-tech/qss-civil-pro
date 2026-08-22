@@ -41,6 +41,12 @@ describe('MB export (member rows)', () => {
     expect(r.quantity).toBe(7.5);
   });
 
+  it('beam shuttering deducts different adjacent slab thicknesses on each side', () => {
+    const [r] = membersToRows([row({ breadth: 0.3, height: 0.65, slabThicknessSide1: 0.15, slabThicknessSide2: 0.2, sideLength: 3.976, length: 3.976 })], 'beam_shuttering', 'excluded');
+    // bottom 3.976×0.3 + sides 3.976×[(0.65−0.15)+(0.65−0.20)]
+    expect(r.quantity).toBe(4.97);
+  });
+
   it('CSV has header, review remarks, and a total row', () => {
     const csv = membersToCsv([row({ member: 'S1, corner' }), row({ member: 'S2', length: 2, breadth: 4, needsReview: true, reviewReason: 'dim uncertain' })], 'slab_shuttering', 'excluded');
     const lines = csv.split('\r\n');
@@ -59,9 +65,9 @@ describe('MB export (member rows)', () => {
     const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await blob.arrayBuffer()); const ws = wb.worksheets[0];
     for (const unwanted of ['Dia (mm)', 'Spacing (mm)', 'Nos', 'Measurement basis']) expect(ws.getRow(1).values).not.toContain(unwanted);
     expect(ws.getCell('A2').value).toBe(1); expect(ws.getCell('B2').value).toBe('B2'); expect(ws.getCell('D2').value).toBe('Beam bottom'); expect(ws.getCell('D3').value).toBe('Beam sides');
-    expect((ws.getCell('J2').value as ExcelJS.CellFormulaValue).formula).toBe('E2*F2');
-    expect((ws.getCell('J3').value as ExcelJS.CellFormulaValue).formula).toBe('E3*(2*G3-I3*H3)');
-    expect(ws.getCell('B4').value).toBe('B10'); expect((ws.getCell('J6').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(J2:J5)');
+    expect((ws.getCell('L2').value as ExcelJS.CellFormulaValue).formula).toBe('E2*F2');
+    expect((ws.getCell('L3').value as ExcelJS.CellFormulaValue).formula).toBe('E3*(2*G3-I3-K3)');
+    expect(ws.getCell('B4').value).toBe('B10'); expect((ws.getCell('L6').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(L2:L5)');
   });
 
   it('exports slab shuttering with formula quantities and no reinforcement columns', async () => {

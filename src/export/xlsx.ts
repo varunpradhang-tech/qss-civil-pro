@@ -28,7 +28,8 @@ function buildBeamShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
     { header: 'S.No.', key: 'serial', width: 8 }, { header: 'Member', key: 'member', width: 18 }, { header: 'Floor', key: 'floor', width: 14 },
     { header: 'Shuttering item', key: 'item', width: 18 }, { header: 'Length (m)', key: 'length', width: 12 },
     { header: 'Beam width (m)', key: 'width', width: 15 }, { header: 'Beam depth (m)', key: 'depth', width: 15 },
-    { header: 'Slab thk (m)', key: 'slab', width: 13 }, { header: 'Inner sides', key: 'innerSides', width: 12 },
+    { header: 'Side 1 slab', key: 'side1Code', width: 12 }, { header: 'Side 1 thk (m)', key: 'side1Thickness', width: 14 },
+    { header: 'Side 2 slab', key: 'side2Code', width: 12 }, { header: 'Side 2 thk (m)', key: 'side2Thickness', width: 14 },
     { header: 'Quantity (m²)', key: 'quantity', width: 15 }, { header: 'Unit', key: 'unit', width: 9 },
     { header: 'Remarks', key: 'remarks', width: 34 },
   ];
@@ -36,16 +37,17 @@ function buildBeamShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
   const sorted = [...members].sort(naturalSort);
   for (const [index, m] of sorted.entries()) {
     const length = Math.max(m.length || 0, 0), width = Math.max(m.breadth || 0, 0), depth = Math.max(m.height || 0, 0);
-    const slab = Math.min(Math.max(m.slabThickness || 0, 0), depth), innerSides = Math.min(Math.max(m.innerSideCount ?? 2, 0), 2);
+    const side1Thickness = Math.min(Math.max(m.slabThicknessSide1 ?? (m.innerSideCount >= 1 ? m.slabThickness : 0), 0), depth);
+    const side2Thickness = Math.min(Math.max(m.slabThicknessSide2 ?? (m.innerSideCount >= 2 ? m.slabThickness : 0), 0), depth);
     const remarks = m.needsReview ? `need review${m.reviewReason ? ` (${m.reviewReason})` : ''}` : '';
     const bottom = ws.addRow({ serial: index + 1, member: m.member || m.id, floor: m.floor, item: 'Beam bottom', length, width, unit: 'm²', remarks: remarks || null });
     bottom.getCell('quantity').value = { formula: `E${bottom.number}*F${bottom.number}`, result: length * width };
-    const sides = ws.addRow({ serial: index + 1, member: m.member || m.id, floor: m.floor, item: 'Beam sides', length, depth, slab, innerSides, unit: 'm²', remarks: remarks || null });
-    sides.getCell('quantity').value = { formula: `E${sides.number}*(2*G${sides.number}-I${sides.number}*H${sides.number})`, result: length * (2 * depth - innerSides * slab) };
+    const sides = ws.addRow({ serial: index + 1, member: m.member || m.id, floor: m.floor, item: 'Beam sides', length, depth, side1Code: m.slabCodeSide1 ?? null, side1Thickness, side2Code: m.slabCodeSide2 ?? null, side2Thickness, unit: 'm²', remarks: remarks || null });
+    sides.getCell('quantity').value = { formula: `E${sides.number}*(2*G${sides.number}-I${sides.number}-K${sides.number})`, result: length * (2 * depth - side1Thickness - side2Thickness) };
     if (remarks) for (const row of [bottom, sides]) row.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF1F2' } }));
   }
-  addFormulaTotal(ws, 'J', 'K', 'Total — Beam shuttering', 'm²', sorted.reduce((sum, m) => sum + RULES.beam_shuttering.calculate(m, capMode), 0));
-  for (const c of ['E', 'F', 'G', 'H', 'J']) ws.getColumn(c).numFmt = '0.000';
+  addFormulaTotal(ws, 'L', 'M', 'Total — Beam shuttering', 'm²', sorted.reduce((sum, m) => sum + RULES.beam_shuttering.calculate(m, capMode), 0));
+  for (const c of ['E', 'F', 'G', 'I', 'K', 'L']) ws.getColumn(c).numFmt = '0.000';
 }
 
 function buildSlabShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMode: CapMode) {

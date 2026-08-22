@@ -17,6 +17,10 @@ export interface MemberRow {
   capExposedPerimeter: number; // m (column cap shuttering)
   slabThickness: number; // m (beam side deduction)
   innerSideCount: number; // beam sides adjoining slab: 0, 1, or 2
+  slabThicknessSide1?: number; // m, adjacent slab on one side of beam
+  slabThicknessSide2?: number; // m, adjacent slab on opposite side
+  slabCodeSide1?: string;
+  slabCodeSide2?: string;
   sideLength: number; // m (beam side run; defaults to length)
   bottomJointDeduction: number; // m² (beam support)
   sideJointDeduction: number; // m²
@@ -56,8 +60,11 @@ export function beamShutteringBreakdown(r: MemberRow, capMode: CapMode) {
   const nos = Math.max(r.nos || 0, 0);
   const slabThickness = Math.min(Math.max(r.slabThickness || 0, 0), depth);
   const innerSideCount = Math.min(Math.max(r.innerSideCount ?? 2, 0), 2);
+  const hasSideThicknesses = r.slabThicknessSide1 != null || r.slabThicknessSide2 != null;
+  const side1Thickness = hasSideThicknesses ? Math.min(Math.max(r.slabThicknessSide1 || 0, 0), depth) : innerSideCount >= 1 ? slabThickness : 0;
+  const side2Thickness = hasSideThicknesses ? Math.min(Math.max(r.slabThicknessSide2 || 0, 0), depth) : innerSideCount >= 2 ? slabThickness : 0;
   const bottomArea = length * breadth;
-  const sideArea = sideLength * Math.max(2 * depth - innerSideCount * slabThickness, 0);
+  const sideArea = sideLength * (Math.max(depth - side1Thickness, 0) + Math.max(depth - side2Thickness, 0));
   const capAddition = 0;
   return { bottomArea, sideArea, capAddition, total: (bottomArea + sideArea + capAddition) * nos };
 }
@@ -128,6 +135,8 @@ export const FIELD_LABEL: Record<string, string> = {
   capExposedPerimeter: 'Cap perimeter',
   slabThickness: 'Slab thk',
   innerSideCount: 'Inner sides (0–2)',
+  slabThicknessSide1: 'Side 1 slab thk',
+  slabThicknessSide2: 'Side 2 slab thk',
   bottomJointDeduction: 'Bottom ded.',
   sideJointDeduction: 'Side ded.',
   dia: 'Dia (mm)',
@@ -143,7 +152,7 @@ export const RULE_FIELDS: Record<string, (keyof MemberRow)[]> = {
   column_shuttering: ['length', 'breadth', 'height', 'capHeight', 'capExposedPerimeter', 'nos'],
   column_steel: ['length', 'dia', 'nos'],
   beam_concrete: ['length', 'breadth', 'height', 'nos'],
-  beam_shuttering: ['length', 'breadth', 'height', 'slabThickness', 'innerSideCount', 'nos'],
+  beam_shuttering: ['length', 'breadth', 'height', 'slabThicknessSide1', 'slabThicknessSide2', 'nos'],
   beam_steel: ['length', 'dia', 'nos'],
   slab_concrete: ['length', 'breadth', 'height', 'openings', 'nos'],
   slab_shuttering: ['length', 'breadth', 'openings', 'nos'],

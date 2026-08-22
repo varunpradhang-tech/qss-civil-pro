@@ -19,7 +19,7 @@ export function extractMembers(input: NormalizedDwg | NormalizedDwg[], workGroup
   const dwgs = Array.isArray(input) ? input : [input];
   const dwg = selectGeometrySheet(dwgs, workGroup);
   if (workGroup === 'slab') return slabMembers(dwg, floor);
-  if (workGroup === 'beam') return beamMembers(dwg, floor, beamSchedule(dwgs));
+  if (workGroup === 'beam') return beamMembers(dwg, floor, beamSchedule(dwgs), slabSchedule(dwgs));
   return []; // column/raft/wall/floor: start empty, user adds (auto-extraction not reliable on this data)
 }
 
@@ -60,6 +60,23 @@ function beamSchedule(dwgs: NormalizedDwg[]): Map<string, { widthMm: number; dep
   return schedule;
 }
 
+function slabSchedule(dwgs: NormalizedDwg[]): Map<string, number> {
+  const schedule = new Map<string, number>();
+  for (const dwg of dwgs) {
+    for (const label of dwg.texts) {
+      const code = label.text.replace(/\s/g, '').toUpperCase();
+      if (!/^S\d+[A-Z]?$/.test(code) || !/table|schedule/i.test(label.layer)) continue;
+      const thickness = dwg.texts
+        .filter((t) => t.layer === label.layer && Math.abs(t.pos.y - label.pos.y) <= 100 && t.pos.x > label.pos.x + 200 && t.pos.x < label.pos.x + 3000 && /^\d{2,4}$/.test(t.text.trim()))
+        .sort((a, b) => a.pos.x - b.pos.x)
+        .map((t) => Number(t.text.trim()))
+        .find((n) => n >= 75 && n <= 500);
+      if (thickness) schedule.set(code, thickness);
+    }
+  }
+  return schedule;
+}
+
 // --- slab: reuse the label-anchored panel proposer ---
 function slabMembers(dwg: NormalizedDwg, floor: string): MemberRow[] {
   return autoProposePanels(dwg).map((p, i) => {
@@ -78,10 +95,13 @@ function slabMembers(dwg: NormalizedDwg, floor: string): MemberRow[] {
 }
 
 // --- beam: group BEAM face segments into collinear runs (bridging support gaps), size from BEAM SIZE text ---
-function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { widthMm: number; depthMm: number }>): MemberRow[] {
+function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { widthMm: number; depthMm: number }>, slabThicknesses: Map<string, number>): MemberRow[] {
   const beams: Segment[] = dwg.segments.filter((s) => /^beam$/i.test(s.layer.trim()));
   const sizeTexts = dwg.texts.filter((t) => /beam size/i.test(t.layer));
   const noTexts = dwg.texts.filter((t) => /beam no/i.test(t.layer));
+  const slabLabels = dwg.texts
+    .filter((t) => /slab no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
+    .map((t) => ({ ...t, code: t.text.replace(/\s/g, '').toUpperCase() }));
   const BRIDGE = 1400, CLUSTER = 550; // 550mm merges a beam's two faces (width 240–500) into one run
 
   const runs: { a: Pt; b: Pt; horizontal: boolean }[] = [];
@@ -137,6 +157,16 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       // well away from their label (for example T3B1 in the validation drawing).
       const useMarkedDimension = !!markedDimension && markedDimension.distance <= 1200 && markedDimension.distance < nearestDistance * 0.75;
       const lengthMm = useMarkedDimension ? markedDimension.dimension.measurement : nearest ? Math.hypot(nearest.b.x - nearest.a.x, nearest.b.y - nearest.a.y) : 0;
+      const maxAlong = Math.max(lengthMm / 2 + 2000, 3500);
+      const adjacent = (side: -1 | 1) => slabLabels
+        .map((slab) => {
+          const along = beamDirection === 'V' ? slab.pos.y - text.pos.y : slab.pos.x - text.pos.x;
+          const perpendicular = beamDirection === 'V' ? slab.pos.x - text.pos.x : slab.pos.y - text.pos.y;
+          return { slab, along, perpendicular, score: Math.abs(perpendicular) + 0.35 * Math.abs(along) };
+        })
+        .filter((x) => Math.sign(x.perpendicular) === side && Math.abs(x.along) <= maxAlong && Math.abs(x.perpendicular) <= 8000)
+        .sort((a, b) => a.score - b.score)[0]?.slab;
+      const side1 = adjacent(1), side2 = adjacent(-1);
       const midpoint = nearest ? { x: (nearest.a.x + nearest.b.x) / 2, y: (nearest.a.y + nearest.b.y) / 2 } : text.pos;
       const inlineSize = parseBeamSize(nearestText(midpoint, sizeTexts, 6000) ?? '');
       const size = schedule.get(label) ?? inlineSize;
@@ -147,9 +177,15 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       r.breadth = size ? round3(size.widthMm / 1000) : 0;
       r.height = size ? round3(size.depthMm / 1000) : 0;
       r.slabThickness = 0.175;
+      r.slabCodeSide1 = side1?.code;
+      r.slabCodeSide2 = side2?.code;
+      r.slabThicknessSide1 = side1 ? round3((slabThicknesses.get(side1.code) ?? 0) / 1000) : 0;
+      r.slabThicknessSide2 = side2 ? round3((slabThicknesses.get(side2.code) ?? 0) / 1000) : 0;
+      r.innerSideCount = Number(!!r.slabThicknessSide1) + Number(!!r.slabThicknessSide2);
       r.nos = 1;
-      r.needsReview = !lengthMm || !size;
-      r.reviewReason = !lengthMm ? 'no marked dimension or matching beam face found' : !size ? 'no beam size found in uploaded plan/schedule' : undefined;
+      const unresolvedSlabs = (side1 && !r.slabThicknessSide1) || (side2 && !r.slabThicknessSide2);
+      r.needsReview = !lengthMm || !size || unresolvedSlabs;
+      r.reviewReason = !lengthMm ? 'no marked dimension or matching beam face found' : !size ? 'no beam size found in uploaded plan/schedule' : unresolvedSlabs ? 'adjacent slab code has no thickness schedule' : undefined;
       return r;
     }).sort((a, b) => compareBeamLabels(a.member, b.member));
   }

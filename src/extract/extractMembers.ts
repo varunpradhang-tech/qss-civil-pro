@@ -92,6 +92,8 @@ function slabMembers(dwg: NormalizedDwg, floor: string): MemberRow[] {
   return autoProposePanels(dwg).map((p, i) => {
     const r = emptyRow(nextId(), floor);
     r.member = `P${i + 1}${p.label ? ` (${p.label})` : ''}`;
+    r.cadX = (p.box.x0 + p.box.x1) / 2;
+    r.cadY = (p.box.y0 + p.box.y1) / 2;
     r.length = round3(p.lengthMm / 1000);
     r.breadth = round3(p.breadthMm / 1000);
     r.height = round3((p.thicknessMm || 175) / 1000); // slab thickness → concrete depth

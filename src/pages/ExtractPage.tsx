@@ -10,6 +10,7 @@ import { MENU, RULES, RULE_FIELDS, FIELD_LABEL, type MemberRow } from '../takeof
 import { downloadBlob } from '../export/download.js';
 import { membersToCsv } from '../export/mb.js';
 import { buildMbXlsx } from '../export/xlsx.js';
+import { buildSlabReferenceDxf } from '../export/dxf.js';
 import { useUI, displayQuantity } from '../state/ui.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { PremiumBadge } from '../components/PremiumBadge.js';
@@ -31,6 +32,7 @@ export function ExtractPage() {
   const [deductionMode, setDeductionMode] = useState<'manual' | 'none'>('manual');
   const [selected, setSelected] = useState<string | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
+  const [cadExporting, setCadExporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const wasParsing = useRef(false);
@@ -89,6 +91,24 @@ export function ExtractPage() {
   }
   function exportCsv() { downloadBlob(membersToCsv(s.members, s.quantityKey, s.capMode), 'qss-takeoff.csv', 'text/csv;charset=utf-8'); }
   async function exportXlsx() { downloadBlob(await buildMbXlsx(s.members, s.quantityKey, s.capMode, s.projectName), 'qss-mb.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
+  async function exportReferenceCad() {
+    setCadExporting(true);
+    try {
+      const filename = `${s.projectName}-slab-panel-reference`;
+      const dxf = buildSlabReferenceDxf(s.sheets.map((sheet) => sheet.dwg), s.members);
+      const res = await fetch('/.netlify/functions/convert-dwg', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dxf, filename }),
+      });
+      if (!res.ok) {
+        const problem = await res.json().catch(() => ({ error: 'DWG conversion failed' }));
+        throw new Error(problem.error || 'DWG conversion failed');
+      }
+      downloadBlob(await res.blob(), `${filename}.dwg`, 'application/acad');
+      s.setStatus(`Downloaded ${filename}.dwg — panel numbers match the Excel Member column.`);
+    } catch (error) {
+      s.setStatus(`DWG export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally { setCadExporting(false); }
+  }
 
   const byFloor: Record<string, number> = {};
   for (const r of s.members) byFloor[r.floor || '—'] = (byFloor[r.floor || '—'] || 0) + rowQty(r);
@@ -303,6 +323,7 @@ export function ExtractPage() {
           {showDownloads && (
             <div className="download-actions">
               <button className="primary-button download-button" type="button" onClick={exportXlsx}><FileSpreadsheet size={15} /> Excel MB sheet</button>
+              {s.quantityKey === 'slab_shuttering' && <button className="ghost-button download-button" type="button" onClick={exportReferenceCad} disabled={cadExporting}>{cadExporting ? <Loader2 size={15} className="spin" /> : <Download size={15} />} {cadExporting ? 'Creating DWG…' : 'Reference CAD (.dwg)'}</button>}
               <button className="ghost-button download-button" type="button" onClick={() => downloadBlob(s.exportProjectJson(), `${s.projectName}.qss.json`, 'application/json')}><Braces size={15} /> Project JSON</button>
             </div>
           )}

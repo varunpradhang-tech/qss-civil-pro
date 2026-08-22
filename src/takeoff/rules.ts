@@ -32,6 +32,8 @@ export interface MemberRow {
   needsReview: boolean;
   reviewReason?: string;
   measurementSource?: 'marked dimension' | 'drawing geometry';
+  cadX?: number; // source drawing coordinate in mm, used by reference CAD export
+  cadY?: number;
 }
 
 export function emptyRow(id: string, floor = 'Basement'): MemberRow {

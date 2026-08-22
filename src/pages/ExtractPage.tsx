@@ -11,7 +11,8 @@ import { downloadBlob } from '../export/download.js';
 import { membersToCsv } from '../export/mb.js';
 import { buildMbXlsx } from '../export/xlsx.js';
 import { buildSlabReferenceDxf } from '../export/dxf.js';
-import { buildSlabReferencePdf } from '../export/pdf.js';
+import { overlayPanelNumbersOnPdf } from '../export/pdf.js';
+import { slabReferenceGeometry } from '../export/dxf.js';
 import { useUI, displayQuantity } from '../state/ui.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { PremiumBadge } from '../components/PremiumBadge.js';
@@ -85,8 +86,9 @@ export function ExtractPage() {
     try {
       for (const f of files) {
         s.setStatus(`Parsing ${f.name}…`);
-        const dwg = await parseInWorker(await f.arrayBuffer(), f.name, '/wasm');
-        out.push({ id: f.name, name: f.name, dwg, slabDimCount: dwg.dimensions.filter((d) => /slabs no/i.test(d.layer)).length });
+        const sourceBytes = await f.arrayBuffer();
+        const dwg = await parseInWorker(sourceBytes, f.name, '/wasm');
+        out.push({ id: f.name, name: f.name, dwg, sourceBytes, slabDimCount: dwg.dimensions.filter((d) => /slabs no/i.test(d.layer)).length });
       }
       s.setSheets(out);
     } catch (err) { s.setStatus(`Parse failed: ${(err as Error).message}`); } finally { s.setParsing(false); }
@@ -102,8 +104,36 @@ export function ExtractPage() {
       return;
     }
     if (referenceFormat === 'pdf') {
-      downloadBlob(buildSlabReferencePdf(dwgs, s.members), `${filename}.pdf`, 'application/pdf');
-      s.setStatus(`Downloaded ${filename}.pdf — panel numbers match the Excel Member column.`);
+      setCadExporting(true);
+      try {
+        const geometry = slabReferenceGeometry(dwgs);
+        const source = s.sheets.find((sheet) => sheet.dwg === geometry) ?? s.sheets[0];
+        if (!source?.sourceBytes) throw new Error('Re-upload the original CAD drawing once to create a full-colour reference PDF.');
+        s.setStatus('Converting the original CAD drawing to PDF…');
+        const create = await fetch('/.netlify/functions/cad-pdf-job', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: source.name }) });
+        const job = await create.json();
+        if (!create.ok) throw new Error(job.error || 'Could not start CAD-to-PDF conversion');
+        const form = new FormData();
+        for (const [key, value] of Object.entries(job.form.parameters)) form.append(key, String(value));
+        form.append('file', new Blob([source.sourceBytes]), source.name); // file must be last
+        const upload = await fetch(job.form.url, { method: 'POST', body: form });
+        if (!upload.ok) throw new Error('Original CAD upload failed');
+        let pdfUrl = '';
+        for (let attempt = 0; attempt < 90; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+          const poll = await fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}`);
+          const state = await poll.json();
+          if (!poll.ok || state.status === 'error') throw new Error(state.error || 'CAD-to-PDF conversion failed');
+          if (state.url) { pdfUrl = state.url; break; }
+        }
+        if (!pdfUrl) throw new Error('CAD-to-PDF conversion timed out');
+        const basePdf = await fetch(pdfUrl).then((res) => { if (!res.ok) throw new Error('Converted PDF download failed'); return res.arrayBuffer(); });
+        const markedPdf = await overlayPanelNumbersOnPdf(basePdf, geometry, s.members);
+        downloadBlob(markedPdf, `${filename}.pdf`, 'application/pdf');
+        s.setStatus(`Downloaded ${filename}.pdf — original CAD appearance preserved and panel numbers match Excel.`);
+      } catch (error) {
+        s.setStatus(`PDF export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      } finally { setCadExporting(false); }
       return;
     }
     setCadExporting(true);

@@ -45,6 +45,13 @@ export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[
     if (!Number.isFinite(m.cadX) || !Number.isFinite(m.cadY)) continue;
     const c = { x: m.cadX as number, y: m.cadY as number };
     const panelNo = m.member.match(/^P\d+/i)?.[0] ?? m.member;
+    if ([m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
+      const x0 = m.cadX0 as number, y0 = m.cadY0 as number, x1 = m.cadX1 as number, y1 = m.cadY1 as number;
+      entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x0, y: y0 }, b: { x: x1, y: y0 } }, 'QSS_PANEL_BOUNDARY', 3);
+      entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x1, y: y0 }, b: { x: x1, y: y1 } }, 'QSS_PANEL_BOUNDARY', 3);
+      entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x1, y: y1 }, b: { x: x0, y: y1 } }, 'QSS_PANEL_BOUNDARY', 3);
+      entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x0, y: y1 }, b: { x: x0, y: y0 } }, 'QSS_PANEL_BOUNDARY', 3);
+    }
     entities += circle(c, radius);
     entities += line({ layer: 'QSS_PANEL_MARK', a: { x: c.x - radius * 0.75, y: c.y }, b: { x: c.x + radius * 0.75, y: c.y } }, 'QSS_PANEL_MARK', 2);
     entities += line({ layer: 'QSS_PANEL_MARK', a: { x: c.x, y: c.y - radius * 0.75 }, b: { x: c.x, y: c.y + radius * 0.75 } }, 'QSS_PANEL_MARK', 2);

@@ -34,6 +34,10 @@ export interface MemberRow {
   measurementSource?: 'marked dimension' | 'drawing geometry';
   cadX?: number; // source drawing coordinate in mm, used by reference CAD export
   cadY?: number;
+  cadX0?: number;
+  cadY0?: number;
+  cadX1?: number;
+  cadY1?: number;
 }
 
 export function emptyRow(id: string, floor = 'Basement'): MemberRow {

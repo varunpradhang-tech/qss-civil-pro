@@ -4,7 +4,7 @@ import { MENU, RULES, emptyRow, type CapMode, type DrawingType, type MemberRow }
 import { extractMembers } from '../extract/extractMembers.js';
 import { deleteProject, getProject, listProjects, projectFromJson, projectToJson, saveProject, type StoredProject } from './persistence.js';
 
-export interface Sheet { id: string; name: string; dwg: NormalizedDwg; slabDimCount: number; }
+export interface Sheet { id: string; name: string; dwg: NormalizedDwg; slabDimCount: number; sourceBytes?: ArrayBuffer; }
 export type OutputType = 'total' | 'member' | 'floor';
 
 interface AppState {
@@ -56,7 +56,7 @@ const mid = () => `m${mseq++}`;
 
 // Increment whenever extraction or quantity rules change in a way that makes
 // previously saved member rows stale. Drawings are then re-extracted on open.
-const EXTRACTION_VERSION = 5;
+const EXTRACTION_VERSION = 6;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function snapshot(s: AppState): StoredProject | null {

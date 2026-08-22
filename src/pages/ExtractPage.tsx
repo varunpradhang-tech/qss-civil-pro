@@ -60,6 +60,7 @@ export function ExtractPage() {
   }
 
   const disp = (base: number, ruleUnit: 'm2' | 'm3' | 'kg') => displayQuantity(base, ruleUnit, units);
+  const qtyText = (value: number) => value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 3 });
   const unitLabel = (u: 'm2' | 'm3' | 'kg') => (u === 'm2' ? 'm²' : u === 'm3' ? 'm³' : 'kg');
 
   const rule = RULES[s.quantityKey];
@@ -276,7 +277,7 @@ export function ExtractPage() {
                   {fields.map((f) => (
                     <td key={f}><input type="number" value={r[f] as number} onChange={(e) => s.updateMember(r.id, { [f]: +e.target.value } as Partial<MemberRow>)} /></td>
                   ))}
-                  <td className="qty-cell">{disp(rowQty(r), rule.unit).v.toFixed(3)}</td>
+                  <td className="qty-cell">{qtyText(disp(rowQty(r), rule.unit).v)}</td>
                 </tr>
               ))}
             </tbody>
@@ -287,7 +288,7 @@ export function ExtractPage() {
       {!s.parsing && canDetail && s.outputType === 'floor' && (
         <div className="table-wrap">
           <table id="member-table"><thead><tr><th>Floor</th><th>Quantity</th></tr></thead>
-            <tbody>{Object.entries(byFloor).map(([f, q]) => { const d = disp(q, rule.unit); return <tr key={f}><td>{f}</td><td className="qty-cell">{d.v.toFixed(3)} {d.u}</td></tr>; })}</tbody>
+            <tbody>{Object.entries(byFloor).map(([f, q]) => { const d = disp(q, rule.unit); return <tr key={f}><td>{f}</td><td className="qty-cell">{qtyText(d.v)} {d.u}</td></tr>; })}</tbody>
           </table>
         </div>
       )}
@@ -308,7 +309,7 @@ export function ExtractPage() {
         </div>
         <div className="result-grid">
           <div className="result-card"><span className="metric-label"><Layers size={13} /> Selected item</span><strong>{rule.label}</strong></div>
-          <div className="result-card result-hero"><span className="metric-label">Total quantity</span><strong>{disp(total, rule.unit).v.toFixed(3)} <em>{disp(total, rule.unit).u}</em></strong></div>
+          <div className="result-card result-hero"><span className="metric-label">Total quantity</span><strong>{qtyText(disp(total, rule.unit).v)} <em>{disp(total, rule.unit).u}</em></strong></div>
           <div className="result-card"><span className="metric-label"><Hash size={13} /> Rows counted</span><strong>{s.members.length}</strong></div>
         </div>
         <div className="reader-status standard-status">

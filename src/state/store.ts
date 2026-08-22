@@ -56,7 +56,7 @@ const mid = () => `m${mseq++}`;
 
 // Increment whenever extraction or quantity rules change in a way that makes
 // previously saved member rows stale. Drawings are then re-extracted on open.
-const EXTRACTION_VERSION = 2;
+const EXTRACTION_VERSION = 3;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function snapshot(s: AppState): StoredProject | null {
@@ -118,10 +118,13 @@ export const useStore = create<AppState>((set, get) => ({
     const members = extractMembers(get().sheets.map((sheet) => sheet.dwg), workGroup, defaultFloor);
     mseq = members.length + 1;
     const flagged = members.filter((m) => m.needsReview).length;
+    const sourceSummary = workGroup === 'beam'
+      ? ` · marked dimensions: ${members.filter((m) => m.measurementSource === 'marked dimension').length} · drawing geometry: ${members.filter((m) => m.measurementSource === 'drawing geometry').length}`
+      : '';
     set({
       members,
       status: members.length
-        ? `Extracted ${members.length} ${workGroup} members for ${RULES[quantityKey].label}${flagged ? ` · ${flagged} need review` : ''}.`
+        ? `Extracted ${members.length} ${workGroup} members for ${RULES[quantityKey].label}${sourceSummary}${flagged ? ` · ${flagged} need review` : ''}.`
         : `No ${workGroup} members auto-extracted — add rows manually.`,
     });
     autosave(get);

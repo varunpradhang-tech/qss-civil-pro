@@ -149,7 +149,15 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       const beamDirection = nearest ? (Math.abs(nearest.b.x - nearest.a.x) >= Math.abs(nearest.b.y - nearest.a.y) ? 'H' : 'V') : null;
       const markedDimension = dwg.dimensions
         .filter((d) => d.measurement >= 600 && d.measurement <= 30000 && (!beamDirection || d.dir === beamDirection))
-        .map((d) => ({ dimension: d, distance: Math.hypot(d.mid.x - text.pos.x, d.mid.y - text.pos.y) }))
+        .map((d) => {
+          const span: Segment = { layer: d.layer, a: d.p1, b: d.p2 };
+          return { dimension: d, distance: pointSegmentDistance(text.pos, span) };
+        })
+        // The label must project onto the actual dimension span. A nearby midpoint alone
+        // can belong to the adjacent slab bay or the next beam.
+        .filter(({ dimension }) => beamDirection === 'V'
+          ? text.pos.y >= Math.min(dimension.p1.y, dimension.p2.y) - 300 && text.pos.y <= Math.max(dimension.p1.y, dimension.p2.y) + 300
+          : text.pos.x >= Math.min(dimension.p1.x, dimension.p2.x) - 300 && text.pos.x <= Math.max(dimension.p1.x, dimension.p2.x) + 300)
         .sort((a, b) => a.distance - b.distance)[0];
       // Prefer a marked CAD dimension only when it is close to the beam label and is
       // materially better associated than the nearest beam face. This avoids borrowing
@@ -173,6 +181,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       const r = emptyRow(nextId(), floor);
       r.member = label;
       r.length = round3(lengthMm / 1000);
+      r.measurementSource = useMarkedDimension ? 'marked dimension' : 'drawing geometry';
       r.sideLength = r.length;
       r.breadth = size ? round3(size.widthMm / 1000) : 0;
       r.height = size ? round3(size.depthMm / 1000) : 0;
@@ -198,6 +207,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
     const r = emptyRow(nextId(), floor);
     r.member = label ?? `QB${n++}`;
     r.length = round3(Math.hypot(run.b.x - run.a.x, run.b.y - run.a.y) / 1000);
+    r.measurementSource = 'drawing geometry';
     r.sideLength = r.length;
     r.breadth = size ? round3(size.widthMm / 1000) : 0;
     r.height = size ? round3(size.depthMm / 1000) : 0;

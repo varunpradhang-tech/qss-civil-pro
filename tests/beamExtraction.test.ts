@@ -69,4 +69,13 @@ describe('cross-sheet beam extraction', () => {
     const [member] = extractMembers(plan, 'beam');
     expect(member.length).toBe(2.17);
   });
+
+  it('rejects a nearby dimension whose span does not contain the beam label and uses geometry', () => {
+    const plan = base('framing.dwg');
+    plan.segments = [{ layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 3975, y: 0 } }];
+    plan.texts = [{ layer: 'BEAM NO', text: 'T3B1', pos: { x: 2000, y: 80 } }];
+    plan.dimensions = [{ layer: 'SLAB DIM', measurement: 2790, dir: 'H', mid: { x: 5000, y: 200 }, p1: { x: 3605, y: 200 }, p2: { x: 6395, y: 200 } }];
+    const [member] = extractMembers(plan, 'beam');
+    expect(member.length).toBe(3.975);
+  });
 });

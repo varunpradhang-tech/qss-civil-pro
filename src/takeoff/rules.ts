@@ -31,6 +31,7 @@ export interface MemberRow {
   openings: number; // m² (slab/wall)
   needsReview: boolean;
   reviewReason?: string;
+  measurementSource?: 'marked dimension' | 'drawing geometry';
 }
 
 export function emptyRow(id: string, floor = 'Basement'): MemberRow {

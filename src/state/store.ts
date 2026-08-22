@@ -111,7 +111,7 @@ export const useStore = create<AppState>((set, get) => ({
   extractQuantity: () => {
     const { dwg, workGroup, defaultFloor, quantityKey } = get();
     if (!dwg) { set({ members: [] }); return; }
-    const members = extractMembers(dwg, workGroup, defaultFloor);
+    const members = extractMembers(get().sheets.map((sheet) => sheet.dwg), workGroup, defaultFloor);
     mseq = members.length + 1;
     const flagged = members.filter((m) => m.needsReview).length;
     set({

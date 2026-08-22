@@ -14,11 +14,50 @@ function parseBeamSize(text: string): { widthMm: number; depthMm: number } | nul
 let seq = 1;
 const nextId = () => `m${seq++}`;
 
-export function extractMembers(dwg: NormalizedDwg, workGroup: string, floor = 'Basement'): MemberRow[] {
+export function extractMembers(input: NormalizedDwg | NormalizedDwg[], workGroup: string, floor = 'Basement'): MemberRow[] {
   seq = 1;
+  const dwgs = Array.isArray(input) ? input : [input];
+  const dwg = selectGeometrySheet(dwgs, workGroup);
   if (workGroup === 'slab') return slabMembers(dwg, floor);
-  if (workGroup === 'beam') return beamMembers(dwg, floor);
+  if (workGroup === 'beam') return beamMembers(dwg, floor, beamSchedule(dwgs));
   return []; // column/raft/wall/floor: start empty, user adds (auto-extraction not reliable on this data)
+}
+
+function beamLabel(text: string): string | null {
+  const value = text.replace(/\s/g, '').toUpperCase();
+  return /^T\d+(?:M?B)\d+[A-Z]?$/.test(value) ? value : null;
+}
+
+function compareBeamLabels(a: string, b: string): number {
+  const am = a.match(/^T(\d+)(M?B)(\d+)([A-Z]?)$/), bm = b.match(/^T(\d+)(M?B)(\d+)([A-Z]?)$/);
+  if (am && bm) return Number(am[1]) - Number(bm[1]) || Number(am[3]) - Number(bm[3]) || am[4].localeCompare(bm[4]) || am[2].localeCompare(bm[2]);
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): NormalizedDwg {
+  if (workGroup !== 'beam') return [...dwgs].sort((a, b) => b.dimensions.length - a.dimensions.length)[0];
+  return [...dwgs].sort((a, b) => {
+    const score = (d: NormalizedDwg) => d.texts.filter((t) => /beam no/i.test(t.layer) && beamLabel(t.text)).length * 1000 + d.segments.filter((s) => /^beam$/i.test(s.layer.trim())).length;
+    return score(b) - score(a);
+  })[0];
+}
+
+/** Read label-specific width/depth rows from beam schedule/detail drawings. */
+function beamSchedule(dwgs: NormalizedDwg[]): Map<string, { widthMm: number; depthMm: number }> {
+  const schedule = new Map<string, { widthMm: number; depthMm: number }>();
+  for (const dwg of dwgs) {
+    for (const labelText of dwg.texts) {
+      const label = beamLabel(labelText.text);
+      if (!label || !/table|schedule/i.test(labelText.layer)) continue;
+      const numbers = dwg.texts
+        .filter((t) => t.layer === labelText.layer && Math.abs(t.pos.y - labelText.pos.y) <= 120 && t.pos.x > labelText.pos.x + 300 && t.pos.x < labelText.pos.x + 5000 && /^\d{2,4}$/.test(t.text.trim()))
+        .sort((a, b) => a.pos.x - b.pos.x)
+        .map((t) => Number(t.text.trim()));
+      const widthMm = numbers[0], depthMm = numbers[1];
+      if (widthMm >= 150 && widthMm <= 1000 && depthMm >= 300 && depthMm <= 2500) schedule.set(label, { widthMm, depthMm });
+    }
+  }
+  return schedule;
 }
 
 // --- slab: reuse the label-anchored panel proposer ---
@@ -39,7 +78,7 @@ function slabMembers(dwg: NormalizedDwg, floor: string): MemberRow[] {
 }
 
 // --- beam: group BEAM face segments into collinear runs (bridging support gaps), size from BEAM SIZE text ---
-function beamMembers(dwg: NormalizedDwg, floor: string): MemberRow[] {
+function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { widthMm: number; depthMm: number }>): MemberRow[] {
   const beams: Segment[] = dwg.segments.filter((s) => /^beam$/i.test(s.layer.trim()));
   const sizeTexts = dwg.texts.filter((t) => /beam size/i.test(t.layer));
   const noTexts = dwg.texts.filter((t) => /beam no/i.test(t.layer));
@@ -73,6 +112,36 @@ function beamMembers(dwg: NormalizedDwg, floor: string): MemberRow[] {
     return best;
   };
 
+  const pointSegmentDistance = (p: Pt, s: Segment) => {
+    const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
+    const den = dx * dx + dy * dy;
+    const t = den ? Math.max(0, Math.min(1, ((p.x - s.a.x) * dx + (p.y - s.a.y) * dy) / den)) : 0;
+    return Math.hypot(p.x - (s.a.x + t * dx), p.y - (s.a.y + t * dy));
+  };
+
+  // A framing plan normally has one BEAM NO label per physical beam and two face lines.
+  // Use labels as the primary member list so collinear beams separated by supports are not merged.
+  const labelled = noTexts.map((t) => ({ text: t, label: beamLabel(t.text) })).filter((x): x is { text: typeof noTexts[number]; label: string } => !!x.label);
+  if (labelled.length) {
+    return labelled.map(({ text, label }) => {
+      const nearest = [...beams].sort((a, b) => pointSegmentDistance(text.pos, a) - pointSegmentDistance(text.pos, b))[0];
+      const midpoint = nearest ? { x: (nearest.a.x + nearest.b.x) / 2, y: (nearest.a.y + nearest.b.y) / 2 } : text.pos;
+      const inlineSize = parseBeamSize(nearestText(midpoint, sizeTexts, 6000) ?? '');
+      const size = schedule.get(label) ?? inlineSize;
+      const r = emptyRow(nextId(), floor);
+      r.member = label;
+      r.length = nearest ? round3(Math.hypot(nearest.b.x - nearest.a.x, nearest.b.y - nearest.a.y) / 1000) : 0;
+      r.sideLength = r.length;
+      r.breadth = size ? round3(size.widthMm / 1000) : 0;
+      r.height = size ? round3(size.depthMm / 1000) : 0;
+      r.slabThickness = 0.175;
+      r.nos = 1;
+      r.needsReview = !nearest || !size;
+      r.reviewReason = !nearest ? 'no matching beam face found' : !size ? 'no beam size found in uploaded plan/schedule' : undefined;
+      return r;
+    }).sort((a, b) => compareBeamLabels(a.member, b.member));
+  }
+
   let n = 1;
   return runs.map((run) => {
     const mid: Pt = { x: (run.a.x + run.b.x) / 2, y: (run.a.y + run.b.y) / 2 };
@@ -82,12 +151,12 @@ function beamMembers(dwg: NormalizedDwg, floor: string): MemberRow[] {
     r.member = label ?? `QB${n++}`;
     r.length = round3(Math.hypot(run.b.x - run.a.x, run.b.y - run.a.y) / 1000);
     r.sideLength = r.length;
-    r.breadth = round3((size?.widthMm ?? 300) / 1000);
-    r.height = round3((size?.depthMm ?? 600) / 1000);
+    r.breadth = size ? round3(size.widthMm / 1000) : 0;
+    r.height = size ? round3(size.depthMm / 1000) : 0;
     r.slabThickness = 0.175;
     r.nos = 1;
     r.needsReview = !size;
-    r.reviewReason = size ? undefined : 'no beam size found — set width×depth';
+    r.reviewReason = size ? undefined : 'no beam size found in uploaded plan/schedule';
     return r;
   });
 }

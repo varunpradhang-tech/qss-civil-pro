@@ -58,17 +58,18 @@ describe('MB export (member rows)', () => {
     ], 'beam_shuttering', 'excluded');
     const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await blob.arrayBuffer()); const ws = wb.worksheets[0];
     for (const unwanted of ['Dia (mm)', 'Spacing (mm)', 'Nos', 'Measurement basis']) expect(ws.getRow(1).values).not.toContain(unwanted);
-    expect(ws.getCell('A2').value).toBe('B2'); expect(ws.getCell('C2').value).toBe('Beam bottom'); expect(ws.getCell('C3').value).toBe('Beam sides');
-    expect((ws.getCell('I2').value as ExcelJS.CellFormulaValue).formula).toBe('D2*E2');
-    expect((ws.getCell('I3').value as ExcelJS.CellFormulaValue).formula).toBe('D3*(2*F3-H3*G3)');
-    expect(ws.getCell('A4').value).toBe('B10'); expect((ws.getCell('I6').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(I2:I5)');
+    expect(ws.getCell('A2').value).toBe(1); expect(ws.getCell('B2').value).toBe('B2'); expect(ws.getCell('D2').value).toBe('Beam bottom'); expect(ws.getCell('D3').value).toBe('Beam sides');
+    expect((ws.getCell('J2').value as ExcelJS.CellFormulaValue).formula).toBe('E2*F2');
+    expect((ws.getCell('J3').value as ExcelJS.CellFormulaValue).formula).toBe('E3*(2*G3-I3*H3)');
+    expect(ws.getCell('B4').value).toBe('B10'); expect((ws.getCell('J6').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(J2:J5)');
   });
 
   it('exports slab shuttering with formula quantities and no reinforcement columns', async () => {
     const blob = await buildMbXlsx([row({ member: 'S2', openings: 1 })], 'slab_shuttering', 'excluded');
     const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await blob.arrayBuffer()); const ws = wb.worksheets[0];
     for (const unwanted of ['Dia (mm)', 'Spacing (mm)', 'Nos', 'Measurement basis']) expect(ws.getRow(1).values).not.toContain(unwanted);
-    expect((ws.getCell('G2').value as ExcelJS.CellFormulaValue).formula).toBe('MAX(D2*E2-F2,0)');
-    expect((ws.getCell('G3').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(G2:G2)');
+    expect(ws.getCell('A2').value).toBe(1);
+    expect((ws.getCell('H2').value as ExcelJS.CellFormulaValue).formula).toBe('MAX(E2*F2-G2,0)');
+    expect((ws.getCell('H3').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(H2:H2)');
   });
 });

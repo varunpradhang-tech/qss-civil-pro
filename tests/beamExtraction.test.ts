@@ -43,4 +43,22 @@ describe('cross-sheet beam extraction', () => {
     const [member] = extractMembers(plan, 'beam');
     expect(member).toMatchObject({ breadth: 0, height: 0, needsReview: true, reviewReason: 'no beam size found in uploaded plan/schedule' });
   });
+
+  it('uses a clearly associated marked CAD dimension instead of a distant beam face', () => {
+    const plan = base('framing.dwg');
+    plan.segments = [{ layer: 'BEAM', a: { x: 5000, y: 0 }, b: { x: 7170, y: 0 } }];
+    plan.texts = [{ layer: 'BEAM NO', text: 'T3B1', pos: { x: 1000, y: 100 } }];
+    plan.dimensions = [{ layer: 'SLABS NO T2', measurement: 3976.4, dir: 'H', mid: { x: 1100, y: 300 }, p1: { x: 0, y: 300 }, p2: { x: 3976.4, y: 300 } }];
+    const [member] = extractMembers(plan, 'beam');
+    expect(member.length).toBe(3.976);
+  });
+
+  it('keeps the nearby beam-face length when a less-related dimension is farther away', () => {
+    const plan = base('framing.dwg');
+    plan.segments = [{ layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 2170, y: 0 } }];
+    plan.texts = [{ layer: 'BEAM NO', text: 'T3MB2', pos: { x: 1000, y: 90 } }];
+    plan.dimensions = [{ layer: 'SLABS NO T2', measurement: 2324.8, dir: 'H', mid: { x: 1500, y: 500 }, p1: { x: 0, y: 500 }, p2: { x: 2324.8, y: 500 } }];
+    const [member] = extractMembers(plan, 'beam');
+    expect(member.length).toBe(2.17);
+  });
 });

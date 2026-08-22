@@ -125,19 +125,31 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
   if (labelled.length) {
     return labelled.map(({ text, label }) => {
       const nearest = [...beams].sort((a, b) => pointSegmentDistance(text.pos, a) - pointSegmentDistance(text.pos, b))[0];
+      const nearestDistance = nearest ? pointSegmentDistance(text.pos, nearest) : Number.POSITIVE_INFINITY;
+      const beamDirection = nearest ? (Math.abs(nearest.b.x - nearest.a.x) >= Math.abs(nearest.b.y - nearest.a.y) ? 'H' : 'V') : null;
+      const markedDimension = dwg.dimensions
+        .filter((d) => d.measurement >= 600 && d.measurement <= 30000 && (!beamDirection || d.dir === beamDirection))
+        .map((d) => ({ dimension: d, distance: Math.hypot(d.mid.x - text.pos.x, d.mid.y - text.pos.y) }))
+        .sort((a, b) => a.distance - b.distance)[0];
+      // Prefer a marked CAD dimension only when it is close to the beam label and is
+      // materially better associated than the nearest beam face. This avoids borrowing
+      // an adjacent slab/beam dimension while still handling beams whose face lines stop
+      // well away from their label (for example T3B1 in the validation drawing).
+      const useMarkedDimension = !!markedDimension && markedDimension.distance <= 1200 && markedDimension.distance < nearestDistance * 0.75;
+      const lengthMm = useMarkedDimension ? markedDimension.dimension.measurement : nearest ? Math.hypot(nearest.b.x - nearest.a.x, nearest.b.y - nearest.a.y) : 0;
       const midpoint = nearest ? { x: (nearest.a.x + nearest.b.x) / 2, y: (nearest.a.y + nearest.b.y) / 2 } : text.pos;
       const inlineSize = parseBeamSize(nearestText(midpoint, sizeTexts, 6000) ?? '');
       const size = schedule.get(label) ?? inlineSize;
       const r = emptyRow(nextId(), floor);
       r.member = label;
-      r.length = nearest ? round3(Math.hypot(nearest.b.x - nearest.a.x, nearest.b.y - nearest.a.y) / 1000) : 0;
+      r.length = round3(lengthMm / 1000);
       r.sideLength = r.length;
       r.breadth = size ? round3(size.widthMm / 1000) : 0;
       r.height = size ? round3(size.depthMm / 1000) : 0;
       r.slabThickness = 0.175;
       r.nos = 1;
-      r.needsReview = !nearest || !size;
-      r.reviewReason = !nearest ? 'no matching beam face found' : !size ? 'no beam size found in uploaded plan/schedule' : undefined;
+      r.needsReview = !lengthMm || !size;
+      r.reviewReason = !lengthMm ? 'no marked dimension or matching beam face found' : !size ? 'no beam size found in uploaded plan/schedule' : undefined;
       return r;
     }).sort((a, b) => compareBeamLabels(a.member, b.member));
   }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { membersToCsv, membersToRows } from '../src/export/mb.js';
+import { buildMbXlsx } from '../src/export/xlsx.js';
+import ExcelJS from 'exceljs';
 import { emptyRow, type MemberRow } from '../src/takeoff/rules.js';
 
 function row(over: Partial<MemberRow>): MemberRow {
@@ -47,5 +49,26 @@ describe('MB export (member rows)', () => {
     expect(csv).toContain('need review');
     expect(lines[lines.length - 1]).toMatch(/^Total — Slab shuttering,/);
     expect(lines[lines.length - 1]).toContain('20'); // 12 + 8
+  });
+
+  it('exports sorted beam bottom and side rows with formulas', async () => {
+    const blob = await buildMbXlsx([
+      row({ member: 'B10', length: 4, breadth: 0.3, height: 0.6, slabThickness: 0.15, innerSideCount: 2 }),
+      row({ member: 'B2', length: 5, breadth: 0.25, height: 0.5, slabThickness: 0.15, innerSideCount: 1 }),
+    ], 'beam_shuttering', 'excluded');
+    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await blob.arrayBuffer()); const ws = wb.worksheets[0];
+    for (const unwanted of ['Dia (mm)', 'Spacing (mm)', 'Nos', 'Measurement basis']) expect(ws.getRow(1).values).not.toContain(unwanted);
+    expect(ws.getCell('A2').value).toBe('B2'); expect(ws.getCell('C2').value).toBe('Beam bottom'); expect(ws.getCell('C3').value).toBe('Beam sides');
+    expect((ws.getCell('I2').value as ExcelJS.CellFormulaValue).formula).toBe('D2*E2');
+    expect((ws.getCell('I3').value as ExcelJS.CellFormulaValue).formula).toBe('D3*(2*F3-H3*G3)');
+    expect(ws.getCell('A4').value).toBe('B10'); expect((ws.getCell('I6').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(I2:I5)');
+  });
+
+  it('exports slab shuttering with formula quantities and no reinforcement columns', async () => {
+    const blob = await buildMbXlsx([row({ member: 'S2', openings: 1 })], 'slab_shuttering', 'excluded');
+    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await blob.arrayBuffer()); const ws = wb.worksheets[0];
+    for (const unwanted of ['Dia (mm)', 'Spacing (mm)', 'Nos', 'Measurement basis']) expect(ws.getRow(1).values).not.toContain(unwanted);
+    expect((ws.getCell('G2').value as ExcelJS.CellFormulaValue).formula).toBe('MAX(D2*E2-F2,0)');
+    expect((ws.getCell('G3').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(G2:G2)');
   });
 });

@@ -11,6 +11,7 @@ import { downloadBlob } from '../export/download.js';
 import { membersToCsv } from '../export/mb.js';
 import { buildMbXlsx } from '../export/xlsx.js';
 import { buildSlabReferenceDxf } from '../export/dxf.js';
+import { buildSlabReferencePdf } from '../export/pdf.js';
 import { useUI, displayQuantity } from '../state/ui.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { PremiumBadge } from '../components/PremiumBadge.js';
@@ -33,6 +34,7 @@ export function ExtractPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
   const [cadExporting, setCadExporting] = useState(false);
+  const [referenceFormat, setReferenceFormat] = useState<'dxf' | 'dwg' | 'pdf'>('dxf');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const wasParsing = useRef(false);
@@ -92,10 +94,21 @@ export function ExtractPage() {
   function exportCsv() { downloadBlob(membersToCsv(s.members, s.quantityKey, s.capMode), 'qss-takeoff.csv', 'text/csv;charset=utf-8'); }
   async function exportXlsx() { downloadBlob(await buildMbXlsx(s.members, s.quantityKey, s.capMode, s.projectName), 'qss-mb.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
   async function exportReferenceCad() {
+    const filename = `${s.projectName}-slab-panel-reference`;
+    const dwgs = s.sheets.map((sheet) => sheet.dwg);
+    if (referenceFormat === 'dxf') {
+      downloadBlob(buildSlabReferenceDxf(dwgs, s.members), `${filename}.dxf`, 'application/dxf');
+      s.setStatus(`Downloaded ${filename}.dxf — panel numbers match the Excel Member column.`);
+      return;
+    }
+    if (referenceFormat === 'pdf') {
+      downloadBlob(buildSlabReferencePdf(dwgs, s.members), `${filename}.pdf`, 'application/pdf');
+      s.setStatus(`Downloaded ${filename}.pdf — panel numbers match the Excel Member column.`);
+      return;
+    }
     setCadExporting(true);
     try {
-      const filename = `${s.projectName}-slab-panel-reference`;
-      const dxf = buildSlabReferenceDxf(s.sheets.map((sheet) => sheet.dwg), s.members);
+      const dxf = buildSlabReferenceDxf(dwgs, s.members);
       const res = await fetch('/.netlify/functions/convert-dwg', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dxf, filename }),
       });
@@ -323,7 +336,7 @@ export function ExtractPage() {
           {showDownloads && (
             <div className="download-actions">
               <button className="primary-button download-button" type="button" onClick={exportXlsx}><FileSpreadsheet size={15} /> Excel MB sheet</button>
-              {s.quantityKey === 'slab_shuttering' && <button className="ghost-button download-button" type="button" onClick={exportReferenceCad} disabled={cadExporting}>{cadExporting ? <Loader2 size={15} className="spin" /> : <Download size={15} />} {cadExporting ? 'Creating DWG…' : 'Reference CAD (.dwg)'}</button>}
+              {s.quantityKey === 'slab_shuttering' && <><select aria-label="Reference file format" value={referenceFormat} onChange={(e) => setReferenceFormat(e.target.value as 'dxf' | 'dwg' | 'pdf')} disabled={cadExporting}><option value="dxf">DXF — instant</option><option value="dwg">DWG — cloud conversion</option><option value="pdf">PDF — instant</option></select><button className="ghost-button download-button" type="button" onClick={exportReferenceCad} disabled={cadExporting}>{cadExporting ? <Loader2 size={15} className="spin" /> : <Download size={15} />} {cadExporting ? 'Creating DWG…' : `Reference ${referenceFormat.toUpperCase()}`}</button></>}
               <button className="ghost-button download-button" type="button" onClick={() => downloadBlob(s.exportProjectJson(), `${s.projectName}.qss.json`, 'application/json')}><Braces size={15} /> Project JSON</button>
             </div>
           )}

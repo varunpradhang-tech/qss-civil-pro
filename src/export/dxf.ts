@@ -22,7 +22,7 @@ function centredText(c: Pt, value: string, height: number): string {
     + pair(11, c.x) + pair(21, c.y) + pair(31, 0);
 }
 
-function geometrySheet(dwgs: NormalizedDwg[]): NormalizedDwg | undefined {
+export function slabReferenceGeometry(dwgs: NormalizedDwg[]): NormalizedDwg | undefined {
   return [...dwgs].sort((a, b) => {
     const score = (d: NormalizedDwg) => d.texts.filter((t) => /slabs?\s*no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, ''))).length * 1000
       + d.segments.filter((s) => /beam|wall|col|pardi|rcc/i.test(s.layer)).length;
@@ -32,7 +32,7 @@ function geometrySheet(dwgs: NormalizedDwg[]): NormalizedDwg | undefined {
 
 /** ASCII DXF reference plan. Panel marks are exactly the P-numbers used in the Excel Member column. */
 export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[]): string {
-  const dwg = geometrySheet(dwgs);
+  const dwg = slabReferenceGeometry(dwgs);
   let entities = '';
   if (dwg) {
     for (const s of dwg.segments) entities += line(s, cleanLayer(s.layer));

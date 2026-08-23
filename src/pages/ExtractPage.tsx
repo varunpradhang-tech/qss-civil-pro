@@ -36,6 +36,8 @@ export function ExtractPage() {
   const [picked, setPicked] = useState<string[]>([]);
   const [cadExporting, setCadExporting] = useState(false);
   const [referenceFormat, setReferenceFormat] = useState<'dxf' | 'dwg' | 'pdf'>('dxf');
+  const [referenceNotice, setReferenceNotice] = useState<{ kind: 'working' | 'success' | 'error'; text: string } | null>(null);
+  const [referenceReady, setReferenceReady] = useState<{ url: string; filename: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const wasParsing = useRef(false);
@@ -96,11 +98,15 @@ export function ExtractPage() {
   function exportCsv() { downloadBlob(membersToCsv(s.members, s.quantityKey, s.capMode), 'qss-takeoff.csv', 'text/csv;charset=utf-8'); }
   async function exportXlsx() { downloadBlob(await buildMbXlsx(s.members, s.quantityKey, s.capMode, s.projectName), 'qss-mb.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
   async function exportReferenceCad() {
+    setReferenceNotice(null);
+    if (referenceReady) URL.revokeObjectURL(referenceReady.url);
+    setReferenceReady(null);
     const filename = `${s.projectName}-slab-panel-reference`;
     const dwgs = s.sheets.map((sheet) => sheet.dwg);
     if (referenceFormat === 'dxf') {
       downloadBlob(buildSlabReferenceDxf(dwgs, s.members), `${filename}.dxf`, 'application/dxf');
       s.setStatus(`Downloaded ${filename}.dxf — panel numbers match the Excel Member column.`);
+      setReferenceNotice({ kind: 'success', text: `Downloaded ${filename}.dxf` });
       return;
     }
     if (referenceFormat === 'pdf') {
@@ -110,6 +116,7 @@ export function ExtractPage() {
         const source = s.sheets.find((sheet) => sheet.dwg === geometry) ?? s.sheets[0];
         if (!source?.sourceBytes) throw new Error('Re-upload the original CAD drawing once to create a full-colour reference PDF.');
         s.setStatus('Converting the original CAD drawing to PDF…');
+        setReferenceNotice({ kind: 'working', text: 'Uploading original CAD…' });
         const create = await fetch('/.netlify/functions/cad-pdf-job', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: source.name }) });
         const job = await create.json();
         if (!create.ok) throw new Error(job.error || 'Could not start CAD-to-PDF conversion');
@@ -118,10 +125,15 @@ export function ExtractPage() {
         form.append('file', new Blob([source.sourceBytes]), source.name); // file must be last
         const upload = await fetch(job.form.url, { method: 'POST', body: form });
         if (!upload.ok) throw new Error('Original CAD upload failed');
+        setReferenceNotice({ kind: 'working', text: 'CloudConvert is creating the PDF…' });
         let pdfUrl = '';
         for (let attempt = 0; attempt < 90; attempt++) {
           await new Promise((resolve) => setTimeout(resolve, 2000));
-          if (attempt > 0 && attempt % 5 === 0) s.setStatus(`Converting original CAD to PDF… ${attempt * 2} seconds elapsed`);
+          if (attempt > 0 && attempt % 5 === 0) {
+            const elapsed = `${attempt * 2} seconds elapsed`;
+            s.setStatus(`Converting original CAD to PDF… ${elapsed}`);
+            setReferenceNotice({ kind: 'working', text: `Creating PDF… ${elapsed}` });
+          }
           const poll = await fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}`);
           const state = await poll.json();
           if (!poll.ok || state.status === 'error') throw new Error(state.error || 'CAD-to-PDF conversion failed');
@@ -129,6 +141,7 @@ export function ExtractPage() {
         }
         if (!pdfUrl) throw new Error('CAD-to-PDF conversion timed out');
         s.setStatus('Adding slab panel numbers to the converted PDF…');
+        setReferenceNotice({ kind: 'working', text: 'Adding slab panel numbers…' });
         let basePdf: ArrayBuffer;
         try {
           basePdf = await fetch(pdfUrl).then((res) => { if (!res.ok) throw new Error('CloudConvert download failed'); return res.arrayBuffer(); });
@@ -136,10 +149,16 @@ export function ExtractPage() {
           basePdf = await fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}&download=1`).then((res) => { if (!res.ok) throw new Error('Converted PDF download failed'); return res.arrayBuffer(); });
         }
         const markedPdf = await overlayPanelNumbersOnPdf(basePdf, geometry, s.members);
+        if (markedPdf.size < 100) throw new Error('Marked PDF output was empty');
+        const ready = { url: URL.createObjectURL(markedPdf), filename: `${filename}.pdf` };
+        setReferenceReady(ready);
         downloadBlob(markedPdf, `${filename}.pdf`, 'application/pdf');
         s.setStatus(`Downloaded ${filename}.pdf — original CAD appearance preserved and panel numbers match Excel.`);
+        setReferenceNotice({ kind: 'success', text: `Downloaded ${filename}.pdf — check your Downloads folder.` });
       } catch (error) {
-        s.setStatus(`PDF export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        s.setStatus(`PDF export failed: ${message}`);
+        setReferenceNotice({ kind: 'error', text: `PDF export failed: ${message}` });
       } finally { setCadExporting(false); }
       return;
     }
@@ -155,8 +174,11 @@ export function ExtractPage() {
       }
       downloadBlob(await res.blob(), `${filename}.dwg`, 'application/acad');
       s.setStatus(`Downloaded ${filename}.dwg — panel numbers match the Excel Member column.`);
+      setReferenceNotice({ kind: 'success', text: `Downloaded ${filename}.dwg` });
     } catch (error) {
-      s.setStatus(`DWG export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      s.setStatus(`DWG export failed: ${message}`);
+      setReferenceNotice({ kind: 'error', text: `DWG export failed: ${message}` });
     } finally { setCadExporting(false); }
   }
 
@@ -373,8 +395,10 @@ export function ExtractPage() {
           {showDownloads && (
             <div className="download-actions">
               <button className="primary-button download-button" type="button" onClick={exportXlsx}><FileSpreadsheet size={15} /> Excel MB sheet</button>
-              {s.quantityKey === 'slab_shuttering' && <><select aria-label="Reference file format" value={referenceFormat} onChange={(e) => setReferenceFormat(e.target.value as 'dxf' | 'dwg' | 'pdf')} disabled={cadExporting}><option value="dxf">DXF — instant</option><option value="dwg">DWG — cloud conversion</option><option value="pdf">PDF — instant</option></select><button className="ghost-button download-button" type="button" onClick={exportReferenceCad} disabled={cadExporting}>{cadExporting ? <Loader2 size={15} className="spin" /> : <Download size={15} />} {cadExporting ? 'Creating DWG…' : `Reference ${referenceFormat.toUpperCase()}`}</button></>}
+              {s.quantityKey === 'slab_shuttering' && <><select aria-label="Reference file format" value={referenceFormat} onChange={(e) => setReferenceFormat(e.target.value as 'dxf' | 'dwg' | 'pdf')} disabled={cadExporting}><option value="dxf">DXF — instant</option><option value="dwg">DWG — cloud conversion</option><option value="pdf">PDF — original CAD conversion</option></select><button className="ghost-button download-button" type="button" onClick={exportReferenceCad} disabled={cadExporting}>{cadExporting ? <Loader2 size={15} className="spin" /> : <Download size={15} />} {cadExporting ? `Creating ${referenceFormat.toUpperCase()}…` : `Reference ${referenceFormat.toUpperCase()}`}</button></>}
               <button className="ghost-button download-button" type="button" onClick={() => downloadBlob(s.exportProjectJson(), `${s.projectName}.qss.json`, 'application/json')}><Braces size={15} /> Project JSON</button>
+              {referenceNotice && <span role="status" style={{ color: referenceNotice.kind === 'error' ? '#b91c1c' : referenceNotice.kind === 'success' ? '#15803d' : undefined, maxWidth: 360 }}>{referenceNotice.text}</span>}
+              {referenceReady && <a className="ghost-button download-button" href={referenceReady.url} download={referenceReady.filename}><Download size={15} /> Download PDF now</a>}
             </div>
           )}
         </div>

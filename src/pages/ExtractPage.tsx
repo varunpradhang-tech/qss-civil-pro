@@ -121,13 +121,20 @@ export function ExtractPage() {
         let pdfUrl = '';
         for (let attempt = 0; attempt < 90; attempt++) {
           await new Promise((resolve) => setTimeout(resolve, 2000));
+          if (attempt > 0 && attempt % 5 === 0) s.setStatus(`Converting original CAD to PDF… ${attempt * 2} seconds elapsed`);
           const poll = await fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}`);
           const state = await poll.json();
           if (!poll.ok || state.status === 'error') throw new Error(state.error || 'CAD-to-PDF conversion failed');
           if (state.url) { pdfUrl = state.url; break; }
         }
         if (!pdfUrl) throw new Error('CAD-to-PDF conversion timed out');
-        const basePdf = await fetch(pdfUrl).then((res) => { if (!res.ok) throw new Error('Converted PDF download failed'); return res.arrayBuffer(); });
+        s.setStatus('Adding slab panel numbers to the converted PDF…');
+        let basePdf: ArrayBuffer;
+        try {
+          basePdf = await fetch(pdfUrl).then((res) => { if (!res.ok) throw new Error('CloudConvert download failed'); return res.arrayBuffer(); });
+        } catch {
+          basePdf = await fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}&download=1`).then((res) => { if (!res.ok) throw new Error('Converted PDF download failed'); return res.arrayBuffer(); });
+        }
         const markedPdf = await overlayPanelNumbersOnPdf(basePdf, geometry, s.members);
         downloadBlob(markedPdf, `${filename}.pdf`, 'application/pdf');
         s.setStatus(`Downloaded ${filename}.pdf — original CAD appearance preserved and panel numbers match Excel.`);

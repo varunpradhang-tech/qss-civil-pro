@@ -25,7 +25,7 @@ export const handler = async (event) => {
       return json(200, { id: payload.data.id, form: upload.result.form });
     }
     if (event.httpMethod === 'GET') {
-      const id = new URLSearchParams(event.rawQuery || '').get('id');
+      const id = event.queryStringParameters?.id || new URLSearchParams(event.rawQuery || '').get('id');
       if (!id || !/^[A-Za-z0-9-]+$/.test(id)) return json(400, { error: 'Invalid job id' });
       const res = await fetch(`${API}/jobs/${id}`, { headers: auth() });
       const payload = await res.json();
@@ -34,7 +34,14 @@ export const handler = async (event) => {
       const failed = job.tasks.find((task) => task.status === 'error');
       if (failed) return json(200, { status: 'error', error: failed.message || 'CAD conversion failed' });
       const exported = job.tasks.find((task) => task.operation === 'export/url');
-      return json(200, { status: job.status, url: exported?.result?.files?.[0]?.url || null });
+      const file = exported?.result?.files?.[0];
+      if (event.queryStringParameters?.download === '1' && file?.url) {
+        const download = await fetch(file.url);
+        if (!download.ok) return json(502, { error: 'Converted PDF could not be downloaded' });
+        const bytes = Buffer.from(await download.arrayBuffer());
+        return { statusCode: 200, isBase64Encoded: true, headers: { 'Content-Type': 'application/pdf', 'Cache-Control': 'no-store' }, body: bytes.toString('base64') };
+      }
+      return json(200, { status: job.status, url: file?.url || null });
     }
     return json(405, { error: 'Method not allowed' });
   } catch (error) { return json(502, { error: error instanceof Error ? error.message : 'CAD-to-PDF conversion failed' }); }

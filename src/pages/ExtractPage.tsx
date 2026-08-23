@@ -10,7 +10,7 @@ import { MENU, RULES, RULE_FIELDS, FIELD_LABEL, type MemberRow } from '../takeof
 import { downloadBlob } from '../export/download.js';
 import { membersToCsv } from '../export/mb.js';
 import { buildMbXlsx } from '../export/xlsx.js';
-import { appendSlabPanelMarksToDxf, buildSlabReferenceDxf, slabReferenceGeometry } from '../export/dxf.js';
+import { appendSlabPanelMarksToBinaryDxf, appendSlabPanelMarksToDxf, buildSlabReferenceDxf, slabReferenceGeometry } from '../export/dxf.js';
 import { useUI, displayQuantity } from '../state/ui.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { PremiumBadge } from '../components/PremiumBadge.js';
@@ -54,6 +54,17 @@ function decodeDxf(bytes: ArrayBuffer): string {
   if ((head[0] === 0xff && head[1] === 0xfe) || oddNulls > head.length / 5) return new TextDecoder('utf-16le').decode(bytes);
   if ((head[0] === 0xfe && head[1] === 0xff) || evenNulls > head.length / 5) return new TextDecoder('utf-16be').decode(bytes);
   return new TextDecoder('utf-8').decode(bytes);
+}
+
+function markDxf(bytes: ArrayBuffer, members: MemberRow[]): Blob {
+  const raw = new Uint8Array(bytes);
+  const binary = new TextDecoder('ascii').decode(raw.slice(0, 22)).startsWith('AutoCAD Binary DXF');
+  if (binary) {
+    const marked = appendSlabPanelMarksToBinaryDxf(raw, members);
+    const copy = new Uint8Array(marked.length); copy.set(marked);
+    return new Blob([copy.buffer], { type: 'application/dxf' });
+  }
+  return new Blob([appendSlabPanelMarksToDxf(decodeDxf(bytes), members)], { type: 'application/dxf' });
 }
 
 export function ExtractPage() {
@@ -156,8 +167,7 @@ export function ExtractPage() {
         const original = new Blob([source.sourceBytes], { type: isDxf ? 'application/dxf' : 'application/acad' });
         const preservedDxf = isDxf ? source.sourceBytes : await fetchConvertedFile(await convertCadFile(original, source.name, 'dxf', notify));
         notify('Writing sequenced panel numbers into CAD model space…');
-        const markedDxfText = appendSlabPanelMarksToDxf(decodeDxf(preservedDxf), s.members);
-        const markedDxf = new Blob([markedDxfText], { type: 'application/dxf' });
+        const markedDxf = markDxf(preservedDxf, s.members);
         notify('Plotting marked CAD drawing to PDF…');
         const pdfJob = await convertCadFile(markedDxf, `${filename}.dxf`, 'pdf', notify);
         const markedPdf = new Blob([await fetchConvertedFile(pdfJob)], { type: 'application/pdf' });

@@ -29,6 +29,12 @@ describe('unmarked slab geometry', () => {
     expect(extractMembers([schedule, drawing()], 'slab')).toHaveLength(1);
   });
 
+  it('accepts a slab code on a numeric consultant layer when enclosed by RCC geometry', () => {
+    const numericLayer = { ...drawing(), texts: [{ layer: '4', text: 'S1', pos: { x: 2000, y: 1500 } }] };
+    expect(autoProposePanels(numericLayer)).toMatchObject([{ label: 'S1', lengthMm: 4000, breadthMm: 3000 }]);
+    expect(extractMembers(numericLayer, 'slab')).toHaveLength(1);
+  });
+
   it('excludes a panel containing a HOLD or HOLD AREA note', () => {
     const held = { ...drawing(), texts: [...drawing().texts, { layer: 'NOTES', text: 'HOLD AREA', pos: { x: 2500, y: 1800 } }] };
     expect(autoProposePanels(held)).toHaveLength(0);

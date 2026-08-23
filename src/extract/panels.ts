@@ -58,8 +58,15 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const Hdims = dims.filter((d) => d.dir === 'H').map((d) => d.measurement);
   const Vdims = dims.filter((d) => d.dir === 'V').map((d) => d.measurement);
   const labels = dwg.texts
-    .filter((t) => /slabs?\s*no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
-    .map((t) => ({ text: t.text.replace(/\s/g, '').toUpperCase(), pos: t.pos }));
+    .filter((t) => /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
+    .map((t) => ({
+      text: t.text.replace(/\s/g, '').toUpperCase(),
+      pos: t.pos,
+      // Named slab layers are authoritative. Generic/numeric layers are
+      // common in consultant drawings, but require a fully bounded RCC bay
+      // so schedule/detail S-marks are not mistaken for slab panels.
+      trustedLayer: /slabs?\s*no/i.test(t.layer),
+    }));
   const cutouts = extractCutouts(dwg);
   const thicknesses = extractThicknesses(dwg);
   const holdNotes = dwg.texts.filter((t) => /HOLD/i.test(t.text.replace(/\s+/g, '')));
@@ -80,6 +87,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const left = V.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x < c.x).sort((a, b) => b.x - a.x)[0];
 
     if (!above || !below || !right || !left) {
+      if (!L.trustedLayer) continue;
       const thicknessMm = nearestThickness(c, thicknesses);
       const nl = nearestDimValue(c, dims, 'H'), nb = nearestDimValue(c, dims, 'V');
       out.push({ label: L.text, box: { x0: c.x - 1000, y0: c.y - 1000, x1: c.x + 1000, y1: c.y + 1000 }, lengthMm: nl, breadthMm: nb, openingM2: 0, thicknessMm, confident: false, duplicate: false });

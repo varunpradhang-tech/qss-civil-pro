@@ -42,8 +42,14 @@ async function convertCadFile(file: Blob, filename: string, outputFormat: 'dxf' 
 }
 
 async function fetchConvertedFile(job: { id: string; url: string }): Promise<ArrayBuffer> {
-  try { return await fetch(job.url).then((res) => { if (!res.ok) throw new Error('Direct download failed'); return res.arrayBuffer(); }); }
-  catch { return fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}&download=1`).then((res) => { if (!res.ok) throw new Error('Converted file download failed'); return res.arrayBuffer(); }); }
+  // Always proxy through our function. A direct signed-storage response can be
+  // replaced by a browser/CORS interstitial that still reports HTTP 200.
+  const res = await fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}&download=1`);
+  if (!res.ok) {
+    const problem = await res.json().catch(() => ({ error: 'Converted file download failed' }));
+    throw new Error(problem.error || 'Converted file download failed');
+  }
+  return res.arrayBuffer();
 }
 
 function decodeDxf(bytes: ArrayBuffer): string {
@@ -64,7 +70,13 @@ function markDxf(bytes: ArrayBuffer, members: MemberRow[]): Blob {
     const copy = new Uint8Array(marked.length); copy.set(marked);
     return new Blob([copy.buffer], { type: 'application/dxf' });
   }
-  return new Blob([appendSlabPanelMarksToDxf(decodeDxf(bytes), members)], { type: 'application/dxf' });
+  const decoded = decodeDxf(bytes);
+  try { return new Blob([appendSlabPanelMarksToDxf(decoded, members)], { type: 'application/dxf' }); }
+  catch (error) {
+    const signature = Array.from(raw.slice(0, 16)).map((value) => value.toString(16).padStart(2, '0')).join(' ');
+    const preview = decoded.slice(0, 40).replace(/[^\x20-\x7e]/g, '.');
+    throw new Error(`${error instanceof Error ? error.message : 'Invalid DXF'} (size ${raw.length}, signature ${signature}, preview "${preview}")`);
+  }
 }
 
 export function ExtractPage() {

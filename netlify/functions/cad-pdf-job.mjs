@@ -45,7 +45,7 @@ export const handler = async (event) => {
         if (!download.ok) return json(502, { error: 'Converted PDF could not be downloaded' });
         const bytes = Buffer.from(await download.arrayBuffer());
         const type = String(file.filename || '').toLowerCase().endsWith('.dxf') ? 'application/dxf' : 'application/pdf';
-        return { statusCode: 200, isBase64Encoded: true, headers: { 'Content-Type': type, 'Cache-Control': 'no-store' }, body: bytes.toString('base64') };
+        return { statusCode: 200, isBase64Encoded: true, headers: { 'Content-Type': type, 'Content-Length': String(bytes.length), 'X-QSS-Source-Filename': String(file.filename || ''), 'Cache-Control': 'no-store' }, body: bytes.toString('base64') };
       }
       return json(200, { status: job.status, url: file?.url || null });
     }

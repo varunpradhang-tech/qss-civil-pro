@@ -63,12 +63,11 @@ export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[
 
 /** Insert panel marks into the model-space ENTITIES section of a preserved CAD DXF. */
 export function appendSlabPanelMarksToDxf(original: string, members: MemberRow[]): string {
-  // DXF writers commonly right-align group codes ("  0", "  2"), while
-  // others emit them without padding. Accept both representations.
-  const section = /^[ \t]*0[ \t]*\r?\n[ \t]*SECTION[ \t]*\r?\n[ \t]*2[ \t]*\r?\n[ \t]*ENTITIES[ \t]*\r?\n/im.exec(original);
+  // Accept padded group codes and LF, CRLF, or legacy CR-only line endings.
+  const section = /(?:^|[\r\n])\s*0\s+(?:SECTION)\s+2\s+(?:ENTITIES)\s+/i.exec(original);
   if (!section) throw new Error('Converted CAD has no DXF ENTITIES section');
   const tail = original.slice(section.index + section[0].length);
-  const end = /^[ \t]*0[ \t]*\r?\n[ \t]*ENDSEC[ \t]*\r?\n/im.exec(tail);
+  const end = /(?:^|[\r\n])\s*0\s+(?:ENDSEC)(?=\s)/i.exec(tail);
   if (!end) throw new Error('Converted CAD has an incomplete DXF ENTITIES section');
   const insertAt = section.index + section[0].length + end.index;
   const coords = members.filter((m) => Number.isFinite(m.cadX) && Number.isFinite(m.cadY));
@@ -84,5 +83,5 @@ export function appendSlabPanelMarksToDxf(original: string, members: MemberRow[]
     marks += line({ layer: 'QSS_PANEL_MARK', a: { x: c.x, y: c.y - radius * 0.75 }, b: { x: c.x, y: c.y + radius * 0.75 } }, 'QSS_PANEL_MARK', 2);
     marks += centredText({ x: c.x, y: c.y + radius * 0.15 }, panelNo, radius * 0.9);
   }
-  return original.slice(0, insertAt) + marks + original.slice(insertAt);
+  return original.slice(0, insertAt) + '\r\n' + marks + original.slice(insertAt);
 }

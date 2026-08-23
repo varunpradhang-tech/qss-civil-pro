@@ -46,6 +46,16 @@ async function fetchConvertedFile(job: { id: string; url: string }): Promise<Arr
   catch { return fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}&download=1`).then((res) => { if (!res.ok) throw new Error('Converted file download failed'); return res.arrayBuffer(); }); }
 }
 
+function decodeDxf(bytes: ArrayBuffer): string {
+  const head = new Uint8Array(bytes, 0, Math.min(bytes.byteLength, 256));
+  if (head[0] === 0x50 && head[1] === 0x4b) throw new Error('CAD service returned a ZIP archive instead of a DXF file');
+  const oddNulls = head.filter((value, index) => index % 2 === 1 && value === 0).length;
+  const evenNulls = head.filter((value, index) => index % 2 === 0 && value === 0).length;
+  if ((head[0] === 0xff && head[1] === 0xfe) || oddNulls > head.length / 5) return new TextDecoder('utf-16le').decode(bytes);
+  if ((head[0] === 0xfe && head[1] === 0xff) || evenNulls > head.length / 5) return new TextDecoder('utf-16be').decode(bytes);
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
 export function ExtractPage() {
   const s = useStore();
   const { plan, units } = useUI();
@@ -146,7 +156,7 @@ export function ExtractPage() {
         const original = new Blob([source.sourceBytes], { type: isDxf ? 'application/dxf' : 'application/acad' });
         const preservedDxf = isDxf ? source.sourceBytes : await fetchConvertedFile(await convertCadFile(original, source.name, 'dxf', notify));
         notify('Writing sequenced panel numbers into CAD model space…');
-        const markedDxfText = appendSlabPanelMarksToDxf(new TextDecoder().decode(preservedDxf), s.members);
+        const markedDxfText = appendSlabPanelMarksToDxf(decodeDxf(preservedDxf), s.members);
         const markedDxf = new Blob([markedDxfText], { type: 'application/dxf' });
         notify('Plotting marked CAD drawing to PDF…');
         const pdfJob = await convertCadFile(markedDxf, `${filename}.dxf`, 'pdf', notify);

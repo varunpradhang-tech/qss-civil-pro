@@ -63,10 +63,12 @@ export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[
 
 /** Insert panel marks into the model-space ENTITIES section of a preserved CAD DXF. */
 export function appendSlabPanelMarksToDxf(original: string, members: MemberRow[]): string {
-  const section = /0\r?\nSECTION\r?\n2\r?\nENTITIES\r?\n/i.exec(original);
+  // DXF writers commonly right-align group codes ("  0", "  2"), while
+  // others emit them without padding. Accept both representations.
+  const section = /^[ \t]*0[ \t]*\r?\n[ \t]*SECTION[ \t]*\r?\n[ \t]*2[ \t]*\r?\n[ \t]*ENTITIES[ \t]*\r?\n/im.exec(original);
   if (!section) throw new Error('Converted CAD has no DXF ENTITIES section');
   const tail = original.slice(section.index + section[0].length);
-  const end = /0\r?\nENDSEC\r?\n/i.exec(tail);
+  const end = /^[ \t]*0[ \t]*\r?\n[ \t]*ENDSEC[ \t]*\r?\n/im.exec(tail);
   if (!end) throw new Error('Converted CAD has an incomplete DXF ENTITIES section');
   const insertAt = section.index + section[0].length + end.index;
   const coords = members.filter((m) => Number.isFinite(m.cadX) && Number.isFinite(m.cadY));

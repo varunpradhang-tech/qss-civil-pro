@@ -89,7 +89,18 @@ function slabSchedule(dwgs: NormalizedDwg[]): Map<string, number> {
 
 // --- slab: reuse the label-anchored panel proposer ---
 function slabMembers(dwg: NormalizedDwg, floor: string): MemberRow[] {
-  return autoProposePanels(dwg).map((p, i) => {
+  const panels = autoProposePanels(dwg);
+  const heights = panels.map((p) => Math.max(p.box.y1 - p.box.y0, 0)).filter(Boolean).sort((a, b) => a - b);
+  const rowTolerance = Math.max(500, (heights[Math.floor(heights.length / 2)] || 2000) * 0.35);
+  const rows: { y: number; panels: typeof panels }[] = [];
+  for (const panel of [...panels].sort((a, b) => ((b.box.y0 + b.box.y1) - (a.box.y0 + a.box.y1)) / 2)) {
+    const cy = (panel.box.y0 + panel.box.y1) / 2;
+    const row = rows.find((candidate) => Math.abs(candidate.y - cy) <= rowTolerance);
+    if (row) { row.panels.push(panel); row.y = row.panels.reduce((sum, p) => sum + (p.box.y0 + p.box.y1) / 2, 0) / row.panels.length; }
+    else rows.push({ y: cy, panels: [panel] });
+  }
+  const ordered = rows.sort((a, b) => b.y - a.y).flatMap((row) => row.panels.sort((a, b) => (a.box.x0 + a.box.x1) - (b.box.x0 + b.box.x1)));
+  return ordered.map((p, i) => {
     const r = emptyRow(nextId(), floor);
     r.member = `P${i + 1}${p.label ? ` (${p.label})` : ''}`;
     r.cadX = (p.box.x0 + p.box.x1) / 2;

@@ -60,3 +60,27 @@ export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[
   return pair(0, 'SECTION') + pair(2, 'HEADER') + pair(9, '$INSUNITS') + pair(70, 4) + pair(0, 'ENDSEC')
     + pair(0, 'SECTION') + pair(2, 'ENTITIES') + entities + pair(0, 'ENDSEC') + pair(0, 'EOF');
 }
+
+/** Insert panel marks into the model-space ENTITIES section of a preserved CAD DXF. */
+export function appendSlabPanelMarksToDxf(original: string, members: MemberRow[]): string {
+  const section = /0\r?\nSECTION\r?\n2\r?\nENTITIES\r?\n/i.exec(original);
+  if (!section) throw new Error('Converted CAD has no DXF ENTITIES section');
+  const tail = original.slice(section.index + section[0].length);
+  const end = /0\r?\nENDSEC\r?\n/i.exec(tail);
+  if (!end) throw new Error('Converted CAD has an incomplete DXF ENTITIES section');
+  const insertAt = section.index + section[0].length + end.index;
+  const coords = members.filter((m) => Number.isFinite(m.cadX) && Number.isFinite(m.cadY));
+  const xs = coords.map((m) => m.cadX as number), ys = coords.map((m) => m.cadY as number);
+  const span = coords.length ? Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) : 50000;
+  const radius = Math.min(750, Math.max(250, span / 120));
+  let marks = '';
+  for (const m of coords) {
+    const c = { x: m.cadX as number, y: m.cadY as number };
+    const panelNo = m.member.match(/^P\d+/i)?.[0] ?? m.member;
+    marks += circle(c, radius);
+    marks += line({ layer: 'QSS_PANEL_MARK', a: { x: c.x - radius * 0.75, y: c.y }, b: { x: c.x + radius * 0.75, y: c.y } }, 'QSS_PANEL_MARK', 2);
+    marks += line({ layer: 'QSS_PANEL_MARK', a: { x: c.x, y: c.y - radius * 0.75 }, b: { x: c.x, y: c.y + radius * 0.75 } }, 'QSS_PANEL_MARK', 2);
+    marks += centredText({ x: c.x, y: c.y + radius * 0.15 }, panelNo, radius * 0.9);
+  }
+  return original.slice(0, insertAt) + marks + original.slice(insertAt);
+}

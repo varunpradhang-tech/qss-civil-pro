@@ -12,12 +12,13 @@ export const handler = async (event) => {
   if (!process.env.CLOUDCONVERT_API_KEY) return json(503, { error: 'DWG/PDF export is not configured' });
   try {
     if (event.httpMethod === 'POST') {
-      const { filename = 'drawing.dwg' } = JSON.parse(event.body || '{}');
+      const { filename = 'drawing.dwg', outputFormat = 'pdf' } = JSON.parse(event.body || '{}');
+      if (!['pdf', 'dxf'].includes(outputFormat)) return json(400, { error: 'Unsupported CAD output format' });
       const ext = String(filename).toLowerCase().endsWith('.dxf') ? 'dxf' : 'dwg';
       const res = await fetch(`${API}/jobs`, { method: 'POST', headers: auth(), body: JSON.stringify({ tasks: {
         'upload-cad': { operation: 'import/upload' },
-        'convert-pdf': { operation: 'convert', input: 'upload-cad', input_format: ext, output_format: 'pdf', filename: 'qss-original-cad.pdf' },
-        'export-pdf': { operation: 'export/url', input: 'convert-pdf' },
+        'convert-cad': { operation: 'convert', input: 'upload-cad', input_format: ext, output_format: outputFormat, filename: `qss-cad.${outputFormat}` },
+        'export-cad': { operation: 'export/url', input: 'convert-cad' },
       } }) });
       const payload = await res.json();
       if (!res.ok) return json(res.status, { error: payload.message || 'Could not create conversion job' });
@@ -43,7 +44,8 @@ export const handler = async (event) => {
         const download = await fetch(file.url);
         if (!download.ok) return json(502, { error: 'Converted PDF could not be downloaded' });
         const bytes = Buffer.from(await download.arrayBuffer());
-        return { statusCode: 200, isBase64Encoded: true, headers: { 'Content-Type': 'application/pdf', 'Cache-Control': 'no-store' }, body: bytes.toString('base64') };
+        const type = String(file.filename || '').toLowerCase().endsWith('.dxf') ? 'application/dxf' : 'application/pdf';
+        return { statusCode: 200, isBase64Encoded: true, headers: { 'Content-Type': type, 'Cache-Control': 'no-store' }, body: bytes.toString('base64') };
       }
       return json(200, { status: job.status, url: file?.url || null });
     }

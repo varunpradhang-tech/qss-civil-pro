@@ -10,9 +10,7 @@ import { MENU, RULES, RULE_FIELDS, FIELD_LABEL, type MemberRow } from '../takeof
 import { downloadBlob } from '../export/download.js';
 import { membersToCsv } from '../export/mb.js';
 import { buildMbXlsx } from '../export/xlsx.js';
-import { buildSlabReferenceDxf } from '../export/dxf.js';
-import { overlayPanelNumbersOnPdf } from '../export/pdf.js';
-import { slabReferenceGeometry } from '../export/dxf.js';
+import { appendSlabPanelMarksToDxf, buildSlabReferenceDxf, slabReferenceGeometry } from '../export/dxf.js';
 import { useUI, displayQuantity } from '../state/ui.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { PremiumBadge } from '../components/PremiumBadge.js';
@@ -22,6 +20,31 @@ const REQUIREMENTS = [
   'X-axis grid-to-grid distances are dimensioned',
   'Y-axis grid-to-grid distances are dimensioned',
 ];
+
+async function convertCadFile(file: Blob, filename: string, outputFormat: 'dxf' | 'pdf', progress: (message: string) => void) {
+  const create = await fetch('/.netlify/functions/cad-pdf-job', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename, outputFormat }) });
+  const job = await create.json();
+  if (!create.ok) throw new Error(job.error || `Could not start CAD-to-${outputFormat.toUpperCase()} conversion`);
+  const form = new FormData();
+  for (const [key, value] of Object.entries(job.form.parameters)) form.append(key, String(value));
+  form.append('file', file, filename); // CloudConvert requires file last
+  const upload = await fetch(job.form.url, { method: 'POST', body: form });
+  if (!upload.ok) throw new Error(`CAD upload failed before ${outputFormat.toUpperCase()} conversion`);
+  for (let attempt = 0; attempt < 120; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    if (attempt > 0 && attempt % 5 === 0) progress(`${outputFormat.toUpperCase()} conversion… ${attempt * 2} seconds elapsed`);
+    const poll = await fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}`);
+    const state = await poll.json();
+    if (!poll.ok || state.status === 'error') throw new Error(state.error || `CAD-to-${outputFormat.toUpperCase()} conversion failed`);
+    if (state.url) return { id: job.id as string, url: state.url as string };
+  }
+  throw new Error(`CAD-to-${outputFormat.toUpperCase()} conversion timed out`);
+}
+
+async function fetchConvertedFile(job: { id: string; url: string }): Promise<ArrayBuffer> {
+  try { return await fetch(job.url).then((res) => { if (!res.ok) throw new Error('Direct download failed'); return res.arrayBuffer(); }); }
+  catch { return fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}&download=1`).then((res) => { if (!res.ok) throw new Error('Converted file download failed'); return res.arrayBuffer(); }); }
+}
 
 export function ExtractPage() {
   const s = useStore();
@@ -118,42 +141,17 @@ export function ExtractPage() {
         const isDxf = source.name.toLowerCase().endsWith('.dxf');
         const signature = new TextDecoder('ascii').decode(source.sourceBytes.slice(0, 6));
         if (!isDxf && !/^AC10/.test(signature)) throw new Error(`The retained CAD data is not a valid DWG (signature: ${signature || 'empty'}). Re-upload the original .dwg file.`);
-        s.setStatus('Converting the original CAD drawing to PDF…');
-        setReferenceNotice({ kind: 'working', text: `Uploading original CAD… ${(source.sourceBytes.byteLength / 1048576).toFixed(1)} MB` });
-        const create = await fetch('/.netlify/functions/cad-pdf-job', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: source.name }) });
-        const job = await create.json();
-        if (!create.ok) throw new Error(job.error || 'Could not start CAD-to-PDF conversion');
-        const form = new FormData();
-        for (const [key, value] of Object.entries(job.form.parameters)) form.append(key, String(value));
-        form.append('file', new Blob([source.sourceBytes], { type: isDxf ? 'application/dxf' : 'application/acad' }), source.name); // file must be last
-        const upload = await fetch(job.form.url, { method: 'POST', body: form });
-        if (!upload.ok) throw new Error('Original CAD upload failed');
-        setReferenceNotice({ kind: 'working', text: 'CloudConvert is creating the PDF…' });
-        let pdfUrl = '';
-        for (let attempt = 0; attempt < 90; attempt++) {
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-          if (attempt > 0 && attempt % 5 === 0) {
-            const elapsed = `${attempt * 2} seconds elapsed`;
-            s.setStatus(`Converting original CAD to PDF… ${elapsed}`);
-            setReferenceNotice({ kind: 'working', text: `Creating PDF… ${elapsed}` });
-          }
-          const poll = await fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}`);
-          const state = await poll.json();
-          if (!poll.ok || state.status === 'error') throw new Error(state.error || 'CAD-to-PDF conversion failed');
-          if (state.url) { pdfUrl = state.url; break; }
-        }
-        if (!pdfUrl) throw new Error('CAD-to-PDF conversion timed out');
-        s.setStatus('Adding slab panel numbers to the converted PDF…');
-        setReferenceNotice({ kind: 'working', text: 'Adding slab panel numbers…' });
-        let basePdf: ArrayBuffer;
-        try {
-          basePdf = await fetch(pdfUrl).then((res) => { if (!res.ok) throw new Error('CloudConvert download failed'); return res.arrayBuffer(); });
-        } catch {
-          basePdf = await fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}&download=1`).then((res) => { if (!res.ok) throw new Error('Converted PDF download failed'); return res.arrayBuffer(); });
-        }
-        const markedPdf = await overlayPanelNumbersOnPdf(basePdf, geometry, s.members);
-        if (markedPdf.size < 100) throw new Error('Marked PDF output was empty');
-        if (await markedPdf.slice(0, 5).text() !== '%PDF-') throw new Error('Marked output is not a valid PDF');
+        const notify = (text: string) => { s.setStatus(text); setReferenceNotice({ kind: 'working', text }); };
+        notify(`Preserving original CAD as DXF… ${(source.sourceBytes.byteLength / 1048576).toFixed(1)} MB`);
+        const original = new Blob([source.sourceBytes], { type: isDxf ? 'application/dxf' : 'application/acad' });
+        const preservedDxf = isDxf ? source.sourceBytes : await fetchConvertedFile(await convertCadFile(original, source.name, 'dxf', notify));
+        notify('Writing sequenced panel numbers into CAD model space…');
+        const markedDxfText = appendSlabPanelMarksToDxf(new TextDecoder().decode(preservedDxf), s.members);
+        const markedDxf = new Blob([markedDxfText], { type: 'application/dxf' });
+        notify('Plotting marked CAD drawing to PDF…');
+        const pdfJob = await convertCadFile(markedDxf, `${filename}.dxf`, 'pdf', notify);
+        const markedPdf = new Blob([await fetchConvertedFile(pdfJob)], { type: 'application/pdf' });
+        if (markedPdf.size < 100 || await markedPdf.slice(0, 5).text() !== '%PDF-') throw new Error('Marked output is not a valid PDF');
         const ready = { url: URL.createObjectURL(markedPdf), filename: `${filename}.pdf` };
         setReferenceReady(ready);
         downloadBlob(markedPdf, `${filename}.pdf`, 'application/pdf');

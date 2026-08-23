@@ -35,6 +35,18 @@ describe('unmarked slab geometry', () => {
     expect(extractMembers(numericLayer, 'slab')).toHaveLength(1);
   });
 
+  it('rejects an impossible panel span instead of producing an extreme quantity', () => {
+    const huge = drawing();
+    huge.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 100000, y: 0 } },
+      { layer: 'BEAM', a: { x: 0, y: 100000 }, b: { x: 100000, y: 100000 } },
+      { layer: 'WALL', a: { x: 0, y: 0 }, b: { x: 0, y: 100000 } },
+      { layer: 'WALL', a: { x: 100000, y: 0 }, b: { x: 100000, y: 100000 } },
+    ];
+    huge.texts = [{ layer: '4', text: 'S1', pos: { x: 50000, y: 50000 } }];
+    expect(autoProposePanels(huge)).toHaveLength(0);
+  });
+
   it('excludes a panel containing a HOLD or HOLD AREA note', () => {
     const held = { ...drawing(), texts: [...drawing().texts, { layer: 'NOTES', text: 'HOLD AREA', pos: { x: 2500, y: 1800 } }] };
     expect(autoProposePanels(held)).toHaveLength(0);

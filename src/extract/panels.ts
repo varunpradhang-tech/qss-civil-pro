@@ -101,12 +101,20 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // HOLD / HOLD AREA is an explicit instruction that the containing bay is
   // outside the current measurable scope. Exclude it before deductions,
   // numbering, Excel export, totals, and reference-file marking.
-  const measurable = out.filter((panel) => !holdNotes.some((note) =>
-    note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
-    && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1));
+  const measurable = out.filter((panel) => {
+    const grossM2 = (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
+    const plausibleBay = panel.lengthMm >= 300 && panel.breadthMm >= 300
+      && panel.lengthMm <= 30_000 && panel.breadthMm <= 30_000
+      && grossM2 <= 400;
+    const held = holdNotes.some((note) => note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
+      && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
+    return plausibleBay && !held;
+  });
   assignCutouts(measurable, cutouts); // contain-or-nearest panel, per QSS-SLAB-004
   markDuplicates(measurable);
-  return measurable;
+  // A duplicate proposal represents the same physical bay and must never be
+  // billed as an additional slab panel.
+  return measurable.filter((panel) => !panel.duplicate);
 }
 
 // Distribute each cutout across the panels its box overlaps (by overlap area), so a void straddling a

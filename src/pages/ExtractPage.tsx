@@ -114,7 +114,7 @@ export function ExtractPage() {
       try {
         const geometry = slabReferenceGeometry(dwgs);
         const source = s.sheets.find((sheet) => sheet.dwg === geometry) ?? s.sheets[0];
-        if (!source?.sourceBytes) throw new Error('Re-upload the original CAD drawing once to create a full-colour reference PDF.');
+        if (!source?.sourceBytes?.byteLength) throw new Error('Re-upload the original CAD drawing once to retain its full file data for PDF conversion.');
         s.setStatus('Converting the original CAD drawing to PDF…');
         setReferenceNotice({ kind: 'working', text: 'Uploading original CAD…' });
         const create = await fetch('/.netlify/functions/cad-pdf-job', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: source.name }) });

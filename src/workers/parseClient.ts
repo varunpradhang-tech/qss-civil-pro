@@ -23,8 +23,11 @@ function getWorker(): Worker {
 export function parseInWorker(bytes: ArrayBuffer, fileName: string, wasmPath = '/wasm'): Promise<NormalizedDwg> {
   const w = getWorker();
   const id = `p${++seq}`;
+  // Transfer a copy. Transferring `bytes` itself detaches the caller's buffer,
+  // leaving a zero-byte "original" when it is later uploaded for CAD/PDF export.
+  const workerBytes = bytes.slice(0);
   return new Promise<NormalizedDwg>((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    w.postMessage({ id, bytes, fileName, wasmPath } satisfies ParseRequest, [bytes]); // transfer buffer
+    w.postMessage({ id, bytes: workerBytes, fileName, wasmPath } satisfies ParseRequest, [workerBytes]);
   });
 }

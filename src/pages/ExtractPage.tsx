@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Upload, Plus, Copy, Trash2, Ruler, FileSpreadsheet, Braces, Info, Download,
+  Upload, Plus, Copy, Trash2, Ruler, FileSpreadsheet, Info, Download,
   ArrowRight, Layers, Hash, ShieldCheck, Loader2, X, CheckCircle2,
 } from 'lucide-react';
 import { useStore, type Sheet } from '../state/store.js';
@@ -111,10 +111,20 @@ export function ExtractPage() {
     }
     if (referenceFormat === 'pdf') {
       setCadExporting(true);
+      let saveHandle: { createWritable: () => Promise<{ write: (data: Blob) => Promise<void>; close: () => Promise<void> }> } | null = null;
       try {
         const geometry = slabReferenceGeometry(dwgs);
         const source = s.sheets.find((sheet) => sheet.dwg === geometry) ?? s.sheets[0];
         if (!source?.sourceBytes) throw new Error('Re-upload the original CAD drawing once to create a full-colour reference PDF.');
+        const picker = (window as unknown as { showSaveFilePicker?: (options: unknown) => Promise<typeof saveHandle> }).showSaveFilePicker;
+        if (picker) {
+          try {
+            saveHandle = await picker({ suggestedName: `${filename}.pdf`, types: [{ description: 'PDF document', accept: { 'application/pdf': ['.pdf'] } }] });
+          } catch (error) {
+            if ((error as DOMException).name === 'AbortError') throw new Error('PDF save was cancelled');
+            throw error;
+          }
+        }
         s.setStatus('Converting the original CAD drawing to PDF…');
         setReferenceNotice({ kind: 'working', text: 'Uploading original CAD…' });
         const create = await fetch('/.netlify/functions/cad-pdf-job', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: source.name }) });
@@ -152,7 +162,11 @@ export function ExtractPage() {
         if (markedPdf.size < 100) throw new Error('Marked PDF output was empty');
         const ready = { url: URL.createObjectURL(markedPdf), filename: `${filename}.pdf` };
         setReferenceReady(ready);
-        downloadBlob(markedPdf, `${filename}.pdf`, 'application/pdf');
+        if (saveHandle) {
+          const writable = await saveHandle.createWritable();
+          await writable.write(markedPdf);
+          await writable.close();
+        } else downloadBlob(markedPdf, `${filename}.pdf`, 'application/pdf');
         s.setStatus(`Downloaded ${filename}.pdf — original CAD appearance preserved and panel numbers match Excel.`);
         setReferenceNotice({ kind: 'success', text: `Downloaded ${filename}.pdf — check your Downloads folder.` });
       } catch (error) {
@@ -396,7 +410,6 @@ export function ExtractPage() {
             <div className="download-actions">
               <button className="primary-button download-button" type="button" onClick={exportXlsx}><FileSpreadsheet size={15} /> Excel MB sheet</button>
               {s.quantityKey === 'slab_shuttering' && <><select aria-label="Reference file format" value={referenceFormat} onChange={(e) => setReferenceFormat(e.target.value as 'dxf' | 'dwg' | 'pdf')} disabled={cadExporting}><option value="dxf">DXF — instant</option><option value="dwg">DWG — cloud conversion</option><option value="pdf">PDF — original CAD conversion</option></select><button className="ghost-button download-button" type="button" onClick={exportReferenceCad} disabled={cadExporting}>{cadExporting ? <Loader2 size={15} className="spin" /> : <Download size={15} />} {cadExporting ? `Creating ${referenceFormat.toUpperCase()}…` : `Reference ${referenceFormat.toUpperCase()}`}</button></>}
-              <button className="ghost-button download-button" type="button" onClick={() => downloadBlob(s.exportProjectJson(), `${s.projectName}.qss.json`, 'application/json')}><Braces size={15} /> Project JSON</button>
               {referenceNotice && <span role="status" style={{ color: referenceNotice.kind === 'error' ? '#b91c1c' : referenceNotice.kind === 'success' ? '#15803d' : undefined, maxWidth: 360 }}>{referenceNotice.text}</span>}
               {referenceReady && <a className="ghost-button download-button" href={referenceReady.url} download={referenceReady.filename}><Download size={15} /> Download PDF now</a>}
             </div>

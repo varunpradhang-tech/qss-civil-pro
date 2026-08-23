@@ -31,8 +31,12 @@ export const handler = async (event) => {
       const payload = await res.json();
       if (!res.ok) return json(res.status, { error: payload.message || 'Could not read conversion job' });
       const job = payload.data;
-      const failed = job.tasks.find((task) => task.status === 'error');
-      if (failed) return json(200, { status: 'error', error: failed.message || 'CAD conversion failed' });
+      const failed = job.tasks.filter((task) => task.status === 'error');
+      if (failed.length) {
+        const details = failed.map((task) => `${task.name || task.operation}: ${task.message || task.code || 'failed'}`).join(' | ');
+        const context = job.tasks.filter((task) => task.message && task.status !== 'error').map((task) => `${task.name || task.operation}: ${task.message}`).join(' | ');
+        return json(200, { status: 'error', error: context ? `${details} | ${context}` : details });
+      }
       const exported = job.tasks.find((task) => task.operation === 'export/url');
       const file = exported?.result?.files?.[0];
       if (event.queryStringParameters?.download === '1' && file?.url) {

@@ -115,14 +115,17 @@ export function ExtractPage() {
         const geometry = slabReferenceGeometry(dwgs);
         const source = s.sheets.find((sheet) => sheet.dwg === geometry) ?? s.sheets[0];
         if (!source?.sourceBytes?.byteLength) throw new Error('Re-upload the original CAD drawing once to retain its full file data for PDF conversion.');
+        const isDxf = source.name.toLowerCase().endsWith('.dxf');
+        const signature = new TextDecoder('ascii').decode(source.sourceBytes.slice(0, 6));
+        if (!isDxf && !/^AC10/.test(signature)) throw new Error(`The retained CAD data is not a valid DWG (signature: ${signature || 'empty'}). Re-upload the original .dwg file.`);
         s.setStatus('Converting the original CAD drawing to PDF…');
-        setReferenceNotice({ kind: 'working', text: 'Uploading original CAD…' });
+        setReferenceNotice({ kind: 'working', text: `Uploading original CAD… ${(source.sourceBytes.byteLength / 1048576).toFixed(1)} MB` });
         const create = await fetch('/.netlify/functions/cad-pdf-job', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: source.name }) });
         const job = await create.json();
         if (!create.ok) throw new Error(job.error || 'Could not start CAD-to-PDF conversion');
         const form = new FormData();
         for (const [key, value] of Object.entries(job.form.parameters)) form.append(key, String(value));
-        form.append('file', new Blob([source.sourceBytes]), source.name); // file must be last
+        form.append('file', new Blob([source.sourceBytes], { type: isDxf ? 'application/dxf' : 'application/acad' }), source.name); // file must be last
         const upload = await fetch(job.form.url, { method: 'POST', body: form });
         if (!upload.ok) throw new Error('Original CAD upload failed');
         setReferenceNotice({ kind: 'working', text: 'CloudConvert is creating the PDF…' });

@@ -111,20 +111,10 @@ export function ExtractPage() {
     }
     if (referenceFormat === 'pdf') {
       setCadExporting(true);
-      let saveHandle: { createWritable: () => Promise<{ write: (data: Blob) => Promise<void>; close: () => Promise<void> }> } | null = null;
       try {
         const geometry = slabReferenceGeometry(dwgs);
         const source = s.sheets.find((sheet) => sheet.dwg === geometry) ?? s.sheets[0];
         if (!source?.sourceBytes) throw new Error('Re-upload the original CAD drawing once to create a full-colour reference PDF.');
-        const picker = (window as unknown as { showSaveFilePicker?: (options: unknown) => Promise<typeof saveHandle> }).showSaveFilePicker;
-        if (picker) {
-          try {
-            saveHandle = await picker({ suggestedName: `${filename}.pdf`, types: [{ description: 'PDF document', accept: { 'application/pdf': ['.pdf'] } }] });
-          } catch (error) {
-            if ((error as DOMException).name === 'AbortError') throw new Error('PDF save was cancelled');
-            throw error;
-          }
-        }
         s.setStatus('Converting the original CAD drawing to PDF…');
         setReferenceNotice({ kind: 'working', text: 'Uploading original CAD…' });
         const create = await fetch('/.netlify/functions/cad-pdf-job', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: source.name }) });
@@ -160,19 +150,17 @@ export function ExtractPage() {
         }
         const markedPdf = await overlayPanelNumbersOnPdf(basePdf, geometry, s.members);
         if (markedPdf.size < 100) throw new Error('Marked PDF output was empty');
+        if (await markedPdf.slice(0, 5).text() !== '%PDF-') throw new Error('Marked output is not a valid PDF');
         const ready = { url: URL.createObjectURL(markedPdf), filename: `${filename}.pdf` };
         setReferenceReady(ready);
-        if (saveHandle) {
-          const writable = await saveHandle.createWritable();
-          await writable.write(markedPdf);
-          await writable.close();
-        } else downloadBlob(markedPdf, `${filename}.pdf`, 'application/pdf');
+        downloadBlob(markedPdf, `${filename}.pdf`, 'application/pdf');
         s.setStatus(`Downloaded ${filename}.pdf — original CAD appearance preserved and panel numbers match Excel.`);
         setReferenceNotice({ kind: 'success', text: `Downloaded ${filename}.pdf — check your Downloads folder.` });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         s.setStatus(`PDF export failed: ${message}`);
         setReferenceNotice({ kind: 'error', text: `PDF export failed: ${message}` });
+        window.alert(`PDF export failed: ${message}`);
       } finally { setCadExporting(false); }
       return;
     }

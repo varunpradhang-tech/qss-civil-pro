@@ -77,7 +77,17 @@ export async function overlayPanelNumbersOnPdf(source: ArrayBuffer, dwg: Normali
   if (!page || !dwg) return new Blob([new Uint8Array(await pdf.save()).buffer], { type: 'application/pdf' });
   const font = await pdf.embedFont(StandardFonts.HelveticaBold);
   const { width, height } = page.getSize();
-  const min = dwg.extents.min, max = dwg.extents.max;
+  const panelPoints = members.flatMap((m) => [
+    ...(Number.isFinite(m.cadX0) && Number.isFinite(m.cadY0) ? [{ x: m.cadX0 as number, y: m.cadY0 as number }] : []),
+    ...(Number.isFinite(m.cadX1) && Number.isFinite(m.cadY1) ? [{ x: m.cadX1 as number, y: m.cadY1 as number }] : []),
+    ...(Number.isFinite(m.cadX) && Number.isFinite(m.cadY) ? [{ x: m.cadX as number, y: m.cadY as number }] : []),
+  ]);
+  const rawMinX = panelPoints.length ? Math.min(...panelPoints.map((p) => p.x)) : dwg.extents.min.x;
+  const rawMaxX = panelPoints.length ? Math.max(...panelPoints.map((p) => p.x)) : dwg.extents.max.x;
+  const rawMinY = panelPoints.length ? Math.min(...panelPoints.map((p) => p.y)) : dwg.extents.min.y;
+  const rawMaxY = panelPoints.length ? Math.max(...panelPoints.map((p) => p.y)) : dwg.extents.max.y;
+  const padX = Math.max(rawMaxX - rawMinX, 1000) * 0.025, padY = Math.max(rawMaxY - rawMinY, 1000) * 0.025;
+  const min = { x: rawMinX - padX, y: rawMinY - padY }, max = { x: rawMaxX + padX, y: rawMaxY + padY };
   const scale = Math.min(width / Math.max(max.x - min.x, 1), height / Math.max(max.y - min.y, 1));
   const ox = (width - (max.x - min.x) * scale) / 2;
   const oy = (height - (max.y - min.y) * scale) / 2;
@@ -87,6 +97,11 @@ export async function overlayPanelNumbersOnPdf(source: ArrayBuffer, dwg: Normali
     const x = ox + ((m.cadX as number) - min.x) * scale;
     const y = oy + ((m.cadY as number) - min.y) * scale;
     const panelNo = m.member.match(/^P\d+/i)?.[0] ?? m.member;
+    if ([m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
+      const bx = ox + ((m.cadX0 as number) - min.x) * scale;
+      const by = oy + ((m.cadY0 as number) - min.y) * scale;
+      page.drawRectangle({ x: bx, y: by, width: ((m.cadX1 as number) - (m.cadX0 as number)) * scale, height: ((m.cadY1 as number) - (m.cadY0 as number)) * scale, borderColor: rgb(0, 0.72, 0), borderWidth: 0.45, opacity: 0.35, borderOpacity: 0.65 });
+    }
     page.drawCircle({ x, y, size: radius, borderColor: rgb(0, 0.75, 0), borderWidth: 1.2 });
     page.drawLine({ start: { x: x - radius * 0.75, y }, end: { x: x + radius * 0.75, y }, color: rgb(1, 0.75, 0), thickness: 0.8 });
     page.drawLine({ start: { x, y: y - radius * 0.75 }, end: { x, y: y + radius * 0.75 }, color: rgb(1, 0.75, 0), thickness: 0.8 });

@@ -62,6 +62,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     .map((t) => ({ text: t.text.replace(/\s/g, '').toUpperCase(), pos: t.pos }));
   const cutouts = extractCutouts(dwg);
   const thicknesses = extractThicknesses(dwg);
+  const holdNotes = dwg.texts.filter((t) => /HOLD/i.test(t.text.replace(/\s+/g, '')));
 
   const snap = (val: number, opts: number[]) => {
     if (!opts.length) return { v: val, ok: true }; // unmarked drawing: geometry is the source
@@ -89,9 +90,15 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     out.push({ label: L.text, box, lengthMm: sL.v, breadthMm: sB.v, openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: sL.ok && sB.ok, duplicate: false });
   }
 
-  assignCutouts(out, cutouts); // contain-or-nearest panel, per QSS-SLAB-004
-  markDuplicates(out);
-  return out;
+  // HOLD / HOLD AREA is an explicit instruction that the containing bay is
+  // outside the current measurable scope. Exclude it before deductions,
+  // numbering, Excel export, totals, and reference-file marking.
+  const measurable = out.filter((panel) => !holdNotes.some((note) =>
+    note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
+    && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1));
+  assignCutouts(measurable, cutouts); // contain-or-nearest panel, per QSS-SLAB-004
+  markDuplicates(measurable);
+  return measurable;
 }
 
 // Distribute each cutout across the panels its box overlaps (by overlap area), so a void straddling a

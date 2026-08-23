@@ -22,6 +22,29 @@ function centredText(c: Pt, value: string, height: number): string {
     + pair(11, c.x) + pair(21, c.y) + pair(31, 0);
 }
 
+function modernBase(kind: string, subclass: string, colour: number): string {
+  return pair(0, kind) + pair(100, 'AcDbEntity') + pair(8, '0') + pair(62, colour) + pair(100, subclass);
+}
+
+function modernLine(a: Pt, b: Pt, colour: number): string {
+  return modernBase('LINE', 'AcDbLine', colour)
+    + pair(10, a.x) + pair(20, a.y) + pair(30, 0)
+    + pair(11, b.x) + pair(21, b.y) + pair(31, 0);
+}
+
+function modernCircle(c: Pt, radius: number): string {
+  return modernBase('CIRCLE', 'AcDbCircle', 3)
+    + pair(10, c.x) + pair(20, c.y) + pair(30, 0) + pair(40, radius);
+}
+
+function modernText(c: Pt, value: string, height: number): string {
+  return modernBase('TEXT', 'AcDbText', 3)
+    + pair(10, c.x) + pair(20, c.y) + pair(30, 0)
+    + pair(40, height) + pair(1, value) + pair(72, 1)
+    + pair(11, c.x) + pair(21, c.y) + pair(31, 0)
+    + pair(100, 'AcDbText') + pair(73, 2);
+}
+
 export function slabReferenceGeometry(dwgs: NormalizedDwg[]): NormalizedDwg | undefined {
   return [...dwgs].sort((a, b) => {
     const score = (d: NormalizedDwg) => d.texts.filter((t) => /slabs?\s*no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, ''))).length * 1000
@@ -78,10 +101,10 @@ export function appendSlabPanelMarksToDxf(original: string, members: MemberRow[]
   for (const m of coords) {
     const c = { x: m.cadX as number, y: m.cadY as number };
     const panelNo = m.member.match(/^P\d+/i)?.[0] ?? m.member;
-    marks += circle(c, radius);
-    marks += line({ layer: 'QSS_PANEL_MARK', a: { x: c.x - radius * 0.75, y: c.y }, b: { x: c.x + radius * 0.75, y: c.y } }, 'QSS_PANEL_MARK', 2);
-    marks += line({ layer: 'QSS_PANEL_MARK', a: { x: c.x, y: c.y - radius * 0.75 }, b: { x: c.x, y: c.y + radius * 0.75 } }, 'QSS_PANEL_MARK', 2);
-    marks += centredText({ x: c.x, y: c.y + radius * 0.15 }, panelNo, radius * 0.9);
+    marks += modernCircle(c, radius);
+    marks += modernLine({ x: c.x - radius * 0.75, y: c.y }, { x: c.x + radius * 0.75, y: c.y }, 2);
+    marks += modernLine({ x: c.x, y: c.y - radius * 0.75 }, { x: c.x, y: c.y + radius * 0.75 }, 2);
+    marks += modernText({ x: c.x, y: c.y + radius * 0.15 }, panelNo, radius * 0.9);
   }
   return original.slice(0, insertAt) + '\r\n' + marks + original.slice(insertAt);
 }
@@ -120,14 +143,14 @@ export function appendSlabPanelMarksToBinaryDxf(original: Uint8Array, members: M
   const span = coords.length ? Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) : 50000;
   const radius = Math.min(750, Math.max(250, span / 120));
   const records: Uint8Array[] = [];
-  const entityBase = (kind: string, colour: number) => concatBytes(binaryString(0, kind), binaryString(8, 'QSS_PANEL_MARK'), binaryInt16(62, colour));
+  const entityBase = (kind: string, subclass: string, colour: number) => concatBytes(binaryString(0, kind), binaryString(100, 'AcDbEntity'), binaryString(8, '0'), binaryInt16(62, colour), binaryString(100, subclass));
   for (const m of coords) {
     const x = m.cadX as number, y = m.cadY as number;
     const panelNo = m.member.match(/^P\d+/i)?.[0] ?? m.member;
-    records.push(concatBytes(entityBase('CIRCLE', 3), binaryDouble(10, x), binaryDouble(20, y), binaryDouble(30, 0), binaryDouble(40, radius)));
-    records.push(concatBytes(entityBase('LINE', 2), binaryDouble(10, x - radius * 0.75), binaryDouble(20, y), binaryDouble(30, 0), binaryDouble(11, x + radius * 0.75), binaryDouble(21, y), binaryDouble(31, 0)));
-    records.push(concatBytes(entityBase('LINE', 2), binaryDouble(10, x), binaryDouble(20, y - radius * 0.75), binaryDouble(30, 0), binaryDouble(11, x), binaryDouble(21, y + radius * 0.75), binaryDouble(31, 0)));
-    records.push(concatBytes(entityBase('TEXT', 3), binaryDouble(10, x), binaryDouble(20, y + radius * 0.15), binaryDouble(30, 0), binaryDouble(40, radius * 0.9), binaryString(1, panelNo), binaryInt16(72, 1), binaryInt16(73, 2), binaryDouble(11, x), binaryDouble(21, y), binaryDouble(31, 0)));
+    records.push(concatBytes(entityBase('CIRCLE', 'AcDbCircle', 3), binaryDouble(10, x), binaryDouble(20, y), binaryDouble(30, 0), binaryDouble(40, radius)));
+    records.push(concatBytes(entityBase('LINE', 'AcDbLine', 2), binaryDouble(10, x - radius * 0.75), binaryDouble(20, y), binaryDouble(30, 0), binaryDouble(11, x + radius * 0.75), binaryDouble(21, y), binaryDouble(31, 0)));
+    records.push(concatBytes(entityBase('LINE', 'AcDbLine', 2), binaryDouble(10, x), binaryDouble(20, y - radius * 0.75), binaryDouble(30, 0), binaryDouble(11, x), binaryDouble(21, y + radius * 0.75), binaryDouble(31, 0)));
+    records.push(concatBytes(entityBase('TEXT', 'AcDbText', 3), binaryDouble(10, x), binaryDouble(20, y + radius * 0.15), binaryDouble(30, 0), binaryDouble(40, radius * 0.9), binaryString(1, panelNo), binaryInt16(72, 1), binaryDouble(11, x), binaryDouble(21, y), binaryDouble(31, 0), binaryString(100, 'AcDbText'), binaryInt16(73, 2)));
   }
   return concatBytes(original.slice(0, insertAt), ...records, original.slice(insertAt));
 }

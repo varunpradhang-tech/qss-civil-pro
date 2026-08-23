@@ -28,4 +28,10 @@ describe('unmarked slab geometry', () => {
     const schedule = { ...drawing(), fileName: 'schedule.dwg', segments: [], texts: [], dimensions: Array.from({ length: 20 }, (_, i) => ({ layer: 'TABLE', measurement: 1000, dir: 'H' as const, mid: { x: i, y: 0 }, p1: { x: 0, y: 0 }, p2: { x: 1000, y: 0 } })) };
     expect(extractMembers([schedule, drawing()], 'slab')).toHaveLength(1);
   });
+
+  it('excludes a panel containing a HOLD or HOLD AREA note', () => {
+    const held = { ...drawing(), texts: [...drawing().texts, { layer: 'NOTES', text: 'HOLD AREA', pos: { x: 2500, y: 1800 } }] };
+    expect(autoProposePanels(held)).toHaveLength(0);
+    expect(extractMembers(held, 'slab')).toHaveLength(0);
+  });
 });

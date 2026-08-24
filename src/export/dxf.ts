@@ -45,6 +45,55 @@ function modernText(c: Pt, value: string, height: number): string {
     + pair(100, 'AcDbText') + pair(73, 2);
 }
 
+function referenceExtents(members: MemberRow[]): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  const xs: number[] = [], ys: number[] = [];
+  for (const m of members) {
+    for (const value of [m.cadX0, m.cadX, m.cadX1]) if (Number.isFinite(value)) xs.push(value as number);
+    for (const value of [m.cadY0, m.cadY, m.cadY1]) if (Number.isFinite(value)) ys.push(value as number);
+  }
+  if (!xs.length || !ys.length) return null;
+  let minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const margin = Math.max(maxX - minX, maxY - minY) * 0.08;
+  minX -= margin; maxX += margin; minY -= margin; maxY += margin;
+  return { minX, minY, maxX, maxY };
+}
+
+function replaceHeaderVariable(dxf: string, name: string, values: string): string {
+  const escaped = name.replace(/\$/g, '\\$');
+  const re = new RegExp(`(^[ \\t]*9[ \\t]*\\r?\\n[ \\t]*${escaped}[ \\t]*\\r?\\n)[\\s\\S]*?(?=^[ \\t]*9[ \\t]*\\r?$|^[ \\t]*0[ \\t]*\\r?\\n[ \\t]*ENDSEC)`, 'im');
+  return re.test(dxf) ? dxf.replace(re, `$1${values}`) : dxf;
+}
+
+function replaceDxfGroup(record: string, group: number, value: number): string {
+  const re = new RegExp(`(^[ \\t]*${group}[ \\t]*\\r?\\n)[^\\r\\n]*`, 'm');
+  return re.test(record) ? record.replace(re, `$1${value}`) : `${record}${pair(group, value)}`;
+}
+
+/** Reset the saved model view so CAD-to-PDF plots the complete detected plan. */
+function fitTextDxfView(dxf: string, members: MemberRow[]): string {
+  const ext = referenceExtents(members);
+  if (!ext) return dxf;
+  const width = Math.max(ext.maxX - ext.minX, 1), height = Math.max(ext.maxY - ext.minY, 1);
+  const cx = (ext.minX + ext.maxX) / 2, cy = (ext.minY + ext.maxY) / 2;
+  let fitted = replaceHeaderVariable(dxf, '$EXTMIN', pair(10, ext.minX) + pair(20, ext.minY) + pair(30, 0));
+  fitted = replaceHeaderVariable(fitted, '$EXTMAX', pair(10, ext.maxX) + pair(20, ext.maxY) + pair(30, 0));
+  fitted = replaceHeaderVariable(fitted, '$LIMMIN', pair(10, ext.minX) + pair(20, ext.minY));
+  fitted = replaceHeaderVariable(fitted, '$LIMMAX', pair(10, ext.maxX) + pair(20, ext.maxY));
+  fitted = replaceHeaderVariable(fitted, '$VIEWCTR', pair(10, cx) + pair(20, cy));
+  fitted = replaceHeaderVariable(fitted, '$VIEWSIZE', pair(40, height));
+  // Modern DXF renderers use the *ACTIVE VPORT table rather than the legacy
+  // header view variables. Update that record as well.
+  fitted = fitted.replace(/(^[ \t]*0[ \t]*\r?\n[ \t]*VPORT[ \t]*\r?\n[\s\S]*?)(?=^[ \t]*0[ \t]*\r?\n)/gim, (record) => {
+    if (!/^[ \t]*2[ \t]*\r?\n[ \t]*\*ACTIVE[ \t]*$/im.test(record)) return record;
+    let active = replaceDxfGroup(record, 12, cx);
+    active = replaceDxfGroup(active, 22, cy);
+    active = replaceDxfGroup(active, 40, height);
+    active = replaceDxfGroup(active, 41, width / height);
+    return active;
+  });
+  return fitted;
+}
+
 export function slabReferenceGeometry(dwgs: NormalizedDwg[]): NormalizedDwg | undefined {
   return [...dwgs].sort((a, b) => {
     const score = (d: NormalizedDwg) => d.texts.filter((t) => /slabs?\s*no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, ''))).length * 1000
@@ -86,6 +135,7 @@ export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[
 
 /** Insert panel marks into the model-space ENTITIES section of a preserved CAD DXF. */
 export function appendSlabPanelMarksToDxf(original: string, members: MemberRow[]): string {
+  original = fitTextDxfView(original, members);
   // Accept padded group codes and LF, CRLF, or legacy CR-only line endings.
   const section = /(?:^|[\r\n])\s*0\s+(?:SECTION)\s+2\s+(?:ENTITIES)\s+/i.exec(original);
   if (!section) throw new Error('Converted CAD has no DXF ENTITIES section');

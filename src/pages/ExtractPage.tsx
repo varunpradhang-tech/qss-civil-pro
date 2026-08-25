@@ -42,8 +42,21 @@ async function convertCadFile(file: Blob, filename: string, outputFormat: 'dxf' 
 }
 
 async function fetchConvertedFile(job: { id: string; url: string }): Promise<ArrayBuffer> {
-  // Always proxy through our function. A direct signed-storage response can be
-  // replaced by a browser/CORS interstitial that still reports HTTP 200.
+  // Large CAD files cannot be returned through a Netlify Function because the
+  // base64-encoded response can exceed the platform response-size limit. Try
+  // CloudConvert's signed URL first, then retain the proxy as a fallback for
+  // storage providers that do not permit browser downloads.
+  try {
+    const direct = await fetch(job.url);
+    if (direct.ok) {
+      const bytes = await direct.arrayBuffer();
+      const head = new TextDecoder('ascii').decode(new Uint8Array(bytes, 0, Math.min(bytes.byteLength, 32))).trimStart().toLowerCase();
+      const looksLikeHtml = head.startsWith('<!doctype') || head.startsWith('<html');
+      if (bytes.byteLength > 0 && !looksLikeHtml) return bytes;
+    }
+  } catch {
+    // Fall through to the same-origin proxy below.
+  }
   const res = await fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}&download=1`);
   if (!res.ok) {
     const problem = await res.json().catch(() => ({ error: 'Converted file download failed' }));

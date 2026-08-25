@@ -10,7 +10,7 @@ import { MENU, RULES, RULE_FIELDS, FIELD_LABEL, type MemberRow } from '../takeof
 import { downloadBlob } from '../export/download.js';
 import { membersToCsv } from '../export/mb.js';
 import { buildMbXlsx } from '../export/xlsx.js';
-import { appendSlabPanelMarksToBinaryDxf, appendSlabPanelMarksToDxf, buildSlabReferenceDxf, slabReferenceGeometry } from '../export/dxf.js';
+import { buildSlabReferenceDxf } from '../export/dxf.js';
 import { useUI, displayQuantity } from '../state/ui.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { PremiumBadge } from '../components/PremiumBadge.js';
@@ -63,33 +63,6 @@ async function fetchConvertedFile(job: { id: string; url: string }): Promise<Arr
     throw new Error(problem.error || 'Converted file download failed');
   }
   return res.arrayBuffer();
-}
-
-function decodeDxf(bytes: ArrayBuffer): string {
-  const head = new Uint8Array(bytes, 0, Math.min(bytes.byteLength, 256));
-  if (head[0] === 0x50 && head[1] === 0x4b) throw new Error('CAD service returned a ZIP archive instead of a DXF file');
-  const oddNulls = head.filter((value, index) => index % 2 === 1 && value === 0).length;
-  const evenNulls = head.filter((value, index) => index % 2 === 0 && value === 0).length;
-  if ((head[0] === 0xff && head[1] === 0xfe) || oddNulls > head.length / 5) return new TextDecoder('utf-16le').decode(bytes);
-  if ((head[0] === 0xfe && head[1] === 0xff) || evenNulls > head.length / 5) return new TextDecoder('utf-16be').decode(bytes);
-  return new TextDecoder('utf-8').decode(bytes);
-}
-
-function markDxf(bytes: ArrayBuffer, members: MemberRow[]): Blob {
-  const raw = new Uint8Array(bytes);
-  const binary = new TextDecoder('ascii').decode(raw.slice(0, 22)).startsWith('AutoCAD Binary DXF');
-  if (binary) {
-    const marked = appendSlabPanelMarksToBinaryDxf(raw, members);
-    const copy = new Uint8Array(marked.length); copy.set(marked);
-    return new Blob([copy.buffer], { type: 'application/dxf' });
-  }
-  const decoded = decodeDxf(bytes);
-  try { return new Blob([appendSlabPanelMarksToDxf(decoded, members)], { type: 'application/dxf' }); }
-  catch (error) {
-    const signature = Array.from(raw.slice(0, 16)).map((value) => value.toString(16).padStart(2, '0')).join(' ');
-    const preview = decoded.slice(0, 40).replace(/[^\x20-\x7e]/g, '.');
-    throw new Error(`${error instanceof Error ? error.message : 'Invalid DXF'} (size ${raw.length}, signature ${signature}, preview "${preview}")`);
-  }
 }
 
 export function ExtractPage() {
@@ -181,26 +154,17 @@ export function ExtractPage() {
     if (referenceFormat === 'pdf') {
       setCadExporting(true);
       try {
-        const geometry = slabReferenceGeometry(dwgs);
-        const source = s.sheets.find((sheet) => sheet.dwg === geometry) ?? s.sheets[0];
-        if (!source?.sourceBytes?.byteLength) throw new Error('Re-upload the original CAD drawing once to retain its full file data for PDF conversion.');
-        const isDxf = source.name.toLowerCase().endsWith('.dxf');
-        const signature = new TextDecoder('ascii').decode(source.sourceBytes.slice(0, 6));
-        if (!isDxf && !/^AC10/.test(signature)) throw new Error(`The retained CAD data is not a valid DWG (signature: ${signature || 'empty'}). Re-upload the original .dwg file.`);
         const notify = (text: string) => { s.setStatus(text); setReferenceNotice({ kind: 'working', text }); };
-        notify(`Preserving original CAD as DXF… ${(source.sourceBytes.byteLength / 1048576).toFixed(1)} MB`);
-        const original = new Blob([source.sourceBytes], { type: isDxf ? 'application/dxf' : 'application/acad' });
-        const preservedDxf = isDxf ? source.sourceBytes : await fetchConvertedFile(await convertCadFile(original, source.name, 'dxf', notify));
-        notify('Writing sequenced panel numbers into CAD model space…');
-        const markedDxf = markDxf(preservedDxf, s.members);
-        notify('Plotting marked CAD drawing to PDF…');
-        const pdfJob = await convertCadFile(markedDxf, `${filename}.dxf`, 'pdf', notify);
+        notify('Building the complete reference drawing with sequenced panel numbers…');
+        const fullReferenceDxf = new Blob([buildSlabReferenceDxf(dwgs, s.members)], { type: 'application/dxf' });
+        notify('Plotting the complete drawing extents to PDF…');
+        const pdfJob = await convertCadFile(fullReferenceDxf, `${filename}.dxf`, 'pdf', notify);
         const markedPdf = new Blob([await fetchConvertedFile(pdfJob)], { type: 'application/pdf' });
         if (markedPdf.size < 100 || await markedPdf.slice(0, 5).text() !== '%PDF-') throw new Error('Marked output is not a valid PDF');
         const ready = { url: URL.createObjectURL(markedPdf), filename: `${filename}.pdf` };
         setReferenceReady(ready);
         downloadBlob(markedPdf, `${filename}.pdf`, 'application/pdf');
-        s.setStatus(`Downloaded ${filename}.pdf — original CAD appearance preserved and panel numbers match Excel.`);
+        s.setStatus(`Downloaded ${filename}.pdf — complete extracted drawing and panel numbers match Excel.`);
         setReferenceNotice({ kind: 'success', text: `Downloaded ${filename}.pdf — check your Downloads folder.` });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';

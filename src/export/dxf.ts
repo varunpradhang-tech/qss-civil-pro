@@ -59,8 +59,13 @@ export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[
   let entities = '';
   if (dwg) {
     for (const s of dwg.segments) entities += line(s, cleanLayer(s.layer));
-    for (const p of dwg.polylines) for (let i = 0; i < p.pts.length - 1; i++)
-      entities += line({ layer: p.layer, a: p.pts[i], b: p.pts[i + 1] }, cleanLayer(p.layer));
+    for (const p of dwg.polylines) {
+      for (let i = 0; i < p.pts.length - 1; i++) entities += line({ layer: p.layer, a: p.pts[i], b: p.pts[i + 1] }, cleanLayer(p.layer));
+      if (p.closed && p.pts.length > 2) entities += line({ layer: p.layer, a: p.pts[p.pts.length - 1], b: p.pts[0] }, cleanLayer(p.layer));
+    }
+    const drawingSpan = Math.max(dwg.extents.max.x - dwg.extents.min.x, dwg.extents.max.y - dwg.extents.min.y);
+    const sourceTextHeight = Math.min(350, Math.max(80, drawingSpan / 700));
+    for (const t of dwg.texts) entities += centredText(t.pos, t.text.replace(/[\r\n]+/g, ' '), sourceTextHeight);
   }
   const span = dwg ? Math.max(dwg.extents.max.x - dwg.extents.min.x, dwg.extents.max.y - dwg.extents.min.y) : 50000;
   const radius = Math.min(750, Math.max(250, span / 180));
@@ -80,7 +85,11 @@ export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[
     entities += line({ layer: 'QSS_PANEL_MARK', a: { x: c.x, y: c.y - radius * 0.75 }, b: { x: c.x, y: c.y + radius * 0.75 } }, 'QSS_PANEL_MARK', 2);
     entities += centredText({ x: c.x, y: c.y + radius * 0.15 }, panelNo, radius * 0.9);
   }
-  return pair(0, 'SECTION') + pair(2, 'HEADER') + pair(9, '$INSUNITS') + pair(70, 4) + pair(0, 'ENDSEC')
+  const extents = dwg
+    ? pair(9, '$EXTMIN') + pair(10, dwg.extents.min.x) + pair(20, dwg.extents.min.y) + pair(30, 0)
+      + pair(9, '$EXTMAX') + pair(10, dwg.extents.max.x) + pair(20, dwg.extents.max.y) + pair(30, 0)
+    : '';
+  return pair(0, 'SECTION') + pair(2, 'HEADER') + pair(9, '$INSUNITS') + pair(70, 4) + extents + pair(0, 'ENDSEC')
     + pair(0, 'SECTION') + pair(2, 'ENTITIES') + entities + pair(0, 'ENDSEC') + pair(0, 'EOF');
 }
 

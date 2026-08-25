@@ -80,12 +80,17 @@ export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[
     if (!Number.isFinite(m.cadX) || !Number.isFinite(m.cadY)) continue;
     const c = { x: m.cadX as number, y: m.cadY as number };
     const panelNo = m.member.match(/^P\d+/i)?.[0] ?? m.member;
+    if (m.cadPolygon?.length && m.cadPolygon.length >= 3) {
+      for (let i = 0; i < m.cadPolygon.length; i++) entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: m.cadPolygon[i], b: m.cadPolygon[(i + 1) % m.cadPolygon.length] }, 'QSS_PANEL_BOUNDARY', 3);
+    }
     if ([m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
       const x0 = m.cadX0 as number, y0 = m.cadY0 as number, x1 = m.cadX1 as number, y1 = m.cadY1 as number;
-      entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x0, y: y0 }, b: { x: x1, y: y0 } }, 'QSS_PANEL_BOUNDARY', 3);
-      entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x1, y: y0 }, b: { x: x1, y: y1 } }, 'QSS_PANEL_BOUNDARY', 3);
-      entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x1, y: y1 }, b: { x: x0, y: y1 } }, 'QSS_PANEL_BOUNDARY', 3);
-      entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x0, y: y1 }, b: { x: x0, y: y0 } }, 'QSS_PANEL_BOUNDARY', 3);
+      if (!m.cadPolygon?.length) {
+        entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x0, y: y0 }, b: { x: x1, y: y0 } }, 'QSS_PANEL_BOUNDARY', 3);
+        entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x1, y: y0 }, b: { x: x1, y: y1 } }, 'QSS_PANEL_BOUNDARY', 3);
+        entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x1, y: y1 }, b: { x: x0, y: y1 } }, 'QSS_PANEL_BOUNDARY', 3);
+        entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x0, y: y1 }, b: { x: x0, y: y0 } }, 'QSS_PANEL_BOUNDARY', 3);
+      }
       const pw = Math.abs(x1 - x0), ph = Math.abs(y1 - y0);
       const tick = Math.max(35, Math.min(120, Math.min(pw, ph) * 0.045));
       const textHeight = Math.max(55, Math.min(160, Math.min(pw, ph) * 0.065));

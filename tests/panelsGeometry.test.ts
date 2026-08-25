@@ -79,4 +79,18 @@ describe('unmarked slab geometry', () => {
     balcony.texts = [{ layer: 'NOTE', text: 'C', pos: { x: 1200, y: 3000 } }];
     expect(autoProposePanels(balcony)).toMatchObject([{ label: 'BALCONY', lengthMm: 2500, breadthMm: 6000 }]);
   });
+
+  it('uses true polygon area for a triangular slab with one dashed and two continuous edges', () => {
+    const triangle = drawing();
+    triangle.segments = [
+      { layer: 'BEAM', lineType: 'DASHED', a: { x: 0, y: 0 }, b: { x: 0, y: 4000 } },
+      { layer: 'EDGE', lineType: 'CONTINUOUS', a: { x: 0, y: 0 }, b: { x: 3000, y: 2000 } },
+      { layer: 'EDGE', lineType: 'CONTINUOUS', a: { x: 0, y: 4000 }, b: { x: 3000, y: 2000 } },
+    ];
+    triangle.texts = [];
+    const [panel] = autoProposePanels(triangle);
+    expect(panel).toMatchObject({ label: 'BALCONY-TRI', grossAreaM2: 6 });
+    const [member] = extractMembers(triangle, 'slab');
+    expect(member.netArea).toBe(6);
+  });
 });

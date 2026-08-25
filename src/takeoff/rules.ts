@@ -29,6 +29,7 @@ export interface MemberRow {
   spacing: number; // mm (steel mesh)
   nos: number;
   openings: number; // m² (slab/wall)
+  netArea?: number; // m², exact polygonal slab area when not rectangular
   needsReview: boolean;
   reviewReason?: string;
   measurementSource?: 'marked dimension' | 'drawing geometry';
@@ -38,7 +39,10 @@ export interface MemberRow {
   cadY0?: number;
   cadX1?: number;
   cadY1?: number;
+  cadPolygon?: PtLike[];
 }
+
+interface PtLike { x: number; y: number; }
 
 export function emptyRow(id: string, floor = 'Basement'): MemberRow {
   return {
@@ -96,8 +100,8 @@ export const RULES: Record<string, QuantityRule> = {
   beam_concrete: { key: 'beam_concrete', label: 'Beam concrete', unit: 'm3', calculate: (r, cap) => beamConcreteBreakdown(r, cap).net, note: 'Beam concrete in m³. With caps excluded, support/cap overlap is deducted from beam concrete.' },
   beam_shuttering: { key: 'beam_shuttering', label: 'Beam shuttering', unit: 'm2', calculate: (r, cap) => beamShutteringBreakdown(r, cap).total, note: 'Beam shuttering = length × width at bottom + length × exposed depth for both sides. Slab thickness is deducted only on sides marked as inner.' },
   beam_steel: { key: 'beam_steel', label: 'Beam steel BBS', unit: 'kg', calculate: (r) => r.length * r.nos * steelUnitWeight(r.dia), note: 'Beam reinforcement BBS by bar mark, diameter, cutting length, number of bars, unit weight d²/162 kg/m.' },
-  slab_concrete: { key: 'slab_concrete', label: 'Slab concrete', unit: 'm3', calculate: (r) => Math.max(r.length * r.breadth - r.openings, 0) * r.height * r.nos, note: 'Slab concrete = net slab area after cutout/opening deductions × thickness (IS 1200).' },
-  slab_shuttering: { key: 'slab_shuttering', label: 'Slab shuttering', unit: 'm2', calculate: (r) => Math.max(r.length * r.breadth - r.openings, 0) * r.nos, note: 'Slab soffit shuttering = net slab area after cutout/opening deductions (IS 1200).' },
+  slab_concrete: { key: 'slab_concrete', label: 'Slab concrete', unit: 'm3', calculate: (r) => Math.max(r.netArea ?? (r.length * r.breadth - r.openings), 0) * r.height * r.nos, note: 'Slab concrete = net slab area after cutout/opening deductions × thickness (IS 1200).' },
+  slab_shuttering: { key: 'slab_shuttering', label: 'Slab shuttering', unit: 'm2', calculate: (r) => Math.max(r.netArea ?? (r.length * r.breadth - r.openings), 0) * r.nos, note: 'Slab soffit shuttering = net slab area after cutout/opening deductions (IS 1200).' },
   slab_steel: { key: 'slab_steel', label: 'Slab steel', unit: 'kg', calculate: (r) => meshSteel(r), note: 'Slab reinforcement estimated from mesh spacing × diameter (d²/162).' },
   steel_bbs: { key: 'steel_bbs', label: 'Steel BBS', unit: 'kg', calculate: (r) => r.length * r.nos * steelUnitWeight(r.dia), note: 'Reinforcement BBS: length × nos × d²/162 kg/m.' },
   raft_concrete: { key: 'raft_concrete', label: 'Raft concrete', unit: 'm3', calculate: (r) => r.length * r.breadth * r.height * r.nos, note: 'Raft concrete measured in m³.' },

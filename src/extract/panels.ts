@@ -12,6 +12,8 @@ export interface PanelProposalBox {
   thicknessMm: number; // slab thickness from the nearest "NNN THK." text (0 = not found → use default)
   confident: boolean;
   duplicate: boolean; // overlaps a stronger panel → excluded from total, flagged for review
+  polygon?: Pt[];
+  grossAreaM2?: number;
 }
 
 interface ThkText { pos: Pt; mm: number; }
@@ -117,12 +119,13 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const box = { x0: left.x, y0: below.y, x1: right.x, y1: above.y };
     out.push({ label: L.text, box, lengthMm: sL.v, breadthMm: sB.v, openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: sL.ok && sB.ok, duplicate: false });
   }
+  out.push(...detectTriangularSlabs(allSegs, thicknesses));
 
   // HOLD / HOLD AREA is an explicit instruction that the containing bay is
   // outside the current measurable scope. Exclude it before deductions,
   // numbering, Excel export, totals, and reference-file marking.
   const measurable = out.filter((panel) => {
-    const grossM2 = (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
+    const grossM2 = panel.grossAreaM2 ?? (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
     const plausibleBay = panel.lengthMm >= 300 && panel.breadthMm >= 300
       && panel.lengthMm <= 30_000 && panel.breadthMm <= 30_000
       && grossM2 <= 400;
@@ -140,7 +143,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
 // Distribute each cutout across the panels its box overlaps (by overlap area), so a void straddling a
 // beam between two bays is shared, not dumped on one small neighbour. Falls back to the nearest panel.
 function assignCutouts(panels: PanelProposalBox[], cutouts: Cutout[]): void {
-  const capOf = (p: PanelProposalBox) => (p.lengthMm / 1000) * (p.breadthMm / 1000);
+  const capOf = (p: PanelProposalBox) => p.grossAreaM2 ?? (p.lengthMm / 1000) * (p.breadthMm / 1000);
   for (const c of cutouts) {
     const overlaps = panels
       .map((p) => ({ p, ov: rectOverlap(c.box, p.box) }))
@@ -232,4 +235,29 @@ function pointToSegmentDistance(p: Pt, s: Segment): number {
   if (!d2) return Math.hypot(p.x - s.a.x, p.y - s.a.y);
   const t = Math.max(0, Math.min(1, ((p.x - s.a.x) * dx + (p.y - s.a.y) * dy) / d2));
   return Math.hypot(p.x - (s.a.x + t * dx), p.y - (s.a.y + t * dy));
+}
+
+function detectTriangularSlabs(segments: Segment[], thks: ThkText[]): PanelProposalBox[] {
+  const dashed = segments.filter((s) => /dash|hidden|center/i.test(s.lineType || ''));
+  const continuous = segments.filter((s) => !/dash|hidden|center/i.test(s.lineType || ''));
+  const tol = 250;
+  const near = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y) <= tol;
+  const joined = (p: Pt) => continuous.filter((s) => near(p, s.a) || near(p, s.b));
+  const other = (s: Segment, p: Pt) => near(p, s.a) ? s.b : s.a;
+  const found: PanelProposalBox[] = [];
+  for (const d of dashed) {
+    const da = joined(d.a), db = joined(d.b);
+    for (const sa of da) for (const sb of db) {
+      const apexA = other(sa, d.a), apexB = other(sb, d.b);
+      if (!near(apexA, apexB)) continue;
+      const polygon = [d.a, d.b, { x: (apexA.x + apexB.x) / 2, y: (apexA.y + apexB.y) / 2 }];
+      const areaM2 = Math.abs(shoelace(polygon)) / 1e6;
+      const box = bbox(polygon), width = box.x1 - box.x0, height = box.y1 - box.y0;
+      if (areaM2 < 0.1 || areaM2 > 150 || width < 300 || height < 300 || width > 30_000 || height > 30_000) continue;
+      const c = { x: polygon.reduce((sum, p) => sum + p.x, 0) / 3, y: polygon.reduce((sum, p) => sum + p.y, 0) / 3 };
+      if (found.some((p) => Math.hypot((p.box.x0 + p.box.x1) / 2 - c.x, (p.box.y0 + p.box.y1) / 2 - c.y) < 500)) continue;
+      found.push({ label: 'BALCONY-TRI', box, polygon, grossAreaM2: areaM2, lengthMm: width, breadthMm: height, openingM2: 0, thicknessMm: panelThickness(box, c, thks), confident: false, duplicate: false });
+    }
+  }
+  return found;
 }

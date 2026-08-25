@@ -29,6 +29,34 @@ describe('unmarked slab geometry', () => {
     expect(extractMembers([schedule, drawing()], 'slab')).toHaveLength(1);
   });
 
+  it('reads slab thickness by slab mark from a separately drawn schedule', () => {
+    const schedule = { ...drawing(), fileName: 'schedule.dwg', segments: [], dimensions: [], texts: [
+      { layer: 'TEXT', text: 'SLAB REINFORCEMENT SCHEDULE', pos: { x: 0, y: 5000 } },
+      { layer: 'BRAM NO.', text: 'S1A', pos: { x: 1000, y: 3000 } },
+      { layer: 'BRAM NO.', text: '150', pos: { x: 2000, y: 3000 } },
+    ] };
+    const [member] = extractMembers([drawing(), schedule], 'slab');
+    expect(member).toMatchObject({ height: 0.15, slabThickness: 0.15, needsReview: false });
+  });
+
+  it('uses the UNO general-note thickness only when the slab mark has no schedule row', () => {
+    const notes = { ...drawing(), fileName: 'general-notes.dwg', segments: [], texts: [
+      { layer: 'NOTES', text: 'ALL SLAB THICKNESS SHALL BE 160 mm THK. (U.N.O.)', pos: { x: 0, y: 0 } },
+    ] };
+    const [member] = extractMembers([drawing(), notes], 'slab');
+    expect(member).toMatchObject({ height: 0.16, slabThickness: 0.16, needsReview: false });
+  });
+
+  it('prefers a slab schedule row over the UNO general-note default', () => {
+    const references = { ...drawing(), fileName: 'references.dwg', segments: [], texts: [
+      { layer: 'TEXT', text: 'SLAB REINFORCEMENT SCHEDULE', pos: { x: 0, y: 5000 } },
+      { layer: 'BRAM NO.', text: 'S1A', pos: { x: 1000, y: 3000 } },
+      { layer: 'BRAM NO.', text: '150', pos: { x: 2000, y: 3000 } },
+      { layer: 'NOTES', text: 'ALL SLAB THICKNESS SHALL BE 175 mm THK. (U.N.O.)', pos: { x: 0, y: -5000 } },
+    ] };
+    expect(extractMembers([drawing(), references], 'slab')[0].height).toBe(0.15);
+  });
+
   it('accepts a slab code on a numeric consultant layer when enclosed by RCC geometry', () => {
     const numericLayer = { ...drawing(), texts: [{ layer: '4', text: 'S1', pos: { x: 2000, y: 1500 } }] };
     expect(autoProposePanels(numericLayer)).toMatchObject([{ label: 'S1', lengthMm: 4000, breadthMm: 3000 }]);

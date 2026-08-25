@@ -18,7 +18,7 @@ export function extractMembers(input: NormalizedDwg | NormalizedDwg[], workGroup
   seq = 1;
   const dwgs = Array.isArray(input) ? input : [input];
   const dwg = selectGeometrySheet(dwgs, workGroup);
-  if (workGroup === 'slab') return slabMembers(dwg, floor);
+  if (workGroup === 'slab') return slabMembers(dwg, floor, slabSchedule(dwgs), slabUnoThickness(dwgs));
   if (workGroup === 'beam') return beamMembers(dwg, floor, beamSchedule(dwgs), slabSchedule(dwgs));
   return []; // column/raft/wall/floor: start empty, user adds (auto-extraction not reliable on this data)
 }
@@ -73,11 +73,16 @@ function beamSchedule(dwgs: NormalizedDwg[]): Map<string, { widthMm: number; dep
 function slabSchedule(dwgs: NormalizedDwg[]): Map<string, number> {
   const schedule = new Map<string, number>();
   for (const dwg of dwgs) {
+    const titles = dwg.texts.filter((t) => /SLAB\s+(?:REINFORCEMENT\s+)?SCHEDULE/i.test(t.text));
     for (const label of dwg.texts) {
       const code = label.text.replace(/\s/g, '').toUpperCase();
-      if (!/^S\d+[A-Z]?$/.test(code) || !/table|schedule/i.test(label.layer)) continue;
+      if (!/^S\d+[A-Z]?$/.test(code)) continue;
+      const inScheduleRegion = /table|schedule/i.test(label.layer) || titles.some((title) =>
+        label.pos.x >= title.pos.x - 5000 && label.pos.x <= title.pos.x + 60000
+        && label.pos.y <= title.pos.y + 3000 && label.pos.y >= title.pos.y - 25000);
+      if (!inScheduleRegion) continue;
       const thickness = dwg.texts
-        .filter((t) => t.layer === label.layer && Math.abs(t.pos.y - label.pos.y) <= 100 && t.pos.x > label.pos.x + 200 && t.pos.x < label.pos.x + 3000 && /^\d{2,4}$/.test(t.text.trim()))
+        .filter((t) => Math.abs(t.pos.y - label.pos.y) <= 200 && t.pos.x > label.pos.x + 100 && t.pos.x < label.pos.x + 10000 && /^\d{2,4}$/.test(t.text.trim()))
         .sort((a, b) => a.pos.x - b.pos.x)
         .map((t) => Number(t.text.trim()))
         .find((n) => n >= 75 && n <= 500);
@@ -87,8 +92,30 @@ function slabSchedule(dwgs: NormalizedDwg[]): Map<string, number> {
   return schedule;
 }
 
+/** Read the drawing-wide default from a general note such as
+ * "ALL SLAB THICKNESS SHALL BE 150 mm THK. (U.N.O.)". */
+function slabUnoThickness(dwgs: NormalizedDwg[]): number | undefined {
+  const parse = (text: string) => {
+    const normalized = text.replace(/\\P|\r?\n/g, ' ').replace(/\s+/g, ' ');
+    if (!/ALL\s+SLAB\s+THICKNESS/i.test(normalized) || !/U\s*\.?\s*N\s*\.?\s*O/i.test(normalized)) return undefined;
+    const value = normalized.match(/ALL\s+SLAB\s+THICKNESS[\s\S]{0,100}?(\d{2,4})\s*(?:MM)?\s*(?:THK|THICK)/i)?.[1];
+    const thickness = value ? Number(value) : 0;
+    return thickness >= 75 && thickness <= 500 ? thickness : undefined;
+  };
+  for (const dwg of dwgs) {
+    for (const note of dwg.texts) {
+      const thickness = parse(note.text);
+      if (thickness) return thickness;
+    }
+    // Some CAD exports split one general note across several TEXT entities.
+    const thickness = parse(dwg.texts.map((t) => t.text).join(' '));
+    if (thickness) return thickness;
+  }
+  return undefined;
+}
+
 // --- slab: reuse the label-anchored panel proposer ---
-function slabMembers(dwg: NormalizedDwg, floor: string): MemberRow[] {
+function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, number>, unoThickness?: number): MemberRow[] {
   const panels = autoProposePanels(dwg);
   const heights = panels.map((p) => Math.max(p.box.y1 - p.box.y0, 0)).filter(Boolean).sort((a, b) => a - b);
   const rowTolerance = Math.max(500, (heights[Math.floor(heights.length / 2)] || 2000) * 0.35);
@@ -111,12 +138,20 @@ function slabMembers(dwg: NormalizedDwg, floor: string): MemberRow[] {
     r.cadY1 = p.box.y1;
     r.length = round3(p.lengthMm / 1000);
     r.breadth = round3(p.breadthMm / 1000);
-    r.height = round3((p.thicknessMm || 175) / 1000); // slab thickness → concrete depth
+    const slabCode = p.label?.replace(/\s/g, '').toUpperCase();
+    const thicknessMm = p.thicknessMm || (slabCode ? schedule.get(slabCode) : undefined) || unoThickness || 175;
+    const missingThickness = !p.thicknessMm && !(slabCode && schedule.has(slabCode)) && !unoThickness;
+    r.height = round3(thicknessMm / 1000); // slab thickness → concrete depth
     r.slabThickness = r.height;
     r.openings = round3(p.openingM2);
     r.nos = 1;
-    r.needsReview = !p.confident || p.duplicate;
-    r.reviewReason = p.duplicate ? 'overlaps a stronger panel' : !p.confident ? 'dimension/void uncertain' : undefined;
+    const reviewReasons = [
+      p.duplicate ? 'overlaps a stronger panel' : '',
+      !p.confident ? 'dimension/void uncertain' : '',
+      missingThickness ? 'no slab thickness found in panel, schedule, or UNO general note; using 175 mm fallback' : '',
+    ].filter(Boolean);
+    r.needsReview = reviewReasons.length > 0;
+    r.reviewReason = reviewReasons.length ? reviewReasons.join('; ') : undefined;
     return r;
   });
 }

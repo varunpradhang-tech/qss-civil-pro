@@ -11,6 +11,7 @@ import { downloadBlob } from '../export/download.js';
 import { membersToCsv } from '../export/mb.js';
 import { buildMbXlsx } from '../export/xlsx.js';
 import { buildSlabReferenceDxf } from '../export/dxf.js';
+import { buildSlabReferencePdf } from '../export/pdf.js';
 import { useUI, displayQuantity } from '../state/ui.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { PremiumBadge } from '../components/PremiumBadge.js';
@@ -20,50 +21,6 @@ const REQUIREMENTS = [
   'X-axis grid-to-grid distances are dimensioned',
   'Y-axis grid-to-grid distances are dimensioned',
 ];
-
-async function convertCadFile(file: Blob, filename: string, outputFormat: 'dxf' | 'pdf', progress: (message: string) => void) {
-  const create = await fetch('/.netlify/functions/cad-pdf-job', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename, outputFormat }) });
-  const job = await create.json();
-  if (!create.ok) throw new Error(job.error || `Could not start CAD-to-${outputFormat.toUpperCase()} conversion`);
-  const form = new FormData();
-  for (const [key, value] of Object.entries(job.form.parameters)) form.append(key, String(value));
-  form.append('file', file, filename); // CloudConvert requires file last
-  const upload = await fetch(job.form.url, { method: 'POST', body: form });
-  if (!upload.ok) throw new Error(`CAD upload failed before ${outputFormat.toUpperCase()} conversion`);
-  for (let attempt = 0; attempt < 120; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    if (attempt > 0 && attempt % 5 === 0) progress(`${outputFormat.toUpperCase()} conversion… ${attempt * 2} seconds elapsed`);
-    const poll = await fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}`);
-    const state = await poll.json();
-    if (!poll.ok || state.status === 'error') throw new Error(state.error || `CAD-to-${outputFormat.toUpperCase()} conversion failed`);
-    if (state.url) return { id: job.id as string, url: state.url as string };
-  }
-  throw new Error(`CAD-to-${outputFormat.toUpperCase()} conversion timed out`);
-}
-
-async function fetchConvertedFile(job: { id: string; url: string }): Promise<ArrayBuffer> {
-  // Large CAD files cannot be returned through a Netlify Function because the
-  // base64-encoded response can exceed the platform response-size limit. Try
-  // CloudConvert's signed URL first, then retain the proxy as a fallback for
-  // storage providers that do not permit browser downloads.
-  try {
-    const direct = await fetch(job.url);
-    if (direct.ok) {
-      const bytes = await direct.arrayBuffer();
-      const head = new TextDecoder('ascii').decode(new Uint8Array(bytes, 0, Math.min(bytes.byteLength, 32))).trimStart().toLowerCase();
-      const looksLikeHtml = head.startsWith('<!doctype') || head.startsWith('<html');
-      if (bytes.byteLength > 0 && !looksLikeHtml) return bytes;
-    }
-  } catch {
-    // Fall through to the same-origin proxy below.
-  }
-  const res = await fetch(`/.netlify/functions/cad-pdf-job?id=${encodeURIComponent(job.id)}&download=1`);
-  if (!res.ok) {
-    const problem = await res.json().catch(() => ({ error: 'Converted file download failed' }));
-    throw new Error(problem.error || 'Converted file download failed');
-  }
-  return res.arrayBuffer();
-}
 
 export function ExtractPage() {
   const s = useStore();
@@ -154,17 +111,13 @@ export function ExtractPage() {
     if (referenceFormat === 'pdf') {
       setCadExporting(true);
       try {
-        const notify = (text: string) => { s.setStatus(text); setReferenceNotice({ kind: 'working', text }); };
-        notify('Building the complete reference drawing with sequenced panel numbers…');
-        const fullReferenceDxf = new Blob([buildSlabReferenceDxf(dwgs, s.members)], { type: 'application/dxf' });
-        notify('Plotting the complete drawing extents to PDF…');
-        const pdfJob = await convertCadFile(fullReferenceDxf, `${filename}.dxf`, 'pdf', notify);
-        const markedPdf = new Blob([await fetchConvertedFile(pdfJob)], { type: 'application/pdf' });
+        setReferenceNotice({ kind: 'working', text: 'Building complete reference PDF locally — no conversion credits used…' });
+        const markedPdf = buildSlabReferencePdf(dwgs, s.members);
         if (markedPdf.size < 100 || await markedPdf.slice(0, 5).text() !== '%PDF-') throw new Error('Marked output is not a valid PDF');
         const ready = { url: URL.createObjectURL(markedPdf), filename: `${filename}.pdf` };
         setReferenceReady(ready);
         downloadBlob(markedPdf, `${filename}.pdf`, 'application/pdf');
-        s.setStatus(`Downloaded ${filename}.pdf — complete extracted drawing and panel numbers match Excel.`);
+        s.setStatus(`Downloaded ${filename}.pdf locally — no CloudConvert credits used; panel numbers match Excel.`);
         setReferenceNotice({ kind: 'success', text: `Downloaded ${filename}.pdf — check your Downloads folder.` });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
@@ -407,7 +360,7 @@ export function ExtractPage() {
           {showDownloads && (
             <div className="download-actions">
               <button className="primary-button download-button" type="button" onClick={exportXlsx}><FileSpreadsheet size={15} /> Excel MB sheet</button>
-              {(s.quantityKey === 'slab_shuttering' || s.quantityKey === 'slab_concrete') && <><select aria-label="Reference file format" value={referenceFormat} onChange={(e) => setReferenceFormat(e.target.value as 'dxf' | 'dwg' | 'pdf')} disabled={cadExporting}><option value="dxf">DXF — instant</option><option value="dwg">DWG — cloud conversion</option><option value="pdf">PDF — original CAD conversion</option></select><button className="ghost-button download-button" type="button" onClick={exportReferenceCad} disabled={cadExporting}>{cadExporting ? <Loader2 size={15} className="spin" /> : <Download size={15} />} {cadExporting ? `Creating ${referenceFormat.toUpperCase()}…` : `Reference ${referenceFormat.toUpperCase()}`}</button></>}
+              {(s.quantityKey === 'slab_shuttering' || s.quantityKey === 'slab_concrete') && <><select aria-label="Reference file format" value={referenceFormat} onChange={(e) => setReferenceFormat(e.target.value as 'dxf' | 'dwg' | 'pdf')} disabled={cadExporting}><option value="dxf">DXF — instant</option><option value="dwg">DWG — cloud conversion</option><option value="pdf">PDF — instant, no credits</option></select><button className="ghost-button download-button" type="button" onClick={exportReferenceCad} disabled={cadExporting}>{cadExporting ? <Loader2 size={15} className="spin" /> : <Download size={15} />} {cadExporting ? `Creating ${referenceFormat.toUpperCase()}…` : `Reference ${referenceFormat.toUpperCase()}`}</button></>}
               {referenceNotice && <span role="status" style={{ color: referenceNotice.kind === 'error' ? '#b91c1c' : referenceNotice.kind === 'success' ? '#15803d' : undefined, maxWidth: 360 }}>{referenceNotice.text}</span>}
               {referenceReady && <a className="ghost-button download-button" href={referenceReady.url} download={referenceReady.filename}><Download size={15} /> Download PDF now</a>}
             </div>

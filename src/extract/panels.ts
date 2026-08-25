@@ -108,7 +108,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     });
     let { above, below, right, left } = bounds(H, V);
     const nearbyTos = tosNotes.some((t) => Math.hypot(t.pos.x - c.x, t.pos.y - c.y) <= 20_000);
-    if (nearbyTos || L.balconyEvidence) {
+    const nearbySlabCodes = slabLabels.filter((other) => Math.hypot(other.pos.x - c.x, other.pos.y - c.y) <= 20_000).length;
+    if (nearbyTos || L.balconyEvidence || nearbySlabCodes >= 2) {
       const alternate = bounds(allH, allV);
       const area = (b: ReturnType<typeof bounds>) => b.above && b.below && b.right && b.left
         ? (b.above.y - b.below.y) * (b.right.x - b.left.x) : Number.POSITIVE_INFINITY;
@@ -142,9 +143,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const held = holdNotes.some((note) => note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
       && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
     const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+    const explicitSlabCode = /^S\d+[A-Z]?$/i.test(panel.label || '');
     const inSectionDetail = sectionNotes.some((note) => Math.abs(note.pos.x - centre.x) <= 30_000
       && centre.y >= note.pos.y - 2500 && centre.y <= note.pos.y + 15_000);
-    const beyondOuterBeamFace = isBeyondContinuousOuterFace(centre, outerFaces);
+    const beyondOuterBeamFace = !explicitSlabCode && isBeyondContinuousOuterFace(centre, outerFaces);
     return plausibleBay && !held && !inSectionDetail && !beyondOuterBeamFace;
   });
   resolveOrthogonalStripOverlaps(measurable);

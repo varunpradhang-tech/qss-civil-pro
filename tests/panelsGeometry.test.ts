@@ -144,9 +144,27 @@ describe('unmarked slab geometry', () => {
       { layer: 'BEAM', lineType: 'CONTINUOUS', a: { x: 4000, y: 0 }, b: { x: 4000, y: 3000 } },
       { layer: 'BEAM', lineType: 'DASHED', a: { x: 3700, y: 0 }, b: { x: 3700, y: 3000 } },
     );
-    outer.texts = [{ layer: 'SLABS NO', text: 'S1', pos: { x: 2000, y: 1500 } }];
+    outer.texts = [{ layer: 'NOTE', text: 'C', pos: { x: 2000, y: 1500 } }];
     expect(autoProposePanels(outer)).toHaveLength(1);
-    outer.texts = [{ layer: 'SLABS NO', text: 'S1', pos: { x: 5000, y: 1500 } }];
+    outer.texts = [{ layer: 'NOTE', text: 'C', pos: { x: 5000, y: 1500 } }];
     expect(autoProposePanels(outer)).toHaveLength(0);
+  });
+
+  it('detects a corridor with repeated slab codes enclosed on nonstandard layers', () => {
+    const corridor = drawing();
+    corridor.segments = [
+      { layer: '17', a: { x: 0, y: 0 }, b: { x: 12000, y: 0 } },
+      { layer: '17', a: { x: 0, y: 1800 }, b: { x: 12000, y: 1800 } },
+      { layer: '5', a: { x: 0, y: 0 }, b: { x: 0, y: 1800 } },
+      { layer: '5', a: { x: 4000, y: 0 }, b: { x: 4000, y: 1800 } },
+      { layer: '5', a: { x: 8000, y: 0 }, b: { x: 8000, y: 1800 } },
+      { layer: '5', a: { x: 12000, y: 0 }, b: { x: 12000, y: 1800 } },
+    ];
+    corridor.texts = [
+      { layer: '4', text: 'S1', pos: { x: 2000, y: 900 } },
+      { layer: '4', text: 'S2', pos: { x: 6000, y: 900 } },
+      { layer: '4', text: 'S3', pos: { x: 10000, y: 900 } },
+    ];
+    expect(autoProposePanels(corridor)).toHaveLength(3);
   });
 });

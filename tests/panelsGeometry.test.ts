@@ -167,4 +167,34 @@ describe('unmarked slab geometry', () => {
     ];
     expect(autoProposePanels(corridor)).toHaveLength(3);
   });
+
+  it('excludes slab-code rows located under a slab reinforcement schedule title', () => {
+    const schedule = drawing();
+    schedule.texts = [
+      { layer: 'TEXT', text: 'SLAB REINFORCEMENT SCHEDULE', pos: { x: 0, y: 5000 } },
+      { layer: 'BRAM NO.', text: 'S1', pos: { x: 2000, y: 1500 } },
+    ];
+    expect(autoProposePanels(schedule)).toHaveLength(0);
+  });
+
+  it('recognizes consultant section titles written as SECTION:-10-10', () => {
+    const section = drawing();
+    section.texts = [
+      { layer: 'TEXT 2', text: 'SECTION:-10-10', pos: { x: 2000, y: -500 } },
+      { layer: '4', text: 'S1', pos: { x: 2000, y: 1500 } },
+    ];
+    expect(autoProposePanels(section)).toHaveLength(0);
+  });
+
+  it('detects a closed cantilever strip from dashed inner and continuous outer edges without a label', () => {
+    const cantilever = drawing();
+    cantilever.texts = [];
+    cantilever.segments = [
+      { layer: 'EDGE', lineType: 'CONTINUOUS', a: { x: 0, y: 0 }, b: { x: 6000, y: 0 } },
+      { layer: 'BEAM', lineType: 'DASHED', a: { x: 0, y: 1500 }, b: { x: 6000, y: 1500 } },
+      { layer: 'EDGE', lineType: 'CONTINUOUS', a: { x: 0, y: 0 }, b: { x: 0, y: 1500 } },
+      { layer: 'EDGE', lineType: 'CONTINUOUS', a: { x: 6000, y: 0 }, b: { x: 6000, y: 1500 } },
+    ];
+    expect(autoProposePanels(cantilever)).toMatchObject([{ label: 'CANTILEVER', lengthMm: 6000, breadthMm: 1500 }]);
+  });
 });

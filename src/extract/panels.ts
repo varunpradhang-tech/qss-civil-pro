@@ -87,7 +87,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const thicknesses = extractThicknesses(dwg);
   const holdNotes = dwg.texts.filter((t) => /HOLD/i.test(t.text.replace(/\s+/g, '')));
   const tosNotes = dwg.texts.filter((t) => /T\s*\.?\s*O\s*\.?\s*S\.?|TOP\s+OF\s+SLAB/i.test(t.text));
-  const sectionNotes = dwg.texts.filter((t) => /\b(?:SECTION|SEC\.)\s*[-:]?\s*\d+\s*[-–]\s*\d+/i.test(t.text));
+  const sectionNotes = dwg.texts.filter((t) => /\b(?:SECTION|SEC\.)\s*[:\-–]*\s*\d+\s*[-–]\s*\d+/i.test(t.text));
+  const scheduleNotes = dwg.texts.filter((t) => /\b(?:SLAB\s+)?(?:REINFORCEMENT\s+)?SCHEDULE\b/i.test(t.text));
   const outerFaces = continuousOuterFaces(allSegs);
 
   const snap = (val: number, opts: number[]) => {
@@ -131,6 +132,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     out.push({ label: L.text, box, lengthMm: sL.v, breadthMm: sB.v, openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: sL.ok && sB.ok, duplicate: false });
   }
   out.push(...detectTriangularSlabs(allSegs, thicknesses));
+  out.push(...detectCantileverStrips(allSegs, thicknesses));
 
   // HOLD / HOLD AREA is an explicit instruction that the containing bay is
   // outside the current measurable scope. Exclude it before deductions,
@@ -138,16 +140,20 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const measurable = out.filter((panel) => {
     const grossM2 = panel.grossAreaM2 ?? (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
     const plausibleBay = panel.lengthMm >= 300 && panel.breadthMm >= 300
-      && panel.lengthMm <= 30_000 && panel.breadthMm <= 30_000
-      && grossM2 <= 400;
+      && panel.lengthMm <= 15_000 && panel.breadthMm <= 15_000
+      && grossM2 <= 150;
     const held = holdNotes.some((note) => note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
       && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
     const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
     const explicitSlabCode = /^S\d+[A-Z]?$/i.test(panel.label || '');
     const inSectionDetail = sectionNotes.some((note) => Math.abs(note.pos.x - centre.x) <= 30_000
       && centre.y >= note.pos.y - 2500 && centre.y <= note.pos.y + 15_000);
+    // Schedule tables in real consultant files often put their S1/S2 rows on
+    // arbitrary layers. Exclude the table region by its title and position.
+    const inScheduleTable = scheduleNotes.some((note) => Math.abs(note.pos.x - centre.x) <= 60_000
+      && centre.y >= note.pos.y - 25_000 && centre.y <= note.pos.y + 3000);
     const beyondOuterBeamFace = !explicitSlabCode && isBeyondContinuousOuterFace(centre, outerFaces);
-    return plausibleBay && !held && !inSectionDetail && !beyondOuterBeamFace;
+    return plausibleBay && !held && !inSectionDetail && !inScheduleTable && !beyondOuterBeamFace;
   });
   resolveOrthogonalStripOverlaps(measurable);
   assignCutouts(measurable, cutouts); // contain-or-nearest panel, per QSS-SLAB-004
@@ -358,4 +364,42 @@ function detectTriangularSlabs(segments: Segment[], thks: ThkText[]): PanelPropo
     }
   }
   return found;
+}
+
+/** Rectangular cantilever between a dashed slab-facing line and one continuous outside edge. */
+function detectCantileverStrips(segments: Segment[], thks: ThkText[]): PanelProposalBox[] {
+  const dashed = segments.filter((s) => /dash|hidden|center/i.test(s.lineType || ''));
+  const continuous = segments.filter((s) => !/dash|hidden|center/i.test(s.lineType || ''));
+  const out: PanelProposalBox[] = [];
+  const covers = (coord: number, lo: number, hi: number, horizontal: boolean) => continuous.some((s) => {
+    const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
+    const perpendicular = horizontal ? Math.abs(dy) >= Math.abs(dx) * 4 : Math.abs(dx) >= Math.abs(dy) * 4;
+    if (!perpendicular) return false;
+    const fixed = horizontal ? (s.a.x + s.b.x) / 2 : (s.a.y + s.b.y) / 2;
+    const sLo = horizontal ? Math.min(s.a.y, s.b.y) : Math.min(s.a.x, s.b.x);
+    const sHi = horizontal ? Math.max(s.a.y, s.b.y) : Math.max(s.a.x, s.b.x);
+    return Math.abs(fixed - coord) <= ALIGN_TOL && sLo <= lo + ALIGN_TOL && sHi >= hi - ALIGN_TOL;
+  });
+  for (const dash of dashed) for (const solid of continuous) {
+    const ddx = dash.b.x - dash.a.x, ddy = dash.b.y - dash.a.y;
+    const sdx = solid.b.x - solid.a.x, sdy = solid.b.y - solid.a.y;
+    const horizontal = Math.abs(ddx) >= Math.abs(ddy) * 4 && Math.abs(sdx) >= Math.abs(sdy) * 4;
+    const vertical = Math.abs(ddy) >= Math.abs(ddx) * 4 && Math.abs(sdy) >= Math.abs(sdx) * 4;
+    if (!horizontal && !vertical) continue;
+    const dashCoord = horizontal ? (dash.a.y + dash.b.y) / 2 : (dash.a.x + dash.b.x) / 2;
+    const solidCoord = horizontal ? (solid.a.y + solid.b.y) / 2 : (solid.a.x + solid.b.x) / 2;
+    const width = Math.abs(dashCoord - solidCoord);
+    if (width < 300 || width > 5000) continue;
+    const lo = Math.max(horizontal ? Math.min(dash.a.x, dash.b.x) : Math.min(dash.a.y, dash.b.y), horizontal ? Math.min(solid.a.x, solid.b.x) : Math.min(solid.a.y, solid.b.y));
+    const hi = Math.min(horizontal ? Math.max(dash.a.x, dash.b.x) : Math.max(dash.a.y, dash.b.y), horizontal ? Math.max(solid.a.x, solid.b.x) : Math.max(solid.a.y, solid.b.y));
+    const run = hi - lo;
+    if (run < 600 || run > 15_000 || !covers(lo, Math.min(dashCoord, solidCoord), Math.max(dashCoord, solidCoord), horizontal) || !covers(hi, Math.min(dashCoord, solidCoord), Math.max(dashCoord, solidCoord), horizontal)) continue;
+    const box = horizontal
+      ? { x0: lo, y0: Math.min(dashCoord, solidCoord), x1: hi, y1: Math.max(dashCoord, solidCoord) }
+      : { x0: Math.min(dashCoord, solidCoord), y0: lo, x1: Math.max(dashCoord, solidCoord), y1: hi };
+    const c = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
+    if (out.some((p) => Math.hypot((p.box.x0 + p.box.x1) / 2 - c.x, (p.box.y0 + p.box.y1) / 2 - c.y) < 500)) continue;
+    out.push({ label: 'CANTILEVER', box, lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0, openingM2: 0, thicknessMm: panelThickness(box, c, thks), confident: false, duplicate: false });
+  }
+  return out;
 }

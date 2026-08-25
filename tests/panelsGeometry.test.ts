@@ -128,4 +128,25 @@ describe('unmarked slab geometry', () => {
     const vertical = panels.find((p) => p.box.x1 - p.box.x0 < p.box.y1 - p.box.y0);
     expect(vertical?.breadthMm).toBe(5000);
   });
+
+  it('never measures geometry belonging to a labelled section detail', () => {
+    const section = drawing();
+    section.texts = [
+      { layer: 'SLABS NO', text: 'S1', pos: { x: 2000, y: 1500 } },
+      { layer: 'TITLE', text: 'SECTION-10-10', pos: { x: 2000, y: -500 } },
+    ];
+    expect(autoProposePanels(section)).toHaveLength(0);
+  });
+
+  it('rejects slab beyond a continuous outer beam face and keeps the dashed side', () => {
+    const outer = drawing();
+    outer.segments.push(
+      { layer: 'BEAM', lineType: 'CONTINUOUS', a: { x: 4000, y: 0 }, b: { x: 4000, y: 3000 } },
+      { layer: 'BEAM', lineType: 'DASHED', a: { x: 3700, y: 0 }, b: { x: 3700, y: 3000 } },
+    );
+    outer.texts = [{ layer: 'SLABS NO', text: 'S1', pos: { x: 2000, y: 1500 } }];
+    expect(autoProposePanels(outer)).toHaveLength(1);
+    outer.texts = [{ layer: 'SLABS NO', text: 'S1', pos: { x: 5000, y: 1500 } }];
+    expect(autoProposePanels(outer)).toHaveLength(0);
+  });
 });

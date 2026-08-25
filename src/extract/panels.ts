@@ -87,6 +87,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const thicknesses = extractThicknesses(dwg);
   const holdNotes = dwg.texts.filter((t) => /HOLD/i.test(t.text.replace(/\s+/g, '')));
   const tosNotes = dwg.texts.filter((t) => /T\s*\.?\s*O\s*\.?\s*S\.?|TOP\s+OF\s+SLAB/i.test(t.text));
+  const sectionNotes = dwg.texts.filter((t) => /\b(?:SECTION|SEC\.)\s*[-:]?\s*\d+\s*[-–]\s*\d+/i.test(t.text));
+  const outerFaces = continuousOuterFaces(allSegs);
 
   const snap = (val: number, opts: number[]) => {
     if (!opts.length) return { v: val, ok: true }; // unmarked drawing: geometry is the source
@@ -139,7 +141,11 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       && grossM2 <= 400;
     const held = holdNotes.some((note) => note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
       && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
-    return plausibleBay && !held;
+    const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+    const inSectionDetail = sectionNotes.some((note) => Math.abs(note.pos.x - centre.x) <= 30_000
+      && centre.y >= note.pos.y - 2500 && centre.y <= note.pos.y + 15_000);
+    const beyondOuterBeamFace = isBeyondContinuousOuterFace(centre, outerFaces);
+    return plausibleBay && !held && !inSectionDetail && !beyondOuterBeamFace;
   });
   resolveOrthogonalStripOverlaps(measurable);
   assignCutouts(measurable, cutouts); // contain-or-nearest panel, per QSS-SLAB-004
@@ -269,6 +275,62 @@ function pointToSegmentDistance(p: Pt, s: Segment): number {
   if (!d2) return Math.hypot(p.x - s.a.x, p.y - s.a.y);
   const t = Math.max(0, Math.min(1, ((p.x - s.a.x) * dx + (p.y - s.a.y) * dy) / d2));
   return Math.hypot(p.x - (s.a.x + t * dx), p.y - (s.a.y + t * dy));
+}
+
+interface OuterFace { horizontal: boolean; coord: number; slabSide: number; lo: number; hi: number; }
+/** Pair continuous beam faces with nearby dashed faces once per drawing. */
+function continuousOuterFaces(segments: Segment[]): OuterFace[] {
+  const dashed = segments.filter((s) => /dash|hidden|center/i.test(s.lineType || ''));
+  const continuous = segments.filter((s) => !/dash|hidden|center/i.test(s.lineType || ''));
+  const bucketSize = 1500;
+  const hBuckets = new Map<number, Segment[]>(), vBuckets = new Map<number, Segment[]>();
+  for (const dash of dashed) {
+    const dx = dash.b.x - dash.a.x, dy = dash.b.y - dash.a.y;
+    const horizontal = Math.abs(dx) >= Math.abs(dy) * 4, vertical = Math.abs(dy) >= Math.abs(dx) * 4;
+    if (!horizontal && !vertical) continue;
+    const coord = horizontal ? (dash.a.y + dash.b.y) / 2 : (dash.a.x + dash.b.x) / 2;
+    const map = horizontal ? hBuckets : vBuckets, key = Math.floor(coord / bucketSize);
+    map.set(key, [...(map.get(key) || []), dash]);
+  }
+  const faces: OuterFace[] = [];
+  for (const solid of continuous) {
+    const sdx = solid.b.x - solid.a.x, sdy = solid.b.y - solid.a.y;
+    const horizontal = Math.abs(sdx) >= Math.abs(sdy) * 4;
+    const vertical = Math.abs(sdy) >= Math.abs(sdx) * 4;
+    if (!horizontal && !vertical) continue;
+    const coord = horizontal ? (solid.a.y + solid.b.y) / 2 : (solid.a.x + solid.b.x) / 2;
+    const map = horizontal ? hBuckets : vBuckets, key = Math.floor(coord / bucketSize);
+    const nearby = [key - 1, key, key + 1].flatMap((k) => map.get(k) || []);
+    for (const dash of nearby) {
+      const ddx = dash.b.x - dash.a.x, ddy = dash.b.y - dash.a.y;
+      if (horizontal && Math.abs(ddx) < Math.abs(ddy) * 4) continue;
+      if (vertical && Math.abs(ddy) < Math.abs(ddx) * 4) continue;
+      if (horizontal) {
+        const overlap = Math.max(0, Math.min(Math.max(solid.a.x, solid.b.x), Math.max(dash.a.x, dash.b.x)) - Math.max(Math.min(solid.a.x, solid.b.x), Math.min(dash.a.x, dash.b.x)));
+        const sep = ((dash.a.y + dash.b.y) - (solid.a.y + solid.b.y)) / 2;
+        if (overlap < 500 || Math.abs(sep) < 80 || Math.abs(sep) > 1500) continue;
+        faces.push({ horizontal: true, coord: (solid.a.y + solid.b.y) / 2, slabSide: Math.sign(sep), lo: Math.max(Math.min(solid.a.x, solid.b.x), Math.min(dash.a.x, dash.b.x)), hi: Math.min(Math.max(solid.a.x, solid.b.x), Math.max(dash.a.x, dash.b.x)) });
+      } else {
+        const overlap = Math.max(0, Math.min(Math.max(solid.a.y, solid.b.y), Math.max(dash.a.y, dash.b.y)) - Math.max(Math.min(solid.a.y, solid.b.y), Math.min(dash.a.y, dash.b.y)));
+        const sep = ((dash.a.x + dash.b.x) - (solid.a.x + solid.b.x)) / 2;
+        if (overlap < 500 || Math.abs(sep) < 80 || Math.abs(sep) > 1500) continue;
+        faces.push({ horizontal: false, coord: (solid.a.x + solid.b.x) / 2, slabSide: Math.sign(sep), lo: Math.max(Math.min(solid.a.y, solid.b.y), Math.min(dash.a.y, dash.b.y)), hi: Math.min(Math.max(solid.a.y, solid.b.y), Math.max(dash.a.y, dash.b.y)) });
+      }
+    }
+  }
+  return faces;
+}
+
+/** A candidate on the opposite side of a continuous outside face is not slab. */
+function isBeyondContinuousOuterFace(c: Pt, faces: OuterFace[]): boolean {
+  for (const face of faces) {
+    const along = face.horizontal ? c.x : c.y;
+    if (along < face.lo - ALIGN_TOL || along > face.hi + ALIGN_TOL) continue;
+    const offset = (face.horizontal ? c.y : c.x) - face.coord;
+    const centreSide = Math.sign(offset);
+    if (centreSide && centreSide !== face.slabSide && Math.abs(offset) > ALIGN_TOL) return true;
+  }
+  return false;
 }
 
 function detectTriangularSlabs(segments: Segment[], thks: ThkText[]): PanelProposalBox[] {

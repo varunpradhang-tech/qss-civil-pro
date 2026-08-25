@@ -52,4 +52,19 @@ describe('unmarked slab geometry', () => {
     expect(autoProposePanels(held)).toHaveLength(0);
     expect(extractMembers(held, 'slab')).toHaveLength(0);
   });
+
+  it('measures an enclosed slab-code strip with TOS evidence on nonstandard beam layers', () => {
+    const strip = drawing();
+    strip.segments = [
+      { layer: '17', a: { x: 0, y: 0 }, b: { x: 9000, y: 0 } },
+      { layer: '17', a: { x: 0, y: 1200 }, b: { x: 9000, y: 1200 } },
+      { layer: '5', a: { x: 0, y: 0 }, b: { x: 0, y: 1200 } },
+      { layer: '5', a: { x: 9000, y: 0 }, b: { x: 9000, y: 1200 } },
+    ];
+    strip.texts = [
+      { layer: '4', text: 'S6', pos: { x: 4500, y: 600 } },
+      { layer: 'LEVEL', text: 'T.O.S.+2000 LVL.', pos: { x: 3500, y: 650 } },
+    ];
+    expect(autoProposePanels(strip)).toMatchObject([{ label: 'S6', lengthMm: 9000, breadthMm: 1200 }]);
+  });
 });

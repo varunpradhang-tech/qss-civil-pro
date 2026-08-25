@@ -43,15 +43,23 @@ const CUTOUT_LAYERS = /cut|open|void|shaft|lift|duct|ots/i;
 const ALIGN_TOL = 200;
 
 export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
-  const segs: Segment[] = [...dwg.segments.filter((s) => BOUND_LAYERS.test(s.layer))];
-  for (const pl of dwg.polylines.filter((p) => BOUND_LAYERS.test(p.layer)))
-    for (let i = 0; i < pl.pts.length - 1; i++) segs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer });
+  const allSegs: Segment[] = [...dwg.segments];
+  for (const pl of dwg.polylines)
+    for (let i = 0; i < pl.pts.length - 1; i++) allSegs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer });
+  const segs: Segment[] = allSegs.filter((s) => BOUND_LAYERS.test(s.layer));
   for (const hatch of dwg.hatches.filter((h) => BOUND_LAYERS.test(h.layer)))
     for (let i = 0; i < hatch.pts.length; i++) segs.push({ a: hatch.pts[i], b: hatch.pts[(i + 1) % hatch.pts.length], layer: hatch.layer });
 
   const H = segs.filter((s) => Math.abs(s.a.y - s.b.y) < ALIGN_TOL)
     .map((s) => ({ y: (s.a.y + s.b.y) / 2, x1: Math.min(s.a.x, s.b.x), x2: Math.max(s.a.x, s.b.x) }));
   const V = segs.filter((s) => Math.abs(s.a.x - s.b.x) < ALIGN_TOL)
+    .map((s) => ({ x: (s.a.x + s.b.x) / 2, y1: Math.min(s.a.y, s.b.y), y2: Math.max(s.a.y, s.b.y) }));
+  // Consultant drawings often place dotted beam edges on numeric or unnamed
+  // layers. These are used only when a slab code is corroborated by a nearby
+  // TOS/Top-of-Slab level note, avoiding a broad all-lines fallback.
+  const allH = allSegs.filter((s) => Math.abs(s.a.y - s.b.y) < ALIGN_TOL)
+    .map((s) => ({ y: (s.a.y + s.b.y) / 2, x1: Math.min(s.a.x, s.b.x), x2: Math.max(s.a.x, s.b.x) }));
+  const allV = allSegs.filter((s) => Math.abs(s.a.x - s.b.x) < ALIGN_TOL)
     .map((s) => ({ x: (s.a.x + s.b.x) / 2, y1: Math.min(s.a.y, s.b.y), y2: Math.max(s.a.y, s.b.y) }));
 
   const dims = dwg.dimensions.filter((d) => /slabs?\s*no/i.test(d.layer));
@@ -70,6 +78,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const cutouts = extractCutouts(dwg);
   const thicknesses = extractThicknesses(dwg);
   const holdNotes = dwg.texts.filter((t) => /HOLD/i.test(t.text.replace(/\s+/g, '')));
+  const tosNotes = dwg.texts.filter((t) => /T\s*\.?\s*O\s*\.?\s*S\.?|TOP\s+OF\s+SLAB/i.test(t.text));
 
   const snap = (val: number, opts: number[]) => {
     if (!opts.length) return { v: val, ok: true }; // unmarked drawing: geometry is the source
@@ -81,10 +90,15 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const out: PanelProposalBox[] = [];
   for (const L of labels) {
     const c: Pt = L.pos;
-    const above = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y > c.y).sort((a, b) => a.y - b.y)[0];
-    const below = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y < c.y).sort((a, b) => b.y - a.y)[0];
-    const right = V.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x > c.x).sort((a, b) => a.x - b.x)[0];
-    const left = V.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x < c.x).sort((a, b) => b.x - a.x)[0];
+    const bounds = (hs: typeof H, vs: typeof V) => ({
+      above: hs.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y > c.y).sort((a, b) => a.y - b.y)[0],
+      below: hs.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y < c.y).sort((a, b) => b.y - a.y)[0],
+      right: vs.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x > c.x).sort((a, b) => a.x - b.x)[0],
+      left: vs.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x < c.x).sort((a, b) => b.x - a.x)[0],
+    });
+    let { above, below, right, left } = bounds(H, V);
+    const nearbyTos = tosNotes.some((t) => Math.hypot(t.pos.x - c.x, t.pos.y - c.y) <= 20_000);
+    if ((!above || !below || !right || !left) && nearbyTos) ({ above, below, right, left } = bounds(allH, allV));
 
     if (!above || !below || !right || !left) {
       if (!L.trustedLayer) continue;

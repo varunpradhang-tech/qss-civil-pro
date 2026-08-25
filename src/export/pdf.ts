@@ -35,24 +35,27 @@ export function buildSlabReferencePdf(dwgs: NormalizedDwg[], members: MemberRow[
     for (const s of dwg.segments) if (visible(s.a, s.b)) { const a = map(s.a), b = map(s.b); stream += `${n(a.x)} ${n(a.y)} m ${n(b.x)} ${n(b.y)} l S\n`; }
     for (const p of dwg.polylines) for (let i = 0; i < p.pts.length - 1; i++) if (visible(p.pts[i], p.pts[i + 1])) { const a = map(p.pts[i]), b = map(p.pts[i + 1]); stream += `${n(a.x)} ${n(a.y)} m ${n(b.x)} ${n(b.y)} l S\n`; }
   }
-  const radius = Math.max(8, Math.min(18, Math.max(PAGE_W, PAGE_H) / 75));
+  // Size marks from the available printed area and panel density. A fixed
+  // symbol size overwhelms large floor plans containing hundreds of panels.
+  const markedCount = Math.max(1, members.filter((m) => Number.isFinite(m.cadX) && Number.isFinite(m.cadY)).length);
+  const densityRadius = Math.sqrt(((PAGE_W - 2 * MARGIN) * (PAGE_H - 2 * MARGIN)) / markedCount) * 0.11;
+  const baseRadius = Math.max(2.2, Math.min(6, densityRadius));
   const k = 0.5522847498;
   stream += '0 0.65 0 RG 0.8 w\n';
   for (const m of members) {
     if (!Number.isFinite(m.cadX) || !Number.isFinite(m.cadY)) continue;
     const c = map({ x: m.cadX as number, y: m.cadY as number });
     const panelNo = m.member.match(/^P\d+/i)?.[0] ?? m.member;
-    if ([m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
-      const a = map({ x: m.cadX0 as number, y: m.cadY0 as number }), b = map({ x: m.cadX1 as number, y: m.cadY1 as number });
-      stream += `0 0.7 0 RG 0.9 w ${n(a.x)} ${n(a.y)} ${n(b.x - a.x)} ${n(b.y - a.y)} re S\n`;
-    }
-    stream += `${n(c.x + radius)} ${n(c.y)} m ${n(c.x + radius)} ${n(c.y + k * radius)} ${n(c.x + k * radius)} ${n(c.y + radius)} ${n(c.x)} ${n(c.y + radius)} c `;
-    stream += `${n(c.x - k * radius)} ${n(c.y + radius)} ${n(c.x - radius)} ${n(c.y + k * radius)} ${n(c.x - radius)} ${n(c.y)} c `;
-    stream += `${n(c.x - radius)} ${n(c.y - k * radius)} ${n(c.x - k * radius)} ${n(c.y - radius)} ${n(c.x)} ${n(c.y - radius)} c `;
-    stream += `${n(c.x + k * radius)} ${n(c.y - radius)} ${n(c.x + radius)} ${n(c.y - k * radius)} ${n(c.x + radius)} ${n(c.y)} c S\n`;
+    const panelRadius = [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)
+      ? Math.min(baseRadius, Math.max(2, Math.min(Math.abs((m.cadX1 as number) - (m.cadX0 as number)), Math.abs((m.cadY1 as number) - (m.cadY0 as number))) * scale * 0.12))
+      : baseRadius;
+    stream += `${n(c.x + panelRadius)} ${n(c.y)} m ${n(c.x + panelRadius)} ${n(c.y + k * panelRadius)} ${n(c.x + k * panelRadius)} ${n(c.y + panelRadius)} ${n(c.x)} ${n(c.y + panelRadius)} c `;
+    stream += `${n(c.x - k * panelRadius)} ${n(c.y + panelRadius)} ${n(c.x - panelRadius)} ${n(c.y + k * panelRadius)} ${n(c.x - panelRadius)} ${n(c.y)} c `;
+    stream += `${n(c.x - panelRadius)} ${n(c.y - k * panelRadius)} ${n(c.x - k * panelRadius)} ${n(c.y - panelRadius)} ${n(c.x)} ${n(c.y - panelRadius)} c `;
+    stream += `${n(c.x + k * panelRadius)} ${n(c.y - panelRadius)} ${n(c.x + panelRadius)} ${n(c.y - k * panelRadius)} ${n(c.x + panelRadius)} ${n(c.y)} c S\n`;
     stream += '1 0.75 0 RG 0.6 w\n';
-    stream += `${n(c.x - radius * 0.75)} ${n(c.y)} m ${n(c.x + radius * 0.75)} ${n(c.y)} l S ${n(c.x)} ${n(c.y - radius * 0.75)} m ${n(c.x)} ${n(c.y + radius * 0.75)} l S\n`;
-    stream += `0 0.65 0 rg BT /F1 ${n(radius * 0.9)} Tf ${n(c.x - panelNo.length * radius * 0.24)} ${n(c.y + radius * 0.12)} Td (${pdfText(panelNo)}) Tj ET\n0 0.65 0 RG\n`;
+    stream += `${n(c.x - panelRadius * 0.65)} ${n(c.y)} m ${n(c.x + panelRadius * 0.65)} ${n(c.y)} l S ${n(c.x)} ${n(c.y - panelRadius * 0.65)} m ${n(c.x)} ${n(c.y + panelRadius * 0.65)} l S\n`;
+    stream += `0 0.65 0 rg BT /F1 ${n(panelRadius * 0.82)} Tf ${n(c.x - panelNo.length * panelRadius * 0.22)} ${n(c.y + panelRadius * 0.1)} Td (${pdfText(panelNo)}) Tj ET\n0 0.65 0 RG\n`;
   }
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',

@@ -67,4 +67,16 @@ describe('unmarked slab geometry', () => {
     ];
     expect(autoProposePanels(strip)).toMatchObject([{ label: 'S6', lengthMm: 9000, breadthMm: 1200 }]);
   });
+
+  it('measures an enclosed cantilever balcony beside a dashed beam edge', () => {
+    const balcony = drawing();
+    balcony.segments = [
+      { layer: 'EDGE', lineType: 'CONTINUOUS', a: { x: 0, y: 0 }, b: { x: 2500, y: 0 } },
+      { layer: 'EDGE', lineType: 'CONTINUOUS', a: { x: 0, y: 6000 }, b: { x: 2500, y: 6000 } },
+      { layer: 'EDGE', lineType: 'CONTINUOUS', a: { x: 0, y: 0 }, b: { x: 0, y: 6000 } },
+      { layer: 'BEAM', lineType: 'DASHED', a: { x: 2500, y: 0 }, b: { x: 2500, y: 6000 } },
+    ];
+    balcony.texts = [{ layer: 'NOTE', text: 'C', pos: { x: 1200, y: 3000 } }];
+    expect(autoProposePanels(balcony)).toMatchObject([{ label: 'BALCONY', lengthMm: 2500, breadthMm: 6000 }]);
+  });
 });

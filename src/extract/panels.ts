@@ -45,7 +45,7 @@ const ALIGN_TOL = 200;
 export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const allSegs: Segment[] = [...dwg.segments];
   for (const pl of dwg.polylines)
-    for (let i = 0; i < pl.pts.length - 1; i++) allSegs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer });
+    for (let i = 0; i < pl.pts.length - 1; i++) allSegs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer, lineType: pl.lineType });
   const segs: Segment[] = allSegs.filter((s) => BOUND_LAYERS.test(s.layer));
   for (const hatch of dwg.hatches.filter((h) => BOUND_LAYERS.test(h.layer)))
     for (let i = 0; i < hatch.pts.length; i++) segs.push({ a: hatch.pts[i], b: hatch.pts[(i + 1) % hatch.pts.length], layer: hatch.layer });
@@ -65,7 +65,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const dims = dwg.dimensions.filter((d) => /slabs?\s*no/i.test(d.layer));
   const Hdims = dims.filter((d) => d.dir === 'H').map((d) => d.measurement);
   const Vdims = dims.filter((d) => d.dir === 'V').map((d) => d.measurement);
-  const labels = dwg.texts
+  const slabLabels = dwg.texts
     .filter((t) => /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
     .map((t) => ({
       text: t.text.replace(/\s/g, '').toUpperCase(),
@@ -75,6 +75,12 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       // so schedule/detail S-marks are not mistaken for slab panels.
       trustedLayer: /slabs?\s*no/i.test(t.layer),
     }));
+  const dashedSegs = allSegs.filter((s) => /dash|hidden|center/i.test(s.lineType || ''));
+  const balconyLabels = dwg.texts
+    .filter((t) => /^(?:C|CANTILEVER|BALCONY)$/i.test(t.text.replace(/\s/g, '')))
+    .filter((t) => dashedSegs.some((s) => pointToSegmentDistance(t.pos, s) <= 3000))
+    .map((t) => ({ text: 'BALCONY', pos: t.pos, trustedLayer: false, balconyEvidence: true }));
+  const labels = [...slabLabels.map((label) => ({ ...label, balconyEvidence: false })), ...balconyLabels];
   const cutouts = extractCutouts(dwg);
   const thicknesses = extractThicknesses(dwg);
   const holdNotes = dwg.texts.filter((t) => /HOLD/i.test(t.text.replace(/\s+/g, '')));
@@ -98,7 +104,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     });
     let { above, below, right, left } = bounds(H, V);
     const nearbyTos = tosNotes.some((t) => Math.hypot(t.pos.x - c.x, t.pos.y - c.y) <= 20_000);
-    if ((!above || !below || !right || !left) && nearbyTos) ({ above, below, right, left } = bounds(allH, allV));
+    if ((!above || !below || !right || !left) && (nearbyTos || L.balconyEvidence)) ({ above, below, right, left } = bounds(allH, allV));
 
     if (!above || !below || !right || !left) {
       if (!L.trustedLayer) continue;
@@ -220,3 +226,10 @@ const shoelace = (pts: Pt[]) => { let a = 0; for (let i = 0; i < pts.length; i++
 const centroid = (pts: Pt[]) => { let x = 0, y = 0; for (const p of pts) { x += p.x; y += p.y; } return { cx: x / pts.length, cy: y / pts.length }; };
 const bbox = (pts: Pt[]) => ({ x0: Math.min(...pts.map((p) => p.x)), y0: Math.min(...pts.map((p) => p.y)), x1: Math.max(...pts.map((p) => p.x)), y1: Math.max(...pts.map((p) => p.y)) });
 const mid = (a: Pt, b: Pt) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+function pointToSegmentDistance(p: Pt, s: Segment): number {
+  const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
+  const d2 = dx * dx + dy * dy;
+  if (!d2) return Math.hypot(p.x - s.a.x, p.y - s.a.y);
+  const t = Math.max(0, Math.min(1, ((p.x - s.a.x) * dx + (p.y - s.a.y) * dy) / d2));
+  return Math.hypot(p.x - (s.a.x + t * dx), p.y - (s.a.y + t * dy));
+}

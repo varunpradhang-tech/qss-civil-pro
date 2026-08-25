@@ -72,6 +72,7 @@ export function normalize(db: any, fileName: string): NormalizedDwg {
   const units = typeof header.INSUNITS === 'number' ? header.INSUNITS : 4;
   const unitScaleToMm = UNIT_TO_MM[units] ?? 1;
   const layers: string[] = (db.tables?.LAYER?.entries || []).map((l: any) => l.name);
+  const layerLineTypes = new Map<string, string>((db.tables?.LAYER?.entries || []).map((l: any) => [l.name, l.lineType || 'CONTINUOUS']));
 
   // Block name -> { basePoint, entities, expandable } for INSERT expansion.
   const blocks = new Map<string, { base: Pt; entities: any[]; expandable: boolean }>();
@@ -114,6 +115,7 @@ export function normalize(db: any, fileName: string): NormalizedDwg {
     if (count > MAX_FLAT_ENTITIES) return;
     if (topLevel) entityCountsByType[e.type] = (entityCountsByType[e.type] || 0) + 1;
     const layer = e.layer || '';
+    const lineType = e.lineType && !/^BYLAYER$/i.test(e.lineType) ? e.lineType : (layerLineTypes.get(layer) || 'CONTINUOUS');
 
     if (e.type === 'INSERT' && depth < 8) {
       const blk = blocks.get(e.name);
@@ -124,7 +126,7 @@ export function normalize(db: any, fileName: string): NormalizedDwg {
     }
     if (e.type === 'LINE' && e.startPoint && e.endPoint) {
       const a = apply(mat, e.startPoint), b = apply(mat, e.endPoint);
-      segments.push({ a, b, layer }); grow(a); grow(b);
+      segments.push({ a, b, layer, lineType }); grow(a); grow(b);
     } else if (e.type === 'DIMENSION' && e.subDefinitionPoint1 && e.subDefinitionPoint2) {
       const p1 = apply(mat, e.subDefinitionPoint1), p2 = apply(mat, e.subDefinitionPoint2);
       const dx = Math.abs(p1.x - p2.x), dy = Math.abs(p1.y - p2.y);
@@ -137,7 +139,7 @@ export function normalize(db: any, fileName: string): NormalizedDwg {
     } else if (e.type === 'LWPOLYLINE' || e.type === 'POLYLINE') {
       const raw = e.vertices || e.points || [];
       const pts: Pt[] = raw.map((v: any) => apply(mat, v));
-      if (pts.length >= 2) { polylines.push({ pts, closed: !!(e.closed || e.isClosed || e.flag === 1), layer }); pts.forEach(grow); }
+      if (pts.length >= 2) { polylines.push({ pts, closed: !!(e.closed || e.isClosed || e.flag === 1), layer, lineType }); pts.forEach(grow); }
     } else if (e.type === 'HATCH') {
       const pts: Pt[] = [];
       for (const path of e.boundaryPaths || []) for (const edge of path.edges || []) {

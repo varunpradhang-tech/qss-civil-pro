@@ -11,6 +11,7 @@ export interface Segment {
   a: Pt;
   b: Pt;
   layer: string;
+  lineType?: string;
 }
 
 /** A normalized linear dimension: the two measured points, the value, and where its text sits. */
@@ -40,7 +41,7 @@ export interface NormalizedDwg {
   segments: Segment[];
   dimensions: DimensionRef[];
   texts: TextRef[];
-  polylines: { pts: Pt[]; closed: boolean; layer: string }[];
+  polylines: { pts: Pt[]; closed: boolean; layer: string; lineType?: string }[];
   hatches: { pts: Pt[]; layer: string; solid: boolean }[];
   extents: { min: Pt; max: Pt };
 }

@@ -12,8 +12,6 @@ export interface PanelProposalBox {
   thicknessMm: number; // slab thickness from the nearest "NNN THK." text (0 = not found → use default)
   confident: boolean;
   duplicate: boolean; // overlaps a stronger panel → excluded from total, flagged for review
-  polygon?: Pt[];
-  grossAreaM2?: number;
 }
 
 interface ThkText { pos: Pt; mm: number; }
@@ -48,7 +46,9 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const allSegs: Segment[] = [...dwg.segments];
   for (const pl of dwg.polylines)
     for (let i = 0; i < pl.pts.length - 1; i++) allSegs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer, lineType: pl.lineType });
-  const segs: Segment[] = allSegs.filter((s) => BOUND_LAYERS.test(s.layer));
+  const segs: Segment[] = [...dwg.segments.filter((s) => BOUND_LAYERS.test(s.layer))];
+  for (const pl of dwg.polylines.filter((p) => BOUND_LAYERS.test(p.layer)))
+    for (let i = 0; i < pl.pts.length - 1; i++) segs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer });
   for (const hatch of dwg.hatches.filter((h) => BOUND_LAYERS.test(h.layer)))
     for (let i = 0; i < hatch.pts.length; i++) segs.push({ a: hatch.pts[i], b: hatch.pts[(i + 1) % hatch.pts.length], layer: hatch.layer });
 
@@ -56,19 +56,17 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     .map((s) => ({ y: (s.a.y + s.b.y) / 2, x1: Math.min(s.a.x, s.b.x), x2: Math.max(s.a.x, s.b.x) }));
   const V = segs.filter((s) => Math.abs(s.a.x - s.b.x) < ALIGN_TOL)
     .map((s) => ({ x: (s.a.x + s.b.x) / 2, y1: Math.min(s.a.y, s.b.y), y2: Math.max(s.a.y, s.b.y) }));
-  // Consultant drawings often place dotted beam edges on numeric or unnamed
-  // layers. These are used only when a slab code is corroborated by a nearby
-  // TOS/Top-of-Slab level note, avoiding a broad all-lines fallback.
-  const allH = allSegs.filter((s) => Math.abs(s.a.y - s.b.y) < ALIGN_TOL)
-    .map((s) => ({ y: (s.a.y + s.b.y) / 2, x1: Math.min(s.a.x, s.b.x), x2: Math.max(s.a.x, s.b.x) }));
-  const allV = allSegs.filter((s) => Math.abs(s.a.x - s.b.x) < ALIGN_TOL)
-    .map((s) => ({ x: (s.a.x + s.b.x) / 2, y1: Math.min(s.a.y, s.b.y), y2: Math.max(s.a.y, s.b.y) }));
 
   const dims = dwg.dimensions.filter((d) => /slabs?\s*no/i.test(d.layer));
   const Hdims = dims.filter((d) => d.dir === 'H').map((d) => d.measurement);
   const Vdims = dims.filter((d) => d.dir === 'V').map((d) => d.measurement);
-  const slabLabels = dwg.texts
+  const sectionNotes = dwg.texts.filter((t) => /\b(?:SECTION|SEC\.)\s*[:\-–]*\s*\d+\s*[-–]\s*\d+/i.test(t.text));
+  const scheduleNotes = dwg.texts.filter((t) => /\b(?:SLAB\s+)?(?:REINFORCEMENT\s+)?SCHEDULE\b/i.test(t.text));
+  const excludedDetailPoint = (p: Pt) => sectionNotes.some((note) => Math.abs(note.pos.x - p.x) <= 30_000 && p.y >= note.pos.y - 2500 && p.y <= note.pos.y + 15_000)
+    || scheduleNotes.some((note) => Math.abs(note.pos.x - p.x) <= 60_000 && p.y >= note.pos.y - 25_000 && p.y <= note.pos.y + 3000);
+  const labels = dwg.texts
     .filter((t) => /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
+    .filter((t) => !excludedDetailPoint(t.pos))
     .map((t) => ({
       text: t.text.replace(/\s/g, '').toUpperCase(),
       pos: t.pos,
@@ -77,19 +75,9 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       // so schedule/detail S-marks are not mistaken for slab panels.
       trustedLayer: /slabs?\s*no/i.test(t.layer),
     }));
-  const dashedSegs = allSegs.filter((s) => /dash|hidden|center/i.test(s.lineType || ''));
-  const balconyLabels = dwg.texts
-    .filter((t) => /^(?:C|CANTILEVER|BALCONY)$/i.test(t.text.replace(/\s/g, '')))
-    .filter((t) => dashedSegs.some((s) => pointToSegmentDistance(t.pos, s) <= 3000))
-    .map((t) => ({ text: 'BALCONY', pos: t.pos, trustedLayer: false, balconyEvidence: true }));
-  const labels = [...slabLabels.map((label) => ({ ...label, balconyEvidence: false })), ...balconyLabels];
   const cutouts = extractCutouts(dwg);
   const thicknesses = extractThicknesses(dwg);
   const holdNotes = dwg.texts.filter((t) => /HOLD/i.test(t.text.replace(/\s+/g, '')));
-  const tosNotes = dwg.texts.filter((t) => /T\s*\.?\s*O\s*\.?\s*S\.?|TOP\s+OF\s+SLAB/i.test(t.text));
-  const sectionNotes = dwg.texts.filter((t) => /\b(?:SECTION|SEC\.)\s*[:\-–]*\s*\d+\s*[-–]\s*\d+/i.test(t.text));
-  const scheduleNotes = dwg.texts.filter((t) => /\b(?:SLAB\s+)?(?:REINFORCEMENT\s+)?SCHEDULE\b/i.test(t.text));
-  const outerFaces = continuousOuterFaces(allSegs);
 
   const snap = (val: number, opts: number[]) => {
     if (!opts.length) return { v: val, ok: true }; // unmarked drawing: geometry is the source
@@ -101,24 +89,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const out: PanelProposalBox[] = [];
   for (const L of labels) {
     const c: Pt = L.pos;
-    const bounds = (hs: typeof H, vs: typeof V) => ({
-      above: hs.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y > c.y).sort((a, b) => a.y - b.y)[0],
-      below: hs.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y < c.y).sort((a, b) => b.y - a.y)[0],
-      right: vs.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x > c.x).sort((a, b) => a.x - b.x)[0],
-      left: vs.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x < c.x).sort((a, b) => b.x - a.x)[0],
-    });
-    let { above, below, right, left } = bounds(H, V);
-    const nearbyTos = tosNotes.some((t) => Math.hypot(t.pos.x - c.x, t.pos.y - c.y) <= 20_000);
-    const nearbySlabCodes = slabLabels.filter((other) => Math.hypot(other.pos.x - c.x, other.pos.y - c.y) <= 20_000).length;
-    if (nearbyTos || L.balconyEvidence || nearbySlabCodes >= 2) {
-      const alternate = bounds(allH, allV);
-      const area = (b: ReturnType<typeof bounds>) => b.above && b.below && b.right && b.left
-        ? (b.above.y - b.below.y) * (b.right.x - b.left.x) : Number.POSITIVE_INFINITY;
-      const current = { above, below, right, left };
-      // TOS/cantilever evidence permits nonstandard layers. Prefer the tighter
-      // complete enclosure instead of accepting distant named-layer geometry.
-      if (area(alternate) < area(current)) ({ above, below, right, left } = alternate);
-    }
+    const above = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y > c.y).sort((a, b) => a.y - b.y)[0];
+    const below = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y < c.y).sort((a, b) => b.y - a.y)[0];
+    const right = V.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x > c.x).sort((a, b) => a.x - b.x)[0];
+    const left = V.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x < c.x).sort((a, b) => b.x - a.x)[0];
 
     if (!above || !below || !right || !left) {
       if (!L.trustedLayer) continue;
@@ -131,31 +105,45 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const box = { x0: left.x, y0: below.y, x1: right.x, y1: above.y };
     out.push({ label: L.text, box, lengthMm: sL.v, breadthMm: sB.v, openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: sL.ok && sB.ok, duplicate: false });
   }
-  out.push(...detectTriangularSlabs(allSegs, thicknesses));
-  out.push(...detectCantileverStrips(allSegs, thicknesses));
+  // Cantilevers are an additive detector only. They never alter the stable
+  // S-label ray-casting above: dashed inner face + continuous outer face +
+  // continuous closures at both ends.
+  const labelledPanels = [...out];
+  const labelledCentres = labelledPanels.map((panel) => ({ x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 }));
+  const labelEnvelope = labelledCentres.length ? {
+    minX: Math.min(...labelledCentres.map((p) => p.x)), maxX: Math.max(...labelledCentres.map((p) => p.x)),
+    minY: Math.min(...labelledCentres.map((p) => p.y)), maxY: Math.max(...labelledCentres.map((p) => p.y)),
+  } : null;
+  out.push(...detectClosedCantileverStrips(allSegs, thicknesses).filter((panel) => {
+    const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+    if (excludedDetailPoint(centre)) return false;
+    // With no explicit cantilever text, accept geometry-only additions only
+    // around the exterior of the labelled framing-plan envelope. This keeps
+    // internal beam/grid cells out of the cantilever list.
+    if (labelEnvelope && centre.x >= labelEnvelope.minX && centre.x <= labelEnvelope.maxX
+      && centre.y >= labelEnvelope.minY && centre.y <= labelEnvelope.maxY) return false;
+    if (labelEnvelope) {
+      const dx = Math.max(labelEnvelope.minX - centre.x, 0, centre.x - labelEnvelope.maxX);
+      const dy = Math.max(labelEnvelope.minY - centre.y, 0, centre.y - labelEnvelope.maxY);
+      if (Math.hypot(dx, dy) > 6000) return false;
+    }
+    // Geometry-only additions must never compete with or replace an S-coded
+    // panel. Any material overlap belongs to the authoritative labelled bay.
+    return !labelledPanels.some((labelled) => overlapFrac(panel.box, labelled.box) > 0.1);
+  }));
 
   // HOLD / HOLD AREA is an explicit instruction that the containing bay is
   // outside the current measurable scope. Exclude it before deductions,
   // numbering, Excel export, totals, and reference-file marking.
   const measurable = out.filter((panel) => {
-    const grossM2 = panel.grossAreaM2 ?? (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
+    const grossM2 = (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
     const plausibleBay = panel.lengthMm >= 300 && panel.breadthMm >= 300
-      && panel.lengthMm <= 15_000 && panel.breadthMm <= 15_000
-      && grossM2 <= 150;
+      && panel.lengthMm <= 30_000 && panel.breadthMm <= 30_000
+      && grossM2 <= 400;
     const held = holdNotes.some((note) => note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
       && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
-    const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
-    const explicitSlabCode = /^S\d+[A-Z]?$/i.test(panel.label || '');
-    const inSectionDetail = sectionNotes.some((note) => Math.abs(note.pos.x - centre.x) <= 30_000
-      && centre.y >= note.pos.y - 2500 && centre.y <= note.pos.y + 15_000);
-    // Schedule tables in real consultant files often put their S1/S2 rows on
-    // arbitrary layers. Exclude the table region by its title and position.
-    const inScheduleTable = scheduleNotes.some((note) => Math.abs(note.pos.x - centre.x) <= 60_000
-      && centre.y >= note.pos.y - 25_000 && centre.y <= note.pos.y + 3000);
-    const beyondOuterBeamFace = !explicitSlabCode && isBeyondContinuousOuterFace(centre, outerFaces);
-    return plausibleBay && !held && !inSectionDetail && !inScheduleTable && !beyondOuterBeamFace;
+    return plausibleBay && !held;
   });
-  resolveOrthogonalStripOverlaps(measurable);
   assignCutouts(measurable, cutouts); // contain-or-nearest panel, per QSS-SLAB-004
   markDuplicates(measurable);
   // A duplicate proposal represents the same physical bay and must never be
@@ -166,7 +154,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
 // Distribute each cutout across the panels its box overlaps (by overlap area), so a void straddling a
 // beam between two bays is shared, not dumped on one small neighbour. Falls back to the nearest panel.
 function assignCutouts(panels: PanelProposalBox[], cutouts: Cutout[]): void {
-  const capOf = (p: PanelProposalBox) => p.grossAreaM2 ?? (p.lengthMm / 1000) * (p.breadthMm / 1000);
+  const capOf = (p: PanelProposalBox) => (p.lengthMm / 1000) * (p.breadthMm / 1000);
   for (const c of cutouts) {
     const overlaps = panels
       .map((p) => ({ p, ov: rectOverlap(c.box, p.box) }))
@@ -202,31 +190,6 @@ function markDuplicates(panels: PanelProposalBox[]): void {
     const p = panels[i];
     if (kept.some((k) => overlapFrac(p.box, k.box) > 0.6)) { p.duplicate = true; p.confident = false; }
     else kept.push(p);
-  }
-}
-
-/** Join perpendicular rectangular balcony strips without billing their shared corner twice. */
-function resolveOrthogonalStripOverlaps(panels: PanelProposalBox[]): void {
-  for (let i = 0; i < panels.length; i++) for (let j = i + 1; j < panels.length; j++) {
-    const a = panels[i], b = panels[j];
-    if (a.polygon || b.polygon) continue;
-    const aw = a.box.x1 - a.box.x0, ah = a.box.y1 - a.box.y0;
-    const bw = b.box.x1 - b.box.x0, bh = b.box.y1 - b.box.y0;
-    const horizontal = aw >= ah && bw < bh ? a : bw >= bh && aw < ah ? b : undefined;
-    const vertical = horizontal === a ? b : horizontal === b ? a : undefined;
-    if (!horizontal || !vertical) continue;
-    const ox = Math.max(0, Math.min(horizontal.box.x1, vertical.box.x1) - Math.max(horizontal.box.x0, vertical.box.x0));
-    const oy = Math.max(0, Math.min(horizontal.box.y1, vertical.box.y1) - Math.max(horizontal.box.y0, vertical.box.y0));
-    const verticalWidth = vertical.box.x1 - vertical.box.x0;
-    const horizontalWidth = horizontal.box.y1 - horizontal.box.y0;
-    if (ox < verticalWidth * 0.8 || oy < horizontalWidth * 0.8) continue;
-    const touchesBottom = Math.abs(Math.max(horizontal.box.y0, vertical.box.y0) - vertical.box.y0) <= ALIGN_TOL;
-    const touchesTop = Math.abs(Math.min(horizontal.box.y1, vertical.box.y1) - vertical.box.y1) <= ALIGN_TOL;
-    if (touchesBottom) vertical.box.y0 += oy;
-    else if (touchesTop) vertical.box.y1 -= oy;
-    else continue;
-    vertical.breadthMm = Math.max(0, vertical.box.y1 - vertical.box.y0);
-    vertical.confident = vertical.confident && vertical.breadthMm >= 300;
   }
 }
 const boxArea = (b: PanelProposalBox['box']) => Math.max(0, b.x1 - b.x0) * Math.max(0, b.y1 - b.y0);
@@ -277,126 +240,32 @@ const shoelace = (pts: Pt[]) => { let a = 0; for (let i = 0; i < pts.length; i++
 const centroid = (pts: Pt[]) => { let x = 0, y = 0; for (const p of pts) { x += p.x; y += p.y; } return { cx: x / pts.length, cy: y / pts.length }; };
 const bbox = (pts: Pt[]) => ({ x0: Math.min(...pts.map((p) => p.x)), y0: Math.min(...pts.map((p) => p.y)), x1: Math.max(...pts.map((p) => p.x)), y1: Math.max(...pts.map((p) => p.y)) });
 const mid = (a: Pt, b: Pt) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-function pointToSegmentDistance(p: Pt, s: Segment): number {
-  const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
-  const d2 = dx * dx + dy * dy;
-  if (!d2) return Math.hypot(p.x - s.a.x, p.y - s.a.y);
-  const t = Math.max(0, Math.min(1, ((p.x - s.a.x) * dx + (p.y - s.a.y) * dy) / d2));
-  return Math.hypot(p.x - (s.a.x + t * dx), p.y - (s.a.y + t * dy));
-}
 
-interface OuterFace { horizontal: boolean; coord: number; slabSide: number; lo: number; hi: number; }
-/** Pair continuous beam faces with nearby dashed faces once per drawing. */
-function continuousOuterFaces(segments: Segment[]): OuterFace[] {
-  const dashed = segments.filter((s) => /dash|hidden|center/i.test(s.lineType || ''));
-  const continuous = segments.filter((s) => !/dash|hidden|center/i.test(s.lineType || ''));
-  const bucketSize = 1500;
-  const hBuckets = new Map<number, Segment[]>(), vBuckets = new Map<number, Segment[]>();
-  for (const dash of dashed) {
-    const dx = dash.b.x - dash.a.x, dy = dash.b.y - dash.a.y;
-    const horizontal = Math.abs(dx) >= Math.abs(dy) * 4, vertical = Math.abs(dy) >= Math.abs(dx) * 4;
-    if (!horizontal && !vertical) continue;
-    const coord = horizontal ? (dash.a.y + dash.b.y) / 2 : (dash.a.x + dash.b.x) / 2;
-    const map = horizontal ? hBuckets : vBuckets, key = Math.floor(coord / bucketSize);
-    map.set(key, [...(map.get(key) || []), dash]);
-  }
-  const faces: OuterFace[] = [];
-  for (const solid of continuous) {
-    const sdx = solid.b.x - solid.a.x, sdy = solid.b.y - solid.a.y;
-    const horizontal = Math.abs(sdx) >= Math.abs(sdy) * 4;
-    const vertical = Math.abs(sdy) >= Math.abs(sdx) * 4;
-    if (!horizontal && !vertical) continue;
-    const coord = horizontal ? (solid.a.y + solid.b.y) / 2 : (solid.a.x + solid.b.x) / 2;
-    const map = horizontal ? hBuckets : vBuckets, key = Math.floor(coord / bucketSize);
-    const nearby = [key - 1, key, key + 1].flatMap((k) => map.get(k) || []);
-    for (const dash of nearby) {
-      const ddx = dash.b.x - dash.a.x, ddy = dash.b.y - dash.a.y;
-      if (horizontal && Math.abs(ddx) < Math.abs(ddy) * 4) continue;
-      if (vertical && Math.abs(ddy) < Math.abs(ddx) * 4) continue;
-      if (horizontal) {
-        const overlap = Math.max(0, Math.min(Math.max(solid.a.x, solid.b.x), Math.max(dash.a.x, dash.b.x)) - Math.max(Math.min(solid.a.x, solid.b.x), Math.min(dash.a.x, dash.b.x)));
-        const sep = ((dash.a.y + dash.b.y) - (solid.a.y + solid.b.y)) / 2;
-        if (overlap < 500 || Math.abs(sep) < 80 || Math.abs(sep) > 1500) continue;
-        faces.push({ horizontal: true, coord: (solid.a.y + solid.b.y) / 2, slabSide: Math.sign(sep), lo: Math.max(Math.min(solid.a.x, solid.b.x), Math.min(dash.a.x, dash.b.x)), hi: Math.min(Math.max(solid.a.x, solid.b.x), Math.max(dash.a.x, dash.b.x)) });
-      } else {
-        const overlap = Math.max(0, Math.min(Math.max(solid.a.y, solid.b.y), Math.max(dash.a.y, dash.b.y)) - Math.max(Math.min(solid.a.y, solid.b.y), Math.min(dash.a.y, dash.b.y)));
-        const sep = ((dash.a.x + dash.b.x) - (solid.a.x + solid.b.x)) / 2;
-        if (overlap < 500 || Math.abs(sep) < 80 || Math.abs(sep) > 1500) continue;
-        faces.push({ horizontal: false, coord: (solid.a.x + solid.b.x) / 2, slabSide: Math.sign(sep), lo: Math.max(Math.min(solid.a.y, solid.b.y), Math.min(dash.a.y, dash.b.y)), hi: Math.min(Math.max(solid.a.y, solid.b.y), Math.max(dash.a.y, dash.b.y)) });
-      }
-    }
-  }
-  return faces;
-}
-
-/** A candidate on the opposite side of a continuous outside face is not slab. */
-function isBeyondContinuousOuterFace(c: Pt, faces: OuterFace[]): boolean {
-  for (const face of faces) {
-    const along = face.horizontal ? c.x : c.y;
-    if (along < face.lo - ALIGN_TOL || along > face.hi + ALIGN_TOL) continue;
-    const offset = (face.horizontal ? c.y : c.x) - face.coord;
-    const centreSide = Math.sign(offset);
-    if (centreSide && centreSide !== face.slabSide && Math.abs(offset) > ALIGN_TOL) return true;
-  }
-  return false;
-}
-
-function detectTriangularSlabs(segments: Segment[], thks: ThkText[]): PanelProposalBox[] {
-  const dashed = segments.filter((s) => /dash|hidden|center/i.test(s.lineType || ''));
-  const continuous = segments.filter((s) => !/dash|hidden|center/i.test(s.lineType || ''));
-  const tol = 250;
-  const near = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y) <= tol;
-  const joined = (p: Pt) => continuous.filter((s) => near(p, s.a) || near(p, s.b));
-  const other = (s: Segment, p: Pt) => near(p, s.a) ? s.b : s.a;
-  const found: PanelProposalBox[] = [];
-  for (const d of dashed) {
-    const da = joined(d.a), db = joined(d.b);
-    for (const sa of da) for (const sb of db) {
-      const apexA = other(sa, d.a), apexB = other(sb, d.b);
-      if (!near(apexA, apexB)) continue;
-      const polygon = [d.a, d.b, { x: (apexA.x + apexB.x) / 2, y: (apexA.y + apexB.y) / 2 }];
-      const areaM2 = Math.abs(shoelace(polygon)) / 1e6;
-      const box = bbox(polygon), width = box.x1 - box.x0, height = box.y1 - box.y0;
-      if (areaM2 < 0.1 || areaM2 > 150 || width < 300 || height < 300 || width > 30_000 || height > 30_000) continue;
-      const c = { x: polygon.reduce((sum, p) => sum + p.x, 0) / 3, y: polygon.reduce((sum, p) => sum + p.y, 0) / 3 };
-      if (found.some((p) => Math.hypot((p.box.x0 + p.box.x1) / 2 - c.x, (p.box.y0 + p.box.y1) / 2 - c.y) < 500)) continue;
-      found.push({ label: 'BALCONY-TRI', box, polygon, grossAreaM2: areaM2, lengthMm: width, breadthMm: height, openingM2: 0, thicknessMm: panelThickness(box, c, thks), confident: false, duplicate: false });
-    }
-  }
-  return found;
-}
-
-/** Rectangular cantilever between a dashed slab-facing line and one continuous outside edge. */
-function detectCantileverStrips(segments: Segment[], thks: ThkText[]): PanelProposalBox[] {
+function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[]): PanelProposalBox[] {
   const dashed = segments.filter((s) => /dash|hidden|center/i.test(s.lineType || ''));
   const continuous = segments.filter((s) => !/dash|hidden|center/i.test(s.lineType || ''));
   const out: PanelProposalBox[] = [];
-  const covers = (coord: number, lo: number, hi: number, horizontal: boolean) => continuous.some((s) => {
+  const closes = (coord: number, lo: number, hi: number, horizontal: boolean) => continuous.some((s) => {
     const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
-    const perpendicular = horizontal ? Math.abs(dy) >= Math.abs(dx) * 4 : Math.abs(dx) >= Math.abs(dy) * 4;
-    if (!perpendicular) return false;
+    if (horizontal ? Math.abs(dy) < Math.abs(dx) * 4 : Math.abs(dx) < Math.abs(dy) * 4) return false;
     const fixed = horizontal ? (s.a.x + s.b.x) / 2 : (s.a.y + s.b.y) / 2;
-    const sLo = horizontal ? Math.min(s.a.y, s.b.y) : Math.min(s.a.x, s.b.x);
-    const sHi = horizontal ? Math.max(s.a.y, s.b.y) : Math.max(s.a.x, s.b.x);
-    return Math.abs(fixed - coord) <= ALIGN_TOL && sLo <= lo + ALIGN_TOL && sHi >= hi - ALIGN_TOL;
+    const a = horizontal ? Math.min(s.a.y, s.b.y) : Math.min(s.a.x, s.b.x);
+    const b = horizontal ? Math.max(s.a.y, s.b.y) : Math.max(s.a.x, s.b.x);
+    return Math.abs(fixed - coord) <= ALIGN_TOL && a <= lo + ALIGN_TOL && b >= hi - ALIGN_TOL;
   });
   for (const dash of dashed) for (const solid of continuous) {
-    const ddx = dash.b.x - dash.a.x, ddy = dash.b.y - dash.a.y;
-    const sdx = solid.b.x - solid.a.x, sdy = solid.b.y - solid.a.y;
+    const ddx = dash.b.x - dash.a.x, ddy = dash.b.y - dash.a.y, sdx = solid.b.x - solid.a.x, sdy = solid.b.y - solid.a.y;
     const horizontal = Math.abs(ddx) >= Math.abs(ddy) * 4 && Math.abs(sdx) >= Math.abs(sdy) * 4;
     const vertical = Math.abs(ddy) >= Math.abs(ddx) * 4 && Math.abs(sdy) >= Math.abs(sdx) * 4;
     if (!horizontal && !vertical) continue;
-    const dashCoord = horizontal ? (dash.a.y + dash.b.y) / 2 : (dash.a.x + dash.b.x) / 2;
-    const solidCoord = horizontal ? (solid.a.y + solid.b.y) / 2 : (solid.a.x + solid.b.x) / 2;
-    const width = Math.abs(dashCoord - solidCoord);
+    const dc = horizontal ? (dash.a.y + dash.b.y) / 2 : (dash.a.x + dash.b.x) / 2;
+    const sc = horizontal ? (solid.a.y + solid.b.y) / 2 : (solid.a.x + solid.b.x) / 2;
+    const width = Math.abs(dc - sc);
     if (width < 300 || width > 5000) continue;
     const lo = Math.max(horizontal ? Math.min(dash.a.x, dash.b.x) : Math.min(dash.a.y, dash.b.y), horizontal ? Math.min(solid.a.x, solid.b.x) : Math.min(solid.a.y, solid.b.y));
     const hi = Math.min(horizontal ? Math.max(dash.a.x, dash.b.x) : Math.max(dash.a.y, dash.b.y), horizontal ? Math.max(solid.a.x, solid.b.x) : Math.max(solid.a.y, solid.b.y));
-    const run = hi - lo;
-    if (run < 600 || run > 15_000 || !covers(lo, Math.min(dashCoord, solidCoord), Math.max(dashCoord, solidCoord), horizontal) || !covers(hi, Math.min(dashCoord, solidCoord), Math.max(dashCoord, solidCoord), horizontal)) continue;
-    const box = horizontal
-      ? { x0: lo, y0: Math.min(dashCoord, solidCoord), x1: hi, y1: Math.max(dashCoord, solidCoord) }
-      : { x0: Math.min(dashCoord, solidCoord), y0: lo, x1: Math.max(dashCoord, solidCoord), y1: hi };
+    if (hi - lo < 600 || hi - lo > 15_000 || !closes(lo, Math.min(dc, sc), Math.max(dc, sc), horizontal) || !closes(hi, Math.min(dc, sc), Math.max(dc, sc), horizontal)) continue;
+    const box = horizontal ? { x0: lo, y0: Math.min(dc, sc), x1: hi, y1: Math.max(dc, sc) } : { x0: Math.min(dc, sc), y0: lo, x1: Math.max(dc, sc), y1: hi };
     const c = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
     if (out.some((p) => Math.hypot((p.box.x0 + p.box.x1) / 2 - c.x, (p.box.y0 + p.box.y1) / 2 - c.y) < 500)) continue;
     out.push({ label: 'CANTILEVER', box, lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0, openingM2: 0, thicknessMm: panelThickness(box, c, thks), confident: false, duplicate: false });

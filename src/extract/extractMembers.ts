@@ -103,22 +103,20 @@ function slabMembers(dwg: NormalizedDwg, floor: string): MemberRow[] {
   return ordered.map((p, i) => {
     const r = emptyRow(nextId(), floor);
     r.member = `P${i + 1}${p.label ? ` (${p.label})` : ''}`;
-    r.cadX = p.polygon ? p.polygon.reduce((sum, point) => sum + point.x, 0) / p.polygon.length : (p.box.x0 + p.box.x1) / 2;
-    r.cadY = p.polygon ? p.polygon.reduce((sum, point) => sum + point.y, 0) / p.polygon.length : (p.box.y0 + p.box.y1) / 2;
+    r.cadX = (p.box.x0 + p.box.x1) / 2;
+    r.cadY = (p.box.y0 + p.box.y1) / 2;
     r.cadX0 = p.box.x0;
     r.cadY0 = p.box.y0;
     r.cadX1 = p.box.x1;
     r.cadY1 = p.box.y1;
-    r.cadPolygon = p.polygon;
     r.length = round3(p.lengthMm / 1000);
     r.breadth = round3(p.breadthMm / 1000);
     r.height = round3((p.thicknessMm || 175) / 1000); // slab thickness → concrete depth
     r.slabThickness = r.height;
     r.openings = round3(p.openingM2);
-    if (p.grossAreaM2 != null) r.netArea = round3(Math.max(p.grossAreaM2 - p.openingM2, 0));
     r.nos = 1;
     r.needsReview = !p.confident || p.duplicate;
-    r.reviewReason = p.duplicate ? 'overlaps a stronger panel' : p.polygon ? 'triangular slab detected from dashed/continuous boundary rule' : !p.confident ? 'dimension/void uncertain' : undefined;
+    r.reviewReason = p.duplicate ? 'overlaps a stronger panel' : !p.confident ? 'dimension/void uncertain' : undefined;
     return r;
   });
 }

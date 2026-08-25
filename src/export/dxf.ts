@@ -22,6 +22,13 @@ function centredText(c: Pt, value: string, height: number): string {
     + pair(11, c.x) + pair(21, c.y) + pair(31, 0);
 }
 
+function dimensionText(c: Pt, value: string, height: number, rotation = 0): string {
+  return pair(0, 'TEXT') + pair(8, 'QSS_PANEL_DIM') + pair(62, 3)
+    + pair(10, c.x) + pair(20, c.y) + pair(30, 0)
+    + pair(40, height) + pair(1, value) + pair(50, rotation) + pair(72, 1) + pair(73, 2)
+    + pair(11, c.x) + pair(21, c.y) + pair(31, 0);
+}
+
 function modernBase(kind: string, subclass: string, colour: number): string {
   return pair(0, kind) + pair(100, 'AcDbEntity') + pair(8, '0') + pair(62, colour) + pair(100, subclass);
 }
@@ -79,6 +86,18 @@ export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[
       entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x1, y: y0 }, b: { x: x1, y: y1 } }, 'QSS_PANEL_BOUNDARY', 3);
       entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x1, y: y1 }, b: { x: x0, y: y1 } }, 'QSS_PANEL_BOUNDARY', 3);
       entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x0, y: y1 }, b: { x: x0, y: y0 } }, 'QSS_PANEL_BOUNDARY', 3);
+      const pw = Math.abs(x1 - x0), ph = Math.abs(y1 - y0);
+      const tick = Math.max(35, Math.min(120, Math.min(pw, ph) * 0.045));
+      const textHeight = Math.max(55, Math.min(160, Math.min(pw, ph) * 0.065));
+      const hy = y0 + ph * 0.12, vx = x1 - pw * 0.12;
+      entities += line({ layer: 'QSS_PANEL_DIM', a: { x: x0, y: hy }, b: { x: x1, y: hy } }, 'QSS_PANEL_DIM', 3);
+      entities += line({ layer: 'QSS_PANEL_DIM', a: { x: x0, y: hy - tick }, b: { x: x0, y: hy + tick } }, 'QSS_PANEL_DIM', 3);
+      entities += line({ layer: 'QSS_PANEL_DIM', a: { x: x1, y: hy - tick }, b: { x: x1, y: hy + tick } }, 'QSS_PANEL_DIM', 3);
+      entities += dimensionText({ x: (x0 + x1) / 2, y: hy + textHeight * 0.75 }, String(Math.round(pw)), textHeight);
+      entities += line({ layer: 'QSS_PANEL_DIM', a: { x: vx, y: y0 }, b: { x: vx, y: y1 } }, 'QSS_PANEL_DIM', 3);
+      entities += line({ layer: 'QSS_PANEL_DIM', a: { x: vx - tick, y: y0 }, b: { x: vx + tick, y: y0 } }, 'QSS_PANEL_DIM', 3);
+      entities += line({ layer: 'QSS_PANEL_DIM', a: { x: vx - tick, y: y1 }, b: { x: vx + tick, y: y1 } }, 'QSS_PANEL_DIM', 3);
+      entities += dimensionText({ x: vx - textHeight * 0.75, y: (y0 + y1) / 2 }, String(Math.round(ph)), textHeight, 90);
     }
     entities += circle(c, radius);
     entities += line({ layer: 'QSS_PANEL_MARK', a: { x: c.x - radius * 0.75, y: c.y }, b: { x: c.x + radius * 0.75, y: c.y } }, 'QSS_PANEL_MARK', 2);

@@ -49,6 +49,23 @@ export function buildSlabReferencePdf(dwgs: NormalizedDwg[], members: MemberRow[
     const panelRadius = [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)
       ? Math.min(baseRadius, Math.max(2, Math.min(Math.abs((m.cadX1 as number) - (m.cadX0 as number)), Math.abs((m.cadY1 as number) - (m.cadY0 as number))) * scale * 0.12))
       : baseRadius;
+    if ([m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
+      const x0 = m.cadX0 as number, y0 = m.cadY0 as number, x1 = m.cadX1 as number, y1 = m.cadY1 as number;
+      const a = map({ x: x0, y: y0 }), b = map({ x: x1, y: y1 });
+      const pw = Math.abs(b.x - a.x), ph = Math.abs(b.y - a.y);
+      const tick = Math.max(1.2, Math.min(3.5, Math.min(pw, ph) * 0.045));
+      const fontSize = Math.max(2.5, Math.min(5, panelRadius * 0.78));
+      const hy = a.y + ph * 0.12, vx = b.x - pw * 0.12;
+      const lengthText = String(Math.round(Math.abs(x1 - x0)));
+      const breadthText = String(Math.round(Math.abs(y1 - y0)));
+      stream += `0 0.62 0 RG 0.35 w ${n(a.x)} ${n(hy)} m ${n(b.x)} ${n(hy)} l S `;
+      stream += `${n(a.x)} ${n(hy - tick)} m ${n(a.x)} ${n(hy + tick)} l S ${n(b.x)} ${n(hy - tick)} m ${n(b.x)} ${n(hy + tick)} l S\n`;
+      stream += `0 0.55 0 rg BT /F1 ${n(fontSize)} Tf ${n((a.x + b.x) / 2 - lengthText.length * fontSize * 0.25)} ${n(hy + fontSize * 0.7)} Td (${lengthText}) Tj ET\n`;
+      stream += `0 0.62 0 RG ${n(vx)} ${n(a.y)} m ${n(vx)} ${n(b.y)} l S `;
+      stream += `${n(vx - tick)} ${n(a.y)} m ${n(vx + tick)} ${n(a.y)} l S ${n(vx - tick)} ${n(b.y)} m ${n(vx + tick)} ${n(b.y)} l S\n`;
+      stream += `0 0.55 0 rg BT /F1 ${n(fontSize)} Tf 0 1 -1 0 ${n(vx - fontSize * 0.7)} ${n((a.y + b.y) / 2 - breadthText.length * fontSize * 0.25)} Tm (${breadthText}) Tj ET\n`;
+      stream += '0 0.65 0 RG\n';
+    }
     stream += `${n(c.x + panelRadius)} ${n(c.y)} m ${n(c.x + panelRadius)} ${n(c.y + k * panelRadius)} ${n(c.x + k * panelRadius)} ${n(c.y + panelRadius)} ${n(c.x)} ${n(c.y + panelRadius)} c `;
     stream += `${n(c.x - k * panelRadius)} ${n(c.y + panelRadius)} ${n(c.x - panelRadius)} ${n(c.y + k * panelRadius)} ${n(c.x - panelRadius)} ${n(c.y)} c `;
     stream += `${n(c.x - panelRadius)} ${n(c.y - k * panelRadius)} ${n(c.x - k * panelRadius)} ${n(c.y - panelRadius)} ${n(c.x)} ${n(c.y - panelRadius)} c `;

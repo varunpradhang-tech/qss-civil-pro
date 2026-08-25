@@ -106,7 +106,15 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     });
     let { above, below, right, left } = bounds(H, V);
     const nearbyTos = tosNotes.some((t) => Math.hypot(t.pos.x - c.x, t.pos.y - c.y) <= 20_000);
-    if ((!above || !below || !right || !left) && (nearbyTos || L.balconyEvidence)) ({ above, below, right, left } = bounds(allH, allV));
+    if (nearbyTos || L.balconyEvidence) {
+      const alternate = bounds(allH, allV);
+      const area = (b: ReturnType<typeof bounds>) => b.above && b.below && b.right && b.left
+        ? (b.above.y - b.below.y) * (b.right.x - b.left.x) : Number.POSITIVE_INFINITY;
+      const current = { above, below, right, left };
+      // TOS/cantilever evidence permits nonstandard layers. Prefer the tighter
+      // complete enclosure instead of accepting distant named-layer geometry.
+      if (area(alternate) < area(current)) ({ above, below, right, left } = alternate);
+    }
 
     if (!above || !below || !right || !left) {
       if (!L.trustedLayer) continue;
@@ -133,6 +141,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
     return plausibleBay && !held;
   });
+  resolveOrthogonalStripOverlaps(measurable);
   assignCutouts(measurable, cutouts); // contain-or-nearest panel, per QSS-SLAB-004
   markDuplicates(measurable);
   // A duplicate proposal represents the same physical bay and must never be
@@ -179,6 +188,31 @@ function markDuplicates(panels: PanelProposalBox[]): void {
     const p = panels[i];
     if (kept.some((k) => overlapFrac(p.box, k.box) > 0.6)) { p.duplicate = true; p.confident = false; }
     else kept.push(p);
+  }
+}
+
+/** Join perpendicular rectangular balcony strips without billing their shared corner twice. */
+function resolveOrthogonalStripOverlaps(panels: PanelProposalBox[]): void {
+  for (let i = 0; i < panels.length; i++) for (let j = i + 1; j < panels.length; j++) {
+    const a = panels[i], b = panels[j];
+    if (a.polygon || b.polygon) continue;
+    const aw = a.box.x1 - a.box.x0, ah = a.box.y1 - a.box.y0;
+    const bw = b.box.x1 - b.box.x0, bh = b.box.y1 - b.box.y0;
+    const horizontal = aw >= ah && bw < bh ? a : bw >= bh && aw < ah ? b : undefined;
+    const vertical = horizontal === a ? b : horizontal === b ? a : undefined;
+    if (!horizontal || !vertical) continue;
+    const ox = Math.max(0, Math.min(horizontal.box.x1, vertical.box.x1) - Math.max(horizontal.box.x0, vertical.box.x0));
+    const oy = Math.max(0, Math.min(horizontal.box.y1, vertical.box.y1) - Math.max(horizontal.box.y0, vertical.box.y0));
+    const verticalWidth = vertical.box.x1 - vertical.box.x0;
+    const horizontalWidth = horizontal.box.y1 - horizontal.box.y0;
+    if (ox < verticalWidth * 0.8 || oy < horizontalWidth * 0.8) continue;
+    const touchesBottom = Math.abs(Math.max(horizontal.box.y0, vertical.box.y0) - vertical.box.y0) <= ALIGN_TOL;
+    const touchesTop = Math.abs(Math.min(horizontal.box.y1, vertical.box.y1) - vertical.box.y1) <= ALIGN_TOL;
+    if (touchesBottom) vertical.box.y0 += oy;
+    else if (touchesTop) vertical.box.y1 -= oy;
+    else continue;
+    vertical.breadthMm = Math.max(0, vertical.box.y1 - vertical.box.y0);
+    vertical.confident = vertical.confident && vertical.breadthMm >= 300;
   }
 }
 const boxArea = (b: PanelProposalBox['box']) => Math.max(0, b.x1 - b.x0) * Math.max(0, b.y1 - b.y0);

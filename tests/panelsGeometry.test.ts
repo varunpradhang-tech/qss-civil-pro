@@ -93,4 +93,39 @@ describe('unmarked slab geometry', () => {
     const [member] = extractMembers(triangle, 'slab');
     expect(member.netArea).toBe(6);
   });
+
+  it('prefers a tight TOS strip enclosure over distant named structural boundaries', () => {
+    const strip = drawing();
+    strip.segments = [
+      { layer: 'BEAM', a: { x: -20000, y: -10000 }, b: { x: 20000, y: -10000 } },
+      { layer: 'BEAM', a: { x: -20000, y: 10000 }, b: { x: 20000, y: 10000 } },
+      { layer: 'WALL', a: { x: -20000, y: -10000 }, b: { x: -20000, y: 10000 } },
+      { layer: 'WALL', a: { x: 20000, y: -10000 }, b: { x: 20000, y: 10000 } },
+      { layer: '17', lineType: 'DASHED', a: { x: 0, y: 0 }, b: { x: 9000, y: 0 } },
+      { layer: '17', lineType: 'DASHED', a: { x: 0, y: 1200 }, b: { x: 9000, y: 1200 } },
+      { layer: 'EDGE', a: { x: 0, y: 0 }, b: { x: 0, y: 1200 } },
+      { layer: 'EDGE', a: { x: 9000, y: 0 }, b: { x: 9000, y: 1200 } },
+    ];
+    strip.texts = [{ layer: '4', text: 'S6', pos: { x: 4500, y: 600 } }, { layer: 'LEVEL', text: 'TOS +2000 LVL', pos: { x: 4000, y: 650 } }];
+    expect(autoProposePanels(strip)).toMatchObject([{ lengthMm: 9000, breadthMm: 1200 }]);
+  });
+
+  it('trims the vertical leg of an L-shaped slab by the overlapping horizontal width', () => {
+    const lShape = drawing();
+    lShape.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 6000, y: 0 } },
+      { layer: 'BEAM', a: { x: 0, y: 1000 }, b: { x: 6000, y: 1000 } },
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 0, y: 6000 } },
+      { layer: 'BEAM', a: { x: 1000, y: 0 }, b: { x: 1000, y: 6000 } },
+      { layer: 'BEAM', a: { x: 0, y: 6000 }, b: { x: 1000, y: 6000 } },
+      { layer: 'BEAM', a: { x: 6000, y: 0 }, b: { x: 6000, y: 1000 } },
+    ];
+    lShape.texts = [
+      { layer: 'SLABS NO', text: 'S1', pos: { x: 3000, y: 500 } },
+      { layer: 'SLABS NO', text: 'S1', pos: { x: 500, y: 3000 } },
+    ];
+    const panels = autoProposePanels(lShape);
+    const vertical = panels.find((p) => p.box.x1 - p.box.x0 < p.box.y1 - p.box.y0);
+    expect(vertical?.breadthMm).toBe(5000);
+  });
 });

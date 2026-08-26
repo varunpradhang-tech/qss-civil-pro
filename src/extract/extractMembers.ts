@@ -144,6 +144,10 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     r.height = round3(thicknessMm / 1000); // slab thickness → concrete depth
     r.slabThickness = r.height;
     r.openings = round3(p.openingM2);
+    if (p.netAreaM2 !== undefined) {
+      r.netArea = round3(Math.max(p.netAreaM2 - p.openingM2, 0));
+      r.cadPolygon = p.polygon;
+    }
     r.nos = 1;
     const reviewReasons = [
       p.duplicate ? 'overlaps a stronger panel' : '',

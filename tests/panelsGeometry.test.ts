@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoProposePanels } from '../src/extract/panels.js';
+import { autoProposePanels, detectClosedCantileverStrips } from '../src/extract/panels.js';
 import { extractMembers } from '../src/extract/extractMembers.js';
 import type { NormalizedDwg } from '../src/domain/types.js';
 
@@ -103,5 +103,38 @@ describe('unmarked slab geometry', () => {
       { layer: 'EDGE', lineType: 'CONTINUOUS', a: { x: 6000, y: 0 }, b: { x: 6000, y: 1500 } },
     ];
     expect(autoProposePanels(cantilever)).toMatchObject([{ label: 'CANTILEVER', lengthMm: 6000, breadthMm: 1500 }]);
+  });
+
+  it('recovers an S-marked corridor bay with one free edge from marked dimensions', () => {
+    const corridor = drawing();
+    corridor.segments = corridor.segments.filter((segment) => segment.layer !== 'RCC WALL' || segment.a.y !== 3000);
+    corridor.dimensions = [
+      { layer: 'SLABS NO T2', measurement: 4000, dir: 'H', mid: { x: 2000, y: 1500 }, p1: { x: 0, y: 1500 }, p2: { x: 4000, y: 1500 } },
+      { layer: 'SLABS NO T2', measurement: 3000, dir: 'V', mid: { x: 2000, y: 1500 }, p1: { x: 2000, y: 0 }, p2: { x: 2000, y: 3000 } },
+    ];
+    expect(autoProposePanels(corridor)).toMatchObject([{ label: 'S1A', lengthMm: 4000, breadthMm: 3000, confident: false }]);
+  });
+
+  it('steps past the two faces of one beam when a corridor S mark sits on that beam', () => {
+    const corridor = drawing();
+    corridor.texts = [{ layer: '4', text: 'S1', pos: { x: 2000, y: 100 } }];
+    corridor.segments = [
+      { layer: '1-BEAM', a: { x: 0, y: 0 }, b: { x: 4000, y: 0 } },
+      { layer: '1-BEAM', a: { x: 0, y: 200 }, b: { x: 4000, y: 200 } },
+      { layer: '1-BEAM', a: { x: 0, y: 1000 }, b: { x: 4000, y: 1000 } },
+      { layer: '1-BEAM', a: { x: 0, y: 0 }, b: { x: 0, y: 1000 } },
+      { layer: '1-BEAM', a: { x: 4000, y: 0 }, b: { x: 4000, y: 1000 } },
+    ];
+    expect(autoProposePanels(corridor)).toMatchObject([{ label: 'S1', lengthMm: 4000, breadthMm: 1000, confident: false }]);
+  });
+
+  it('keeps the exact area of a sloping cantilever between hidden and solid beam faces', () => {
+    const panels = detectClosedCantileverStrips([
+      { layer: '1-BEAM', lineType: 'HIDDEN', a: { x: 0, y: 450 }, b: { x: 4000, y: 4450 } },
+      { layer: '1-BEAM', lineType: 'CONTINUOUS', a: { x: 0, y: 0 }, b: { x: 4000, y: 4000 } },
+    ]);
+    expect(panels).toHaveLength(1);
+    expect(panels[0].polygon).toHaveLength(4);
+    expect(panels[0].netAreaM2).toBeCloseTo(1.69875, 3);
   });
 });

@@ -12,6 +12,8 @@ export interface PanelProposalBox {
   thicknessMm: number; // slab thickness from the nearest "NNN THK." text (0 = not found → use default)
   confident: boolean;
   duplicate: boolean; // overlaps a stronger panel → excluded from total, flagged for review
+  polygon?: Pt[]; // exact outline for non-rectangular cantilever/chajja panels
+  netAreaM2?: number; // exact polygon area before opening deductions
 }
 
 interface ThkText { pos: Pt; mm: number; }
@@ -89,39 +91,84 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const out: PanelProposalBox[] = [];
   for (const L of labels) {
     const c: Pt = L.pos;
-    const above = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y > c.y).sort((a, b) => a.y - b.y)[0];
-    const below = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y < c.y).sort((a, b) => b.y - a.y)[0];
-    const right = V.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x > c.x).sort((a, b) => a.x - b.x)[0];
-    const left = V.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x < c.x).sort((a, b) => b.x - a.x)[0];
+    const aboveOptions = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y > c.y).sort((a, b) => a.y - b.y);
+    const belowOptions = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y < c.y).sort((a, b) => b.y - a.y);
+    const rightOptions = V.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x > c.x).sort((a, b) => a.x - b.x);
+    const leftOptions = V.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x < c.x).sort((a, b) => b.x - a.x);
+    let above = aboveOptions[0], below = belowOptions[0], right = rightOptions[0], left = leftOptions[0];
+    let expandedFromBeamFace = false;
+    // If an S mark sits on a beam, the nearest two lines are merely that
+    // beam's faces. Step outward to the first plausible slab bay instead of
+    // rejecting the resulting 200–450 mm band as non-slab geometry.
+    if (above && below && above.y - below.y < 600) {
+      const pair = belowOptions.slice(0, 4).flatMap((b) => aboveOptions.slice(0, 4).map((a) => ({ a, b, span: a.y - b.y })))
+        .filter((p) => p.span >= 600 && p.span <= 30_000).sort((a, b) => a.span - b.span)[0];
+      if (pair) { above = pair.a; below = pair.b; expandedFromBeamFace = true; }
+    }
+    if (right && left && right.x - left.x < 600) {
+      const pair = leftOptions.slice(0, 4).flatMap((l) => rightOptions.slice(0, 4).map((r) => ({ r, l, span: r.x - l.x })))
+        .filter((p) => p.span >= 600 && p.span <= 30_000).sort((a, b) => a.span - b.span)[0];
+      if (pair) { right = pair.r; left = pair.l; expandedFromBeamFace = true; }
+    }
 
     if (!above || !below || !right || !left) {
-      if (!L.trustedLayer) continue;
       const thicknessMm = nearestThickness(c, thicknesses);
       const nl = nearestDimValue(c, dims, 'H'), nb = nearestDimValue(c, dims, 'V');
-      out.push({ label: L.text, box: { x0: c.x - 1000, y0: c.y - 1000, x1: c.x + 1000, y1: c.y + 1000 }, lengthMm: nl, breadthMm: nb, openingM2: 0, thicknessMm, confident: false, duplicate: false });
+      // Consultant drawings often use a continuous free edge for a balcony or
+      // corridor strip, so one RCC ray can legitimately be absent. Recover an
+      // exact S-mark only when geometry exists in both axes and marked CAD
+      // dimensions provide the missing span. Schedule/section marks were
+      // already removed by excludedDetailPoint above.
+      const structuralSides = Number(!!above) + Number(!!below) + Number(!!right) + Number(!!left);
+      const partialBay = structuralSides >= 2 && !!(above || below) && !!(left || right)
+        && nl >= 300 && nl <= 30_000 && nb >= 300 && nb <= 30_000;
+      if (!L.trustedLayer && !partialBay) continue;
+      const x0 = left?.x ?? (right ? right.x - nl : c.x - nl / 2);
+      const x1 = right?.x ?? (left ? left.x + nl : c.x + nl / 2);
+      const y0 = below?.y ?? (above ? above.y - nb : c.y - nb / 2);
+      const y1 = above?.y ?? (below ? below.y + nb : c.y + nb / 2);
+      const box = { x0: Math.min(x0, x1), y0: Math.min(y0, y1), x1: Math.max(x0, x1), y1: Math.max(y0, y1) };
+      out.push({ label: L.text, box, lengthMm: nl, breadthMm: nb, openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: false, duplicate: false });
       continue;
     }
     const sL = snap(right.x - left.x, Hdims), sB = snap(above.y - below.y, Vdims);
     const box = { x0: left.x, y0: below.y, x1: right.x, y1: above.y };
-    out.push({ label: L.text, box, lengthMm: sL.v, breadthMm: sB.v, openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: sL.ok && sB.ok, duplicate: false });
+    out.push({ label: L.text, box, lengthMm: sL.v, breadthMm: sB.v, openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: sL.ok && sB.ok && !expandedFromBeamFace, duplicate: false });
   }
   // Cantilevers are an additive detector only. They never alter the stable
   // S-label ray-casting above: dashed inner face + continuous outer face +
   // continuous closures at both ends.
   const labelledPanels = [...out];
-  const labelledCentres = labelledPanels.map((panel) => ({ x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 }));
+  // Use the actual S-mark positions for the plan envelope. A low-confidence
+  // inferred box can extend several metres past its label and would otherwise
+  // hide a genuine exterior chajja near that edge.
+  const labelledCentres = labels.map((label) => label.pos);
   const labelEnvelope = labelledCentres.length ? {
     minX: Math.min(...labelledCentres.map((p) => p.x)), maxX: Math.max(...labelledCentres.map((p) => p.x)),
     minY: Math.min(...labelledCentres.map((p) => p.y)), maxY: Math.max(...labelledCentres.map((p) => p.y)),
   } : null;
   out.push(...detectClosedCantileverStrips(allSegs, thicknesses).filter((panel) => {
     const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+    const unresolvedSlabMark = labels.find((label) => label.pos.x >= panel.box.x0 - ALIGN_TOL
+      && label.pos.x <= panel.box.x1 + ALIGN_TOL && label.pos.y >= panel.box.y0 - ALIGN_TOL
+      && label.pos.y <= panel.box.y1 + ALIGN_TOL
+      && !labelledPanels.some((measured) => label.pos.x >= measured.box.x0 - ALIGN_TOL
+        && label.pos.x <= measured.box.x1 + ALIGN_TOL && label.pos.y >= measured.box.y0 - ALIGN_TOL
+        && label.pos.y <= measured.box.y1 + ALIGN_TOL));
+    if (unresolvedSlabMark) panel.label = unresolvedSlabMark.text;
     if (excludedDetailPoint(centre)) return false;
     // With no explicit cantilever text, accept geometry-only additions only
     // around the exterior of the labelled framing-plan envelope. This keeps
     // internal beam/grid cells out of the cantilever list.
     if (labelEnvelope && centre.x >= labelEnvelope.minX && centre.x <= labelEnvelope.maxX
-      && centre.y >= labelEnvelope.minY && centre.y <= labelEnvelope.maxY) return false;
+      && centre.y >= labelEnvelope.minY && centre.y <= labelEnvelope.maxY) {
+      // Sloping corner chajjas can sit just inside the rectangular envelope of
+      // all slab labels. Only allow an exact polygonal candidate in this case,
+      // and only within 3 m of an exterior envelope edge.
+      const edgeDistance = Math.min(centre.x - labelEnvelope.minX, labelEnvelope.maxX - centre.x,
+        centre.y - labelEnvelope.minY, labelEnvelope.maxY - centre.y);
+      if ((!panel.polygon || edgeDistance > 3000) && !unresolvedSlabMark) return false;
+    }
     if (labelEnvelope) {
       const dx = Math.max(labelEnvelope.minX - centre.x, 0, centre.x - labelEnvelope.maxX);
       const dy = Math.max(labelEnvelope.minY - centre.y, 0, centre.y - labelEnvelope.maxY);
@@ -129,8 +176,28 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     }
     // Geometry-only additions must never compete with or replace an S-coded
     // panel. Any material overlap belongs to the authoritative labelled bay.
+    if (panel.polygon) {
+      // The polygon is the narrow band between the hidden beam face and the
+      // solid free edge. Its centre lies on the support boundary and may fall
+      // inside an adjacent panel's rectangular proxy, so rectangle overlap is
+      // not a valid rejection test here. The structural-line and exterior-edge
+      // gates above are the authoritative checks.
+      return true;
+    }
+    if (unresolvedSlabMark) return true;
     return !labelledPanels.some((labelled) => overlapFrac(panel.box, labelled.box) > 0.1);
   }));
+
+  // An L-shaped chajja is commonly drawn as two perpendicular strips. Keep
+  // both legs, but deduct their shared corner once so the net area is a union,
+  // not the sum of two overlapping rectangles.
+  const cantilevers = out.filter((panel) => panel.label === 'CANTILEVER');
+  for (let i = 0; i < cantilevers.length; i++) {
+    const gross = cantilevers[i].netAreaM2 ?? boxArea(cantilevers[i].box) / 1e6;
+    let repeated = 0;
+    for (let j = 0; j < i; j++) repeated += rectOverlap(cantilevers[i].box, cantilevers[j].box);
+    cantilevers[i].netAreaM2 = Math.max(0, gross - repeated);
+  }
 
   // HOLD / HOLD AREA is an explicit instruction that the containing bay is
   // outside the current measurable scope. Exclude it before deductions,
@@ -188,7 +255,13 @@ function markDuplicates(panels: PanelProposalBox[]): void {
   const kept: PanelProposalBox[] = [];
   for (const i of idx) {
     const p = panels[i];
-    if (kept.some((k) => overlapFrac(p.box, k.box) > 0.6)) { p.duplicate = true; p.confident = false; }
+    // A sloping polygon's bounding rectangle contains large triangular areas
+    // that are not part of the slab. Do not compare that loose box with an
+    // ordinary rectangular S-panel when deciding duplicates.
+    const duplicate = p.polygon
+      ? kept.some((k) => k.polygon && overlapFrac(p.box, k.box) > 0.8)
+      : kept.some((k) => !k.polygon && overlapFrac(p.box, k.box) > 0.6);
+    if (duplicate) { p.duplicate = true; p.confident = false; }
     else kept.push(p);
   }
 }
@@ -241,7 +314,7 @@ const centroid = (pts: Pt[]) => { let x = 0, y = 0; for (const p of pts) { x += 
 const bbox = (pts: Pt[]) => ({ x0: Math.min(...pts.map((p) => p.x)), y0: Math.min(...pts.map((p) => p.y)), x1: Math.max(...pts.map((p) => p.x)), y1: Math.max(...pts.map((p) => p.y)) });
 const mid = (a: Pt, b: Pt) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 
-function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[]): PanelProposalBox[] {
+export function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[] = []): PanelProposalBox[] {
   const dashed = segments.filter((s) => /dash|hidden|center/i.test(s.lineType || ''));
   const continuous = segments.filter((s) => !/dash|hidden|center/i.test(s.lineType || ''));
   const out: PanelProposalBox[] = [];
@@ -254,6 +327,7 @@ function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[]): Pan
     return Math.abs(fixed - coord) <= ALIGN_TOL && a <= lo + ALIGN_TOL && b >= hi - ALIGN_TOL;
   });
   for (const dash of dashed) for (const solid of continuous) {
+    if (!/beam|slab|chajja|edge/i.test(dash.layer) || !/beam|slab|chajja|edge/i.test(solid.layer)) continue;
     const ddx = dash.b.x - dash.a.x, ddy = dash.b.y - dash.a.y, sdx = solid.b.x - solid.a.x, sdy = solid.b.y - solid.a.y;
     const horizontal = Math.abs(ddx) >= Math.abs(ddy) * 4 && Math.abs(sdx) >= Math.abs(sdy) * 4;
     const vertical = Math.abs(ddy) >= Math.abs(ddx) * 4 && Math.abs(sdy) >= Math.abs(sdx) * 4;
@@ -269,6 +343,47 @@ function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[]): Pan
     const c = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
     if (out.some((p) => Math.hypot((p.box.x0 + p.box.x1) / 2 - c.x, (p.box.y0 + p.box.y1) / 2 - c.y) < 500)) continue;
     out.push({ label: 'CANTILEVER', box, lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0, openingM2: 0, thicknessMm: panelThickness(box, c, thks), confident: false, duplicate: false });
+  }
+
+  // Diagonal/sloping chajja edges occur at the two external L-shaped corners
+  // of many framing plans. Pair a dashed slab-side line with a parallel solid
+  // free edge and retain the exact quadrilateral instead of inflating it to
+  // its rectangular bounding box.
+  for (const dash of dashed) for (const solid of continuous) {
+    if (!/beam|slab|chajja|edge/i.test(dash.layer) || !/beam|slab|chajja|edge/i.test(solid.layer)) continue;
+    const dv = { x: dash.b.x - dash.a.x, y: dash.b.y - dash.a.y };
+    const sv = { x: solid.b.x - solid.a.x, y: solid.b.y - solid.a.y };
+    const dl = Math.hypot(dv.x, dv.y), sl = Math.hypot(sv.x, sv.y);
+    if (dl < 800 || sl < 800 || dl > 20_000 || sl > 20_000) continue;
+    // Axis-aligned strips were handled above.
+    if (Math.abs(dv.x) < dl * 0.2 || Math.abs(dv.y) < dl * 0.2) continue;
+    const u = { x: dv.x / dl, y: dv.y / dl };
+    const su = { x: sv.x / sl, y: sv.y / sl };
+    if (Math.abs(u.x * su.x + u.y * su.y) < 0.985) continue;
+    const normal = { x: -u.y, y: u.x };
+    const distance = Math.abs((solid.a.x - dash.a.x) * normal.x + (solid.a.y - dash.a.y) * normal.y);
+    if (distance < 300 || distance > 5000) continue;
+    const projection = (p: Pt) => (p.x - dash.a.x) * u.x + (p.y - dash.a.y) * u.y;
+    const d0 = 0, d1 = dl;
+    const sp0 = projection(solid.a), sp1 = projection(solid.b);
+    const lo = Math.max(Math.min(d0, d1), Math.min(sp0, sp1));
+    const hi = Math.min(Math.max(d0, d1), Math.max(sp0, sp1));
+    if (hi - lo < 600 || hi - lo > 15_000) continue;
+    const onDash = (t: number): Pt => ({ x: dash.a.x + u.x * t, y: dash.a.y + u.y * t });
+    const onSolid = (t: number): Pt => {
+      const base = projection(solid.a);
+      return { x: solid.a.x + u.x * (t - base), y: solid.a.y + u.y * (t - base) };
+    };
+    const polygon = [onDash(lo), onDash(hi), onSolid(hi), onSolid(lo)];
+    const areaM2 = Math.abs(shoelace(polygon)) / 1e6;
+    if (areaM2 < 0.2 || areaM2 > 100) continue;
+    const box = bbox(polygon);
+    const c = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
+    if (out.some((p) => p.polygon && Math.hypot((p.box.x0 + p.box.x1 - box.x0 - box.x1) / 2,
+      (p.box.y0 + p.box.y1 - box.y0 - box.y1) / 2) < 500)) continue;
+    out.push({ label: 'CANTILEVER', box, polygon, netAreaM2: areaM2,
+      lengthMm: hi - lo, breadthMm: distance, openingM2: 0,
+      thicknessMm: panelThickness(box, c, thks), confident: false, duplicate: false });
   }
   return out;
 }

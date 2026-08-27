@@ -174,4 +174,24 @@ describe('unmarked slab geometry', () => {
     ] }];
     expect(autoProposePanels(outside)[0].openingM2).toBe(0);
   });
+
+  it('recognises an unmarked hatch when the same hatch is confirmed by an S-marked panel', () => {
+    const hatched = drawing();
+    hatched.extents.max.x = 9000;
+    hatched.segments.push(
+      { layer: 'BEAM', a: { x: 5000, y: 0 }, b: { x: 9000, y: 0 } },
+      { layer: 'BEAM', a: { x: 5000, y: 3000 }, b: { x: 9000, y: 3000 } },
+      { layer: 'BEAM', a: { x: 5000, y: 0 }, b: { x: 5000, y: 3000 } },
+      { layer: 'BEAM', a: { x: 9000, y: 0 }, b: { x: 9000, y: 3000 } },
+    );
+    hatched.hatches = [
+      { layer: 'SLAB HATCH', solid: false, pattern: 'TRIANG', patternScale: 700,
+        pts: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 3000 }, { x: 0, y: 3000 }] },
+      { layer: 'SLAB HATCH', solid: false, pattern: 'TRIANG', patternScale: 1500,
+        pts: [{ x: 5000, y: 0 }, { x: 9000, y: 0 }, { x: 9000, y: 3000 }, { x: 5000, y: 3000 }] },
+    ];
+    const panels = autoProposePanels(hatched);
+    expect(panels).toHaveLength(2);
+    expect(panels.some((panel) => panel.label === 'HATCH-SLAB' && panel.lengthMm === 4000 && panel.breadthMm === 3000)).toBe(true);
+  });
 });

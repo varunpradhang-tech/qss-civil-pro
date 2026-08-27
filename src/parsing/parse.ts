@@ -146,7 +146,12 @@ export function normalize(db: any, fileName: string): NormalizedDwg {
         if (edge.start) pts.push(apply(mat, edge.start));
         else if (edge.center) pts.push(apply(mat, edge.center)); // arc/circle edge → use centre as a point
       }
-      if (pts.length >= 3) { hatches.push({ pts, layer, solid: e.solidFill === 1 }); pts.forEach(grow); }
+      if (pts.length >= 3) {
+        hatches.push({ pts, layer, solid: e.solidFill === 1, pattern: e.patternName || undefined,
+          patternScale: typeof e.patternScale === 'number' ? e.patternScale : undefined,
+          patternAngle: typeof e.patternAngle === 'number' ? e.patternAngle : undefined });
+        pts.forEach(grow);
+      }
     }
   };
 

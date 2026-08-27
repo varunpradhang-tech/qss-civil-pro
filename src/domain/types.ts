@@ -42,6 +42,6 @@ export interface NormalizedDwg {
   dimensions: DimensionRef[];
   texts: TextRef[];
   polylines: { pts: Pt[]; closed: boolean; layer: string; lineType?: string }[];
-  hatches: { pts: Pt[]; layer: string; solid: boolean }[];
+  hatches: { pts: Pt[]; layer: string; solid: boolean; pattern?: string; patternScale?: number; patternAngle?: number }[];
   extents: { min: Pt; max: Pt };
 }

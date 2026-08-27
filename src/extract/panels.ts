@@ -349,27 +349,13 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       && grossM2 <= 400;
     const held = holdNotes.some((note) => note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
       && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
-    if (!plausibleBay || held) return false;
-    // An opening outline can contain hatch geometry or even an S-code from
-    // an underlying/reference layer. It is a deduction, never an
-    // independently numbered slab panel. Retain the surrounding slab but
-    // discard a proposal whose own footprint lies substantially in a cutout.
-    const panelArea = panel.polygon ? Math.abs(shoelace(panel.polygon)) / 1e6 : boxArea(panel.box) / 1e6;
-    const insideCutout = cutouts.some((cutout) => {
-      const overlap = panel.polygon
-        ? polygonRectIntersectionArea(panel.polygon, cutout.box) / 1e6
-        : rectOverlap(panel.box, cutout.box);
-      const covered = panelArea > 0 ? overlap / panelArea : 0;
-      // Small false panels are commonly the opening frame itself. Once an
-      // identified void occupies a material part of such a box, numbering
-      // the leftover frame as a slab is incorrect. Large genuine panels are
-      // retained and receive the normal opening deduction below.
-      return covered >= 0.8 || (panelArea <= 10 && covered >= 0.2);
-    });
-    return !insideCutout;
+    return plausibleBay && !held;
   });
-  assignCutouts(measurable, cutouts); // contain-or-nearest panel, per QSS-SLAB-004
+  // Resolve physical panel duplicates before assigning openings. Otherwise a
+  // cutout can be divided between a retained panel and a nested proposal that
+  // is subsequently deleted, silently losing part of the deduction.
   markDuplicates(measurable);
+  assignCutouts(measurable.filter((panel) => !panel.duplicate), cutouts); // QSS-SLAB-004
   // An L-shaped chajja is commonly drawn as two perpendicular strips. Deduct
   // their shared corner only after nested/false candidates have been removed;
   // otherwise a rejected beam band can silently reduce the retained slab.
@@ -409,7 +395,7 @@ function rectOverlap(a: { x0: number; y0: number; x1: number; y1: number }, b: {
 }
 
 // --- overlap gate: if two panels overlap materially, keep the smaller (true bay), flag the larger ---
-function markDuplicates(panels: PanelProposalBox[]): void {
+export function markDuplicates(panels: PanelProposalBox[]): void {
   const idx = panels.map((_, i) => i).sort((a, b) => {
     const ac = !!panels[a].cantileverBoundary && !panels[a].polygon;
     const bc = !!panels[b].cantileverBoundary && !panels[b].polygon;
@@ -428,6 +414,12 @@ function markDuplicates(panels: PanelProposalBox[]): void {
       : panel.dottedBoundary ? 2 : panel.label !== 'CANTILEVER' ? 3 : 4;
     const ar = rank(panels[a]), br = rank(panels[b]);
     if (ar !== br) return ar - br;
+    if (ar === 0) {
+      // For two competing S-coded proposals, the full structural bay is the
+      // physical slab. A smaller nested box is normally an opening/detail
+      // face and must not survive as a second panel inside it.
+      return boxArea(panels[b].box) - boxArea(panels[a].box);
+    }
     return boxArea(panels[a].box) - boxArea(panels[b].box);
   });
   const kept: PanelProposalBox[] = [];

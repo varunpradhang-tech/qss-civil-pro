@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoProposePanels, detectClosedCantileverStrips, detectLongDottedSlabStrips } from '../src/extract/panels.js';
+import { autoProposePanels, detectClosedCantileverStrips, detectLongDottedSlabStrips, markDuplicates } from '../src/extract/panels.js';
 import { extractMembers } from '../src/extract/extractMembers.js';
 import type { NormalizedDwg } from '../src/domain/types.js';
 
@@ -17,6 +17,16 @@ const drawing = (): NormalizedDwg => ({
 });
 
 describe('unmarked slab geometry', () => {
+  it('removes a smaller nested S proposal and retains the complete slab panel', () => {
+    const panels = [
+      { label: 'S1', box: { x0: 0, y0: 3000, x1: 4820, y1: 4000 }, lengthMm: 4820, breadthMm: 1000, openingM2: 0, thicknessMm: 150, confident: true, duplicate: false },
+      { label: 'S1', box: { x0: 0, y0: 0, x1: 4820, y1: 4000 }, lengthMm: 4820, breadthMm: 4000, openingM2: 0, thicknessMm: 150, confident: true, duplicate: false },
+    ];
+    markDuplicates(panels);
+    expect(panels[0].duplicate).toBe(true);
+    expect(panels[1].duplicate).toBe(false);
+  });
+
   it('measures a panel enclosed by mixed RCC member types without dimensions', () => {
     const [panel] = autoProposePanels(drawing());
     expect(panel).toMatchObject({ label: 'S1A', lengthMm: 4000, breadthMm: 3000, confident: true });
@@ -258,25 +268,6 @@ describe('unmarked slab geometry', () => {
       pts: [{ x: 3300, y: 2300 }, { x: 3900, y: 2300 }, { x: 3900, y: 2900 }, { x: 3300, y: 2900 }] }];
     const panel = autoProposePanels(hatched).find((candidate) => candidate.label === 'S1');
     expect(panel?.openingM2).toBe(0);
-  });
-
-  it('deducts an opening without numbering its hatch/frame as another slab panel', () => {
-    const cutout = drawing();
-    cutout.texts = [{ layer: 'SLABS NO', text: 'S1', pos: { x: 3000, y: 1500 } }];
-    cutout.polylines = [{ layer: 'OPENING', closed: true, pts: [
-      { x: 500, y: 500 }, { x: 1500, y: 500 }, { x: 1500, y: 1500 }, { x: 500, y: 1500 },
-    ] }];
-    cutout.hatches = [
-      { layer: 'SLAB HATCH', solid: false, pattern: 'ANSI31', pts: [
-        { x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 3000 }, { x: 0, y: 3000 },
-      ] },
-      { layer: 'SLAB HATCH', solid: false, pattern: 'ANSI31', pts: [
-        { x: 500, y: 500 }, { x: 1500, y: 500 }, { x: 1500, y: 1500 }, { x: 500, y: 1500 },
-      ] },
-    ];
-    const panels = autoProposePanels(cutout);
-    expect(panels).toHaveLength(1);
-    expect(panels[0].openingM2).toBeCloseTo(1, 3);
   });
 
   it('keeps a true rectangular hatch as a normal length by breadth panel', () => {

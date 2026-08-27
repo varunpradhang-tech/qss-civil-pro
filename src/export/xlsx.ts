@@ -55,7 +55,7 @@ function buildSlabShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
     { header: 'S.No.', key: 'serial', width: 8 }, { header: 'Member', key: 'member', width: 22 }, { header: 'Floor', key: 'floor', width: 14 },
     { header: 'Shuttering item', key: 'item', width: 18 }, { header: 'Length (m)', key: 'length', width: 12 },
     { header: 'Breadth (m)', key: 'breadth', width: 13 }, { header: 'Openings (m²)', key: 'openings', width: 15 },
-    { header: 'Quantity (m²)', key: 'quantity', width: 15 }, { header: 'Unit', key: 'unit', width: 9 },
+    { header: 'Exact polygon area (m²)', key: 'exactArea', width: 22 }, { header: 'Quantity (m²)', key: 'quantity', width: 15 }, { header: 'Unit', key: 'unit', width: 9 },
     { header: 'Remarks', key: 'remarks', width: 34 },
   ];
   styleHeader(ws);
@@ -63,12 +63,14 @@ function buildSlabShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
   for (const [index, m] of sorted.entries()) {
     const length = Math.max(m.length || 0, 0), breadth = Math.max(m.breadth || 0, 0), openings = Math.max(m.openings || 0, 0);
     const remarks = m.needsReview ? `need review${m.reviewReason ? ` (${m.reviewReason})` : ''}` : '';
-    const row = ws.addRow({ serial: index + 1, member: m.member || m.id, floor: m.floor, item: 'Slab soffit', length, breadth, openings, unit: 'm²', remarks: remarks || null });
-    row.getCell('quantity').value = { formula: `MAX(E${row.number}*F${row.number}-G${row.number},0)`, result: Math.max(length * breadth - openings, 0) };
+    const exactArea = m.netArea != null ? Math.max(m.netArea + openings, 0) : null;
+    const result = exactArea != null ? Math.max(exactArea - openings, 0) : Math.max(length * breadth - openings, 0);
+    const row = ws.addRow({ serial: index + 1, member: m.member || m.id, floor: m.floor, item: 'Slab soffit', length, breadth, openings, exactArea, unit: 'm²', remarks: remarks || null });
+    row.getCell('quantity').value = { formula: `MAX(IF(H${row.number}>0,H${row.number},E${row.number}*F${row.number})-G${row.number},0)`, result };
     if (remarks) row.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF1F2' } }));
   }
-  addFormulaTotal(ws, 'H', 'I', 'Total — Slab shuttering', 'm²', sorted.reduce((sum, m) => sum + RULES.slab_shuttering.calculate(m, capMode), 0));
-  for (const c of ['E', 'F', 'G', 'H']) ws.getColumn(c).numFmt = '0.000';
+  addFormulaTotal(ws, 'I', 'J', 'Total — Slab shuttering', 'm²', sorted.reduce((sum, m) => sum + RULES.slab_shuttering.calculate(m, capMode), 0));
+  for (const c of ['E', 'F', 'G', 'H', 'I']) ws.getColumn(c).numFmt = '0.000';
 }
 
 function genericQuantityFormula(quantityKey: string, row: number, member: MemberRow, result: number): string {

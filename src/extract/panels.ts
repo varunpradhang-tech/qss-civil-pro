@@ -146,15 +146,16 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     (h.pattern || '').toUpperCase(),
     Math.round((h.patternAngle || 0) * 1000) / 1000,
   ].join('|');
-  const hatchCandidates = dwg.hatches.map((hatch) => ({ hatch, box: bbox(hatch.pts) })).filter(({ hatch, box }) => {
+  const hatchCandidates = dwg.hatches.flatMap((hatch) => (hatch.loops?.length ? hatch.loops : [hatch.pts])
+    .map((polygon) => ({ hatch, polygon, box: bbox(polygon), areaM2: Math.abs(shoelace(polygon)) / 1e6 }))).filter(({ hatch, box, areaM2 }) => {
     const w = box.x1 - box.x0, h = box.y1 - box.y0;
     return !hatch.solid && !!hatch.pattern && w >= 300 && h >= 300
-      && (w * h) / 1e6 <= 400;
+      && areaM2 >= 0.05 && areaM2 <= 400;
   });
   const confirmedHatchSignatures = new Set(hatchCandidates.filter(({ box }) => labels.some((label) =>
     label.pos.x >= box.x0 && label.pos.x <= box.x1 && label.pos.y >= box.y0 && label.pos.y <= box.y1))
     .map(({ hatch }) => hatchSignature(hatch)));
-  for (const { hatch, box } of hatchCandidates) {
+  for (const { hatch, polygon, box, areaM2 } of hatchCandidates) {
     if (!confirmedHatchSignatures.has(hatchSignature(hatch))) continue;
     const c = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
     if (excludedDetailPoint(c) || holdNotes.some((note) => note.pos.x >= box.x0 && note.pos.x <= box.x1
@@ -162,7 +163,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     if (labels.some((label) => label.pos.x >= box.x0 && label.pos.x <= box.x1
       && label.pos.y >= box.y0 && label.pos.y <= box.y1)) continue;
     if (out.some((panel) => overlapFrac(panel.box, box) > 0.8)) continue;
-    out.push({ label: 'HATCH-SLAB', box, lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0,
+    out.push({ label: 'HATCH-SLAB', box, polygon, netAreaM2: areaM2,
+      lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0,
       openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: true, duplicate: false });
   }
   // Cantilevers are an additive detector only. They never alter the stable

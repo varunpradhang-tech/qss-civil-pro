@@ -49,7 +49,13 @@ export function buildSlabReferencePdf(dwgs: NormalizedDwg[], members: MemberRow[
     const panelRadius = [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)
       ? Math.min(baseRadius, Math.max(2, Math.min(Math.abs((m.cadX1 as number) - (m.cadX0 as number)), Math.abs((m.cadY1 as number) - (m.cadY0 as number))) * scale * 0.12))
       : baseRadius;
-    if ([m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
+    if (m.cadPolygon?.length && m.cadPolygon.length >= 3) {
+      const polygon = m.cadPolygon.map(map);
+      stream += `0 0.65 0 RG 0.8 w ${n(polygon[0].x)} ${n(polygon[0].y)} m `;
+      for (let i = 1; i < polygon.length; i++) stream += `${n(polygon[i].x)} ${n(polygon[i].y)} l `;
+      stream += 'h S\n';
+    }
+    if (!m.cadPolygon?.length && [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
       const x0 = m.cadX0 as number, y0 = m.cadY0 as number, x1 = m.cadX1 as number, y1 = m.cadY1 as number;
       const a = map({ x: x0, y: y0 }), b = map({ x: x1, y: y1 });
       const pw = Math.abs(b.x - a.x), ph = Math.abs(b.y - a.y);
@@ -73,6 +79,10 @@ export function buildSlabReferencePdf(dwgs: NormalizedDwg[], members: MemberRow[
     stream += '1 0.75 0 RG 0.6 w\n';
     stream += `${n(c.x - panelRadius * 0.65)} ${n(c.y)} m ${n(c.x + panelRadius * 0.65)} ${n(c.y)} l S ${n(c.x)} ${n(c.y - panelRadius * 0.65)} m ${n(c.x)} ${n(c.y + panelRadius * 0.65)} l S\n`;
     stream += `0 0.65 0 rg BT /F1 ${n(panelRadius * 0.82)} Tf ${n(c.x - panelNo.length * panelRadius * 0.22)} ${n(c.y + panelRadius * 0.1)} Td (${pdfText(panelNo)}) Tj ET\n0 0.65 0 RG\n`;
+    if (m.netArea != null) {
+      const area = `${m.netArea.toFixed(3)} m2`, size = Math.max(2.4, panelRadius * 0.42);
+      stream += `0 0.55 0 rg BT /F1 ${n(size)} Tf ${n(c.x - area.length * size * 0.24)} ${n(c.y - panelRadius * 1.45)} Td (${area}) Tj ET\n0 0.65 0 RG\n`;
+    }
   }
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
@@ -117,7 +127,14 @@ export async function overlayPanelNumbersOnPdf(source: ArrayBuffer, dwg: Normali
     const x = ox + ((m.cadX as number) - min.x) * scale;
     const y = oy + ((m.cadY as number) - min.y) * scale;
     const panelNo = m.member.match(/^P\d+/i)?.[0] ?? m.member;
-    if ([m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
+    if (m.cadPolygon?.length && m.cadPolygon.length >= 3) {
+      for (let i = 0; i < m.cadPolygon.length; i++) {
+        const a = m.cadPolygon[i], b = m.cadPolygon[(i + 1) % m.cadPolygon.length];
+        page.drawLine({ start: { x: ox + (a.x - min.x) * scale, y: oy + (a.y - min.y) * scale },
+          end: { x: ox + (b.x - min.x) * scale, y: oy + (b.y - min.y) * scale }, color: rgb(0, 0.72, 0), thickness: 0.65 });
+      }
+    }
+    if (!m.cadPolygon?.length && [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
       const bx = ox + ((m.cadX0 as number) - min.x) * scale;
       const by = oy + ((m.cadY0 as number) - min.y) * scale;
       page.drawRectangle({ x: bx, y: by, width: ((m.cadX1 as number) - (m.cadX0 as number)) * scale, height: ((m.cadY1 as number) - (m.cadY0 as number)) * scale, borderColor: rgb(0, 0.72, 0), borderWidth: 0.45, opacity: 0.35, borderOpacity: 0.65 });
@@ -127,6 +144,10 @@ export async function overlayPanelNumbersOnPdf(source: ArrayBuffer, dwg: Normali
     page.drawLine({ start: { x, y: y - radius * 0.75 }, end: { x, y: y + radius * 0.75 }, color: rgb(1, 0.75, 0), thickness: 0.8 });
     const size = radius * 0.85;
     page.drawText(panelNo, { x: x - font.widthOfTextAtSize(panelNo, size) / 2, y: y + radius * 0.12, size, font, color: rgb(0, 0.65, 0) });
+    if (m.netArea != null) {
+      const area = `${m.netArea.toFixed(3)} m2`, areaSize = Math.max(4, radius * 0.42);
+      page.drawText(area, { x: x - font.widthOfTextAtSize(area, areaSize) / 2, y: y - radius * 1.5, size: areaSize, font, color: rgb(0, 0.55, 0) });
+    }
   }
   return new Blob([new Uint8Array(await pdf.save()).buffer], { type: 'application/pdf' });
 }

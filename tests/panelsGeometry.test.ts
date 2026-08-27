@@ -194,4 +194,16 @@ describe('unmarked slab geometry', () => {
     expect(panels).toHaveLength(2);
     expect(panels.some((panel) => panel.label === 'HATCH-SLAB' && panel.lengthMm === 36000 && panel.breadthMm === 3000)).toBe(true);
   });
+
+  it('retains the exact polygon and area of an irregular matching slab hatch', () => {
+    const hatched = drawing();
+    hatched.texts = [{ layer: 'SLABS NO', text: 'S1', pos: { x: 1000, y: 1000 } }];
+    hatched.hatches = [
+      { layer: 'SLAB HATCH', solid: false, pattern: 'TRIANG', pts: [{ x: 0, y: 0 }, { x: 3000, y: 0 }, { x: 0, y: 2000 }] },
+      { layer: 'SLAB HATCH', solid: false, pattern: 'TRIANG', pts: [{ x: 5000, y: 0 }, { x: 9000, y: 0 }, { x: 8500, y: 2000 }, { x: 5000, y: 3000 }] },
+    ];
+    const irregular = autoProposePanels(hatched).find((panel) => panel.label === 'HATCH-SLAB');
+    expect(irregular?.polygon).toHaveLength(4);
+    expect(irregular?.netAreaM2).toBeCloseTo(9.25, 3);
+  });
 });

@@ -111,6 +111,33 @@ export function normalize(db: any, fileName: string): NormalizedDwg {
     return compose(T, compose(R, compose(S, Tb)));
   };
 
+  const bulgedLoop = (vertices: any[], closed: boolean, mat: Mat): Pt[] => {
+    const out: Pt[] = [];
+    const count = closed ? vertices.length : Math.max(0, vertices.length - 1);
+    for (let i = 0; i < count; i++) {
+      const a = vertices[i], b = vertices[(i + 1) % vertices.length];
+      const bulge = Number(a.bulge || 0);
+      if (!out.length) out.push(apply(mat, a));
+      if (Math.abs(bulge) < 1e-8) { out.push(apply(mat, b)); continue; }
+      const dx = b.x - a.x, dy = b.y - a.y, chord = Math.hypot(dx, dy);
+      if (!chord) continue;
+      const theta = 4 * Math.atan(bulge);
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const offset = chord * (1 - bulge * bulge) / (4 * bulge);
+      const centre = { x: mid.x - dy / chord * offset, y: mid.y + dx / chord * offset };
+      const start = Math.atan2(a.y - centre.y, a.x - centre.x);
+      const steps = Math.max(4, Math.ceil(Math.abs(theta) / (Math.PI / 24)));
+      for (let step = 1; step <= steps; step++) {
+        const angle = start + theta * step / steps;
+        const radius = Math.hypot(a.x - centre.x, a.y - centre.y);
+        out.push(apply(mat, { x: centre.x + radius * Math.cos(angle), y: centre.y + radius * Math.sin(angle) }));
+      }
+    }
+    if (!closed && vertices.length) out.push(apply(mat, vertices[vertices.length - 1]));
+    if (closed && out.length > 1 && Math.hypot(out[0].x - out[out.length - 1].x, out[0].y - out[out.length - 1].y) < 1e-6) out.pop();
+    return out;
+  };
+
   const process = (e: any, mat: Mat, depth: number, topLevel: boolean) => {
     if (count > MAX_FLAT_ENTITIES) return;
     if (topLevel) entityCountsByType[e.type] = (entityCountsByType[e.type] || 0) + 1;
@@ -127,6 +154,20 @@ export function normalize(db: any, fileName: string): NormalizedDwg {
     if (e.type === 'LINE' && e.startPoint && e.endPoint) {
       const a = apply(mat, e.startPoint), b = apply(mat, e.endPoint);
       segments.push({ a, b, layer, lineType }); grow(a); grow(b);
+    } else if (e.type === 'ARC' && e.center && typeof e.radius === 'number') {
+      // Preserve curved slab/free edges as short chords. The extractor can
+      // then close and measure a curved cantilever instead of losing the arc.
+      const start = e.startAngle ?? 0, end = e.endAngle ?? Math.PI * 2;
+      let sweep = end - start;
+      while (sweep <= 0) sweep += Math.PI * 2;
+      const steps = Math.max(8, Math.ceil(sweep / (Math.PI / 24)));
+      let previous: Pt | undefined;
+      for (let i = 0; i <= steps; i++) {
+        const a = start + sweep * i / steps;
+        const point = apply(mat, { x: e.center.x + e.radius * Math.cos(a), y: e.center.y + e.radius * Math.sin(a) });
+        if (previous) segments.push({ a: previous, b: point, layer, lineType });
+        previous = point; grow(point);
+      }
     } else if (e.type === 'DIMENSION' && e.subDefinitionPoint1 && e.subDefinitionPoint2) {
       const p1 = apply(mat, e.subDefinitionPoint1), p2 = apply(mat, e.subDefinitionPoint2);
       const dx = Math.abs(p1.x - p2.x), dy = Math.abs(p1.y - p2.y);
@@ -138,16 +179,36 @@ export function normalize(db: any, fileName: string): NormalizedDwg {
       if (p) { const w = apply(mat, p); texts.push({ text: cleanCadText(e.text), pos: w, layer }); }
     } else if (e.type === 'LWPOLYLINE' || e.type === 'POLYLINE') {
       const raw = e.vertices || e.points || [];
-      const pts: Pt[] = raw.map((v: any) => apply(mat, v));
-      if (pts.length >= 2) { polylines.push({ pts, closed: !!(e.closed || e.isClosed || e.flag === 1), layer, lineType }); pts.forEach(grow); }
+      const closed = !!(e.closed || e.isClosed || ((e.flag || 0) & 1));
+      const pts: Pt[] = bulgedLoop(raw, closed, mat);
+      if (pts.length >= 2) { polylines.push({ pts, closed, layer, lineType }); pts.forEach(grow); }
     } else if (e.type === 'HATCH') {
-      const pts: Pt[] = [];
-      for (const path of e.boundaryPaths || []) for (const edge of path.edges || []) {
-        if (edge.start) pts.push(apply(mat, edge.start));
-        else if (edge.center) pts.push(apply(mat, edge.center)); // arc/circle edge → use centre as a point
+      const loops: Pt[][] = [];
+      for (const path of e.boundaryPaths || []) {
+        if (path.vertices?.length >= 3) {
+          const loop = bulgedLoop(path.vertices, path.isClosed !== 0, mat);
+          if (loop.length >= 3) loops.push(loop);
+          continue;
+        }
+        const loop: Pt[] = [];
+        for (const edge of path.edges || []) {
+          if (edge.start) loop.push(apply(mat, edge.start));
+          else if (edge.center && typeof edge.radius === 'number') {
+            const start = edge.startAngle ?? 0, end = edge.endAngle ?? Math.PI * 2;
+            let sweep = end - start;
+            while (sweep <= 0) sweep += Math.PI * 2;
+            const steps = Math.max(8, Math.ceil(sweep / (Math.PI / 24)));
+            for (let i = 0; i < steps; i++) {
+              const a = start + sweep * i / steps;
+              loop.push(apply(mat, { x: edge.center.x + edge.radius * Math.cos(a), y: edge.center.y + edge.radius * Math.sin(a) }));
+            }
+          }
+        }
+        if (loop.length >= 3) loops.push(loop);
       }
+      const pts: Pt[] = loops[0] || [];
       if (pts.length >= 3) {
-        hatches.push({ pts, layer, solid: e.solidFill === 1, pattern: e.patternName || undefined,
+        hatches.push({ pts, loops, layer, solid: e.solidFill === 1, pattern: e.patternName || undefined,
           patternScale: typeof e.patternScale === 'number' ? e.patternScale : undefined,
           patternAngle: typeof e.patternAngle === 'number' ? e.patternAngle : undefined });
         pts.forEach(grow);

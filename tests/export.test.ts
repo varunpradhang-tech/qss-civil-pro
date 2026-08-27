@@ -75,8 +75,16 @@ describe('MB export (member rows)', () => {
     const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await blob.arrayBuffer()); const ws = wb.worksheets[0];
     for (const unwanted of ['Dia (mm)', 'Spacing (mm)', 'Nos', 'Measurement basis']) expect(ws.getRow(1).values).not.toContain(unwanted);
     expect(ws.getCell('A2').value).toBe(1);
-    expect((ws.getCell('H2').value as ExcelJS.CellFormulaValue).formula).toBe('MAX(E2*F2-G2,0)');
-    expect((ws.getCell('H3').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(H2:H2)');
+    expect((ws.getCell('I2').value as ExcelJS.CellFormulaValue).formula).toBe('MAX(IF(H2>0,H2,E2*F2)-G2,0)');
+    expect((ws.getCell('I3').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(I2:I2)');
+  });
+
+  it('exports an irregular slab using its exact polygon area instead of bounding length x breadth', async () => {
+    const blob = await buildMbXlsx([row({ member: 'P1', length: 4, breadth: 3, openings: 0.25, netArea: 8.75 })], 'slab_shuttering', 'excluded');
+    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await blob.arrayBuffer()); const ws = wb.worksheets[0];
+    expect(ws.getCell('H2').value).toBe(9);
+    expect((ws.getCell('I2').value as ExcelJS.CellFormulaValue).formula).toBe('MAX(IF(H2>0,H2,E2*F2)-G2,0)');
+    expect((ws.getCell('I2').value as ExcelJS.CellFormulaValue).result).toBe(8.75);
   });
 
   it('exports slab concrete row and total quantities as formulas', async () => {

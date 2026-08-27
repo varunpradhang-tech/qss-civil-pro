@@ -83,7 +83,7 @@ export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[
     if (m.cadPolygon?.length && m.cadPolygon.length >= 3) {
       for (let i = 0; i < m.cadPolygon.length; i++) entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: m.cadPolygon[i], b: m.cadPolygon[(i + 1) % m.cadPolygon.length] }, 'QSS_PANEL_BOUNDARY', 3);
     }
-    if ([m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
+    if (!m.cadPolygon?.length && [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
       const x0 = m.cadX0 as number, y0 = m.cadY0 as number, x1 = m.cadX1 as number, y1 = m.cadY1 as number;
       if (!m.cadPolygon?.length) {
         entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x0, y: y0 }, b: { x: x1, y: y0 } }, 'QSS_PANEL_BOUNDARY', 3);
@@ -108,6 +108,7 @@ export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[
     entities += line({ layer: 'QSS_PANEL_MARK', a: { x: c.x - radius * 0.75, y: c.y }, b: { x: c.x + radius * 0.75, y: c.y } }, 'QSS_PANEL_MARK', 2);
     entities += line({ layer: 'QSS_PANEL_MARK', a: { x: c.x, y: c.y - radius * 0.75 }, b: { x: c.x, y: c.y + radius * 0.75 } }, 'QSS_PANEL_MARK', 2);
     entities += centredText({ x: c.x, y: c.y + radius * 0.15 }, panelNo, radius * 0.9);
+    if (m.netArea != null) entities += dimensionText({ x: c.x, y: c.y - radius * 1.25 }, `${m.netArea.toFixed(3)} m2`, radius * 0.42);
   }
   const extents = dwg
     ? pair(9, '$EXTMIN') + pair(10, dwg.extents.min.x) + pair(20, dwg.extents.min.y) + pair(30, 0)

@@ -260,6 +260,25 @@ describe('unmarked slab geometry', () => {
     expect(panel?.openingM2).toBe(0);
   });
 
+  it('deducts an opening without numbering its hatch/frame as another slab panel', () => {
+    const cutout = drawing();
+    cutout.texts = [{ layer: 'SLABS NO', text: 'S1', pos: { x: 3000, y: 1500 } }];
+    cutout.polylines = [{ layer: 'OPENING', closed: true, pts: [
+      { x: 500, y: 500 }, { x: 1500, y: 500 }, { x: 1500, y: 1500 }, { x: 500, y: 1500 },
+    ] }];
+    cutout.hatches = [
+      { layer: 'SLAB HATCH', solid: false, pattern: 'ANSI31', pts: [
+        { x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 3000 }, { x: 0, y: 3000 },
+      ] },
+      { layer: 'SLAB HATCH', solid: false, pattern: 'ANSI31', pts: [
+        { x: 500, y: 500 }, { x: 1500, y: 500 }, { x: 1500, y: 1500 }, { x: 500, y: 1500 },
+      ] },
+    ];
+    const panels = autoProposePanels(cutout);
+    expect(panels).toHaveLength(1);
+    expect(panels[0].openingM2).toBeCloseTo(1, 3);
+  });
+
   it('keeps a true rectangular hatch as a normal length by breadth panel', () => {
     const hatched = drawing();
     hatched.texts = [];

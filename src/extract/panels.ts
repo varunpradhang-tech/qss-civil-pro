@@ -349,7 +349,24 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       && grossM2 <= 400;
     const held = holdNotes.some((note) => note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
       && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
-    return plausibleBay && !held;
+    if (!plausibleBay || held) return false;
+    // An opening outline can contain hatch geometry or even an S-code from
+    // an underlying/reference layer. It is a deduction, never an
+    // independently numbered slab panel. Retain the surrounding slab but
+    // discard a proposal whose own footprint lies substantially in a cutout.
+    const panelArea = panel.polygon ? Math.abs(shoelace(panel.polygon)) / 1e6 : boxArea(panel.box) / 1e6;
+    const insideCutout = cutouts.some((cutout) => {
+      const overlap = panel.polygon
+        ? polygonRectIntersectionArea(panel.polygon, cutout.box) / 1e6
+        : rectOverlap(panel.box, cutout.box);
+      const covered = panelArea > 0 ? overlap / panelArea : 0;
+      // Small false panels are commonly the opening frame itself. Once an
+      // identified void occupies a material part of such a box, numbering
+      // the leftover frame as a slab is incorrect. Large genuine panels are
+      // retained and receive the normal opening deduction below.
+      return covered >= 0.8 || (panelArea <= 10 && covered >= 0.2);
+    });
+    return !insideCutout;
   });
   assignCutouts(measurable, cutouts); // contain-or-nearest panel, per QSS-SLAB-004
   markDuplicates(measurable);

@@ -138,6 +138,19 @@ describe('unmarked slab geometry', () => {
     expect(panels[0].netAreaM2).toBeCloseTo(4.08, 3);
   });
 
+  it('joins a stepped dotted beam face into one exterior cantilever band', () => {
+    const panels = detectClosedCantileverStrips([
+      { layer: 'A-PLNT', lineType: 'CONTINUOUS', a: { x: 0, y: 0 }, b: { x: 12000, y: 0 } },
+      { layer: '1-BEAM', lineType: 'HIDDEN', a: { x: 0, y: 2200 }, b: { x: 4000, y: 2200 } },
+      { layer: '1-BEAM', lineType: 'HIDDEN', a: { x: 4000, y: 2400 }, b: { x: 8000, y: 2400 } },
+      { layer: '1-BEAM', lineType: 'HIDDEN', a: { x: 8000, y: 2300 }, b: { x: 12000, y: 2300 } },
+    ]);
+    const band = panels.find((panel) => panel.steppedBoundary);
+    expect(band?.polygon?.length).toBeGreaterThan(4);
+    expect(band?.lengthMm).toBe(12000);
+    expect(band?.netAreaM2).toBeCloseTo(27.6, 3);
+  });
+
   it('keeps one structurally verified measurement for a 40 m dotted-beam corridor', () => {
     const corridor = drawing();
     corridor.extents.max.x = 40000;
@@ -214,6 +227,15 @@ describe('unmarked slab geometry', () => {
     const panel = autoProposePanels(hatched).find((candidate) => candidate.label === 'S1');
     expect(panel?.polygon).toHaveLength(3);
     expect(panel?.netAreaM2).toBeCloseTo(6, 3);
+  });
+
+  it('clips every S-marked corner bay by its diagonal structural boundary', () => {
+    const corner = drawing();
+    corner.texts = [{ layer: 'SLABS NO', text: 'S1', pos: { x: 700, y: 700 } }];
+    corner.segments.push({ layer: 'A-PLNT', lineType: 'CONTINUOUS', a: { x: 0, y: 3000 }, b: { x: 4000, y: 0 } });
+    const panel = autoProposePanels(corner)[0];
+    expect(panel.polygon?.length).toBe(3);
+    expect(panel.netAreaM2).toBeCloseTo(6, 3);
   });
 
   it('does not deduct a rectangular opening that only touches an irregular panel bounding box', () => {

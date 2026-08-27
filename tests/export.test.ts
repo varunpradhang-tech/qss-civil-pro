@@ -78,4 +78,11 @@ describe('MB export (member rows)', () => {
     expect((ws.getCell('H2').value as ExcelJS.CellFormulaValue).formula).toBe('MAX(E2*F2-G2,0)');
     expect((ws.getCell('H3').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(H2:H2)');
   });
+
+  it('exports slab concrete row and total quantities as formulas', async () => {
+    const blob = await buildMbXlsx([row({ member: 'S1', height: 0.175, openings: 1 })], 'slab_concrete', 'excluded');
+    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await blob.arrayBuffer()); const ws = wb.worksheets[0];
+    expect((ws.getCell('J2').value as ExcelJS.CellFormulaValue).formula).toBe('MAX(C2*D2-F2,0)*E2*I2');
+    expect((ws.getCell('J3').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(J2:J2)');
+  });
 });

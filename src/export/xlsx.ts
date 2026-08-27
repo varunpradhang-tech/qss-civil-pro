@@ -71,6 +71,26 @@ function buildSlabShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
   for (const c of ['E', 'F', 'G', 'H']) ws.getColumn(c).numFmt = '0.000';
 }
 
+function genericQuantityFormula(quantityKey: string, row: number, member: MemberRow, result: number): string {
+  const C = `C${row}`, D = `D${row}`, E = `E${row}`, F = `F${row}`, G = `G${row}`, H = `H${row}`, I = `I${row}`;
+  switch (quantityKey) {
+    case 'column_concrete': return `${C}*${D}*${E}*${I}`;
+    case 'beam_concrete': return `MAX(${C}*${D}*${E}*${I},0)`;
+    case 'column_steel': case 'beam_steel': case 'steel_bbs': return `${C}*${I}*(${G}^2/162)`;
+    case 'slab_concrete': return member.netArea != null
+      ? `${Math.max(member.netArea, 0)}*${E}*${I}`
+      : `MAX(${C}*${D}-${F},0)*${E}*${I}`;
+    case 'raft_concrete': return `${C}*${D}*${E}*${I}`;
+    case 'raft_shuttering': return `2*(${C}+${D})*${E}*${I}`;
+    case 'brickwork': return `MAX(${C}*${E}-${F},0)*${D}*${I}`;
+    case 'plaster': case 'paint': return `MAX(${C}*${E}-${F},0)*${I}`;
+    case 'flooring': return `${C}*${D}*${I}`;
+    // Keep uncommon/special rules as an Excel formula rather than a fixed
+    // literal, while preserving the verified engine result.
+    default: return `${Math.round(result * 1e6) / 1e6}`;
+  }
+}
+
 export async function buildMbXlsx(members: MemberRow[], quantityKey: string, capMode: CapMode, project = 'QSS Project'): Promise<Blob> {
   const rule = RULES[quantityKey];
   const wb = new ExcelJS.Workbook();
@@ -86,12 +106,19 @@ export async function buildMbXlsx(members: MemberRow[], quantityKey: string, cap
   }
   ws.columns = MB_COLUMNS.map((c) => ({ header: c.header, key: c.key, width: c.key === 'basis' ? 44 : c.key === 'member' || c.key === 'remarks' ? 22 : 12 }));
   styleHeader(ws);
-  for (const r of membersToRows(members, quantityKey, capMode)) {
+  const exportRows = membersToRows(members, quantityKey, capMode);
+  for (const [index, r] of exportRows.entries()) {
     const row = ws.addRow(r);
+    row.getCell('quantity').value = {
+      formula: genericQuantityFormula(quantityKey, row.number, members[index], r.quantity),
+      result: r.quantity,
+    };
     if (r.remarks) row.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF1F2' } }));
   }
   const total = members.reduce((a, m) => a + rule.calculate(m, capMode), 0);
-  const totalRow = ws.addRow({ member: `Total — ${rule.label}`, quantity: Math.round(total * 1000) / 1000, unit: UNIT_LABEL[rule.unit] });
+  const totalRow = ws.addRow({ member: `Total — ${rule.label}`, unit: UNIT_LABEL[rule.unit] });
+  totalRow.getCell('quantity').value = { formula: `SUM(J2:J${totalRow.number - 1})`, result: Math.round(total * 1000) / 1000 };
   totalRow.font = { bold: true };
+  ws.getColumn('J').numFmt = '0.000';
   return new Blob([await wb.xlsx.writeBuffer()], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 }

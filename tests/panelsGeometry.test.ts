@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoProposePanels, detectClosedCantileverStrips } from '../src/extract/panels.js';
+import { autoProposePanels, detectClosedCantileverStrips, detectLongDottedSlabStrips } from '../src/extract/panels.js';
 import { extractMembers } from '../src/extract/extractMembers.js';
 import type { NormalizedDwg } from '../src/domain/types.js';
 
@@ -136,5 +136,42 @@ describe('unmarked slab geometry', () => {
     expect(panels).toHaveLength(1);
     expect(panels[0].polygon).toHaveLength(4);
     expect(panels[0].netAreaM2).toBeCloseTo(1.69875, 3);
+  });
+
+  it('keeps one structurally verified measurement for a 40 m dotted-beam corridor', () => {
+    const corridor = drawing();
+    corridor.extents.max.x = 40000;
+    corridor.texts = [{ layer: '4', text: 'S1', pos: { x: 20000, y: 2000 } }];
+    corridor.segments = [
+      { layer: '1-BEAM', lineType: 'HIDDEN', a: { x: 0, y: 0 }, b: { x: 40000, y: 0 } },
+      { layer: '1-BEAM', lineType: 'HIDDEN', a: { x: 0, y: 4000 }, b: { x: 40000, y: 4000 } },
+      { layer: '1-BEAM', lineType: 'CONTINUOUS', a: { x: 0, y: 0 }, b: { x: 0, y: 4000 } },
+      { layer: '1-BEAM', lineType: 'CONTINUOUS', a: { x: 40000, y: 0 }, b: { x: 40000, y: 4000 } },
+    ];
+    const direct = detectLongDottedSlabStrips(corridor.segments, [{ text: 'S1', pos: { x: 20000, y: 2000 } }]);
+    expect(direct).toMatchObject([{ lengthMm: 40000, breadthMm: 4000, dottedBoundary: true }]);
+    expect(autoProposePanels(corridor)).toMatchObject([{ lengthMm: 40000, breadthMm: 4000, dottedBoundary: true }]);
+    expect(autoProposePanels(corridor)).toHaveLength(1);
+  });
+
+  it('uses slab-facing beam faces at expansion-joint supports', () => {
+    const segments = [
+      { layer: '1-BEAM', lineType: 'HIDDEN', a: { x: 0, y: 0 }, b: { x: 40900, y: 0 } },
+      { layer: '1-BEAM', lineType: 'HIDDEN', a: { x: 0, y: 4000 }, b: { x: 40900, y: 4000 } },
+      { layer: '1-BEAM', lineType: 'CONTINUOUS', a: { x: 0, y: 0 }, b: { x: 0, y: 4000 } },
+      { layer: '1-BEAM', lineType: 'CONTINUOUS', a: { x: 450, y: 0 }, b: { x: 450, y: 4000 } },
+      { layer: '1-BEAM', lineType: 'CONTINUOUS', a: { x: 40450, y: 0 }, b: { x: 40450, y: 4000 } },
+      { layer: '1-BEAM', lineType: 'CONTINUOUS', a: { x: 40900, y: 0 }, b: { x: 40900, y: 4000 } },
+    ];
+    expect(detectLongDottedSlabStrips(segments, [{ text: 'S1', pos: { x: 20000, y: 2000 } }]))
+      .toMatchObject([{ lengthMm: 40000, breadthMm: 4000 }]);
+  });
+
+  it('does not deduct an opening that lies outside every panel', () => {
+    const outside = drawing();
+    outside.polylines = [{ layer: 'OPENING', closed: true, pts: [
+      { x: 5000, y: 0 }, { x: 6000, y: 0 }, { x: 6000, y: 1000 }, { x: 5000, y: 1000 }, { x: 5000, y: 0 },
+    ] }];
+    expect(autoProposePanels(outside)[0].openingM2).toBe(0);
   });
 });

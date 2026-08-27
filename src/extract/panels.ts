@@ -14,6 +14,8 @@ export interface PanelProposalBox {
   duplicate: boolean; // overlaps a stronger panel → excluded from total, flagged for review
   polygon?: Pt[]; // exact outline for non-rectangular cantilever/chajja panels
   netAreaM2?: number; // exact polygon area before opening deductions
+  dottedBoundary?: boolean; // verified long strip enclosed by dashed beam faces
+  cantileverBoundary?: boolean; // dashed beam face to continuous free edge
 }
 
 interface ThkText { pos: Pt; mm: number; }
@@ -102,12 +104,12 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // rejecting the resulting 200–450 mm band as non-slab geometry.
     if (above && below && above.y - below.y < 600) {
       const pair = belowOptions.slice(0, 4).flatMap((b) => aboveOptions.slice(0, 4).map((a) => ({ a, b, span: a.y - b.y })))
-        .filter((p) => p.span >= 600 && p.span <= 30_000).sort((a, b) => a.span - b.span)[0];
+        .filter((p) => p.span >= 600 && p.span <= 60_000).sort((a, b) => a.span - b.span)[0];
       if (pair) { above = pair.a; below = pair.b; expandedFromBeamFace = true; }
     }
     if (right && left && right.x - left.x < 600) {
       const pair = leftOptions.slice(0, 4).flatMap((l) => rightOptions.slice(0, 4).map((r) => ({ r, l, span: r.x - l.x })))
-        .filter((p) => p.span >= 600 && p.span <= 30_000).sort((a, b) => a.span - b.span)[0];
+        .filter((p) => p.span >= 600 && p.span <= 60_000).sort((a, b) => a.span - b.span)[0];
       if (pair) { right = pair.r; left = pair.l; expandedFromBeamFace = true; }
     }
 
@@ -121,7 +123,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       // already removed by excludedDetailPoint above.
       const structuralSides = Number(!!above) + Number(!!below) + Number(!!right) + Number(!!left);
       const partialBay = structuralSides >= 2 && !!(above || below) && !!(left || right)
-        && nl >= 300 && nl <= 30_000 && nb >= 300 && nb <= 30_000;
+        && nl >= 300 && nl <= 60_000 && nb >= 300 && nb <= 60_000;
       if (!L.trustedLayer && !partialBay) continue;
       const x0 = left?.x ?? (right ? right.x - nl : c.x - nl / 2);
       const x1 = right?.x ?? (left ? left.x + nl : c.x + nl / 2);
@@ -167,7 +169,11 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       // and only within 3 m of an exterior envelope edge.
       const edgeDistance = Math.min(centre.x - labelEnvelope.minX, labelEnvelope.maxX - centre.x,
         centre.y - labelEnvelope.minY, labelEnvelope.maxY - centre.y);
-      if ((!panel.polygon || edgeDistance > 3000) && !unresolvedSlabMark) return false;
+      const crossesSideEnvelope = panel.box.x0 < labelEnvelope.minX - 1000 || panel.box.x1 > labelEnvelope.maxX + 1000;
+      const verifiedExteriorStrip = panel.cantileverBoundary && crossesSideEnvelope
+        && Math.max(panel.lengthMm, panel.breadthMm) >= 3000;
+      const verifiedCornerPolygon = panel.polygon && edgeDistance <= 3000;
+      if (!verifiedExteriorStrip && !verifiedCornerPolygon && !unresolvedSlabMark) return false;
     }
     if (labelEnvelope) {
       const dx = Math.max(labelEnvelope.minX - centre.x, 0, centre.x - labelEnvelope.maxX);
@@ -184,28 +190,32 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       // gates above are the authoritative checks.
       return true;
     }
+    // A full-width exterior strip legitimately touches/overlaps the adjacent
+    // labelled bay at its supporting beam. Do not let that rectangular proxy
+    // erase a structurally closed dashed-to-solid cantilever near the plan
+    // perimeter; nested beam-width bands are removed later as duplicates.
+    if (panel.cantileverBoundary && labelEnvelope) {
+      const crossesSideEnvelope = panel.box.x0 < labelEnvelope.minX - 1000 || panel.box.x1 > labelEnvelope.maxX + 1000;
+      if (crossesSideEnvelope && Math.max(panel.lengthMm, panel.breadthMm) >= 3000) return true;
+    }
     if (unresolvedSlabMark) return true;
     return !labelledPanels.some((labelled) => overlapFrac(panel.box, labelled.box) > 0.1);
   }));
-
-  // An L-shaped chajja is commonly drawn as two perpendicular strips. Keep
-  // both legs, but deduct their shared corner once so the net area is a union,
-  // not the sum of two overlapping rectangles.
-  const cantilevers = out.filter((panel) => panel.label === 'CANTILEVER');
-  for (let i = 0; i < cantilevers.length; i++) {
-    const gross = cantilevers[i].netAreaM2 ?? boxArea(cantilevers[i].box) / 1e6;
-    let repeated = 0;
-    for (let j = 0; j < i; j++) repeated += rectOverlap(cantilevers[i].box, cantilevers[j].box);
-    cantilevers[i].netAreaM2 = Math.max(0, gross - repeated);
-  }
+  out.push(...detectLongDottedSlabStrips(allSegs, labels, thicknesses).filter((panel) => {
+    const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+    if (excludedDetailPoint(centre)) return false;
+    return true;
+  }));
 
   // HOLD / HOLD AREA is an explicit instruction that the containing bay is
   // outside the current measurable scope. Exclude it before deductions,
   // numbering, Excel export, totals, and reference-file marking.
   const measurable = out.filter((panel) => {
     const grossM2 = (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
+    const verifiedLongSlab = /^S\d+[A-Z]?$|^CANTILEVER$|^SLAB STRIP$/i.test(panel.label || '');
+    const maxSpan = verifiedLongSlab ? 60_000 : 30_000;
     const plausibleBay = panel.lengthMm >= 300 && panel.breadthMm >= 300
-      && panel.lengthMm <= 30_000 && panel.breadthMm <= 30_000
+      && panel.lengthMm <= maxSpan && panel.breadthMm <= maxSpan
       && grossM2 <= 400;
     const held = holdNotes.some((note) => note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
       && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
@@ -213,13 +223,23 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   });
   assignCutouts(measurable, cutouts); // contain-or-nearest panel, per QSS-SLAB-004
   markDuplicates(measurable);
+  // An L-shaped chajja is commonly drawn as two perpendicular strips. Deduct
+  // their shared corner only after nested/false candidates have been removed;
+  // otherwise a rejected beam band can silently reduce the retained slab.
+  const cantilevers = measurable.filter((panel) => panel.label === 'CANTILEVER' && !panel.duplicate);
+  for (let i = 0; i < cantilevers.length; i++) {
+    const gross = cantilevers[i].netAreaM2 ?? boxArea(cantilevers[i].box) / 1e6;
+    let repeated = 0;
+    for (let j = 0; j < i; j++) repeated += rectOverlap(cantilevers[i].box, cantilevers[j].box);
+    cantilevers[i].netAreaM2 = Math.max(0, gross - repeated);
+  }
   // A duplicate proposal represents the same physical bay and must never be
   // billed as an additional slab panel.
   return measurable.filter((panel) => !panel.duplicate);
 }
 
-// Distribute each cutout across the panels its box overlaps (by overlap area), so a void straddling a
-// beam between two bays is shared, not dumped on one small neighbour. Falls back to the nearest panel.
+// Distribute each cutout only across panels its geometry actually overlaps.
+// A nearby lift/shaft outside a panel must never become an unverified deduction.
 function assignCutouts(panels: PanelProposalBox[], cutouts: Cutout[]): void {
   const capOf = (p: PanelProposalBox) => (p.lengthMm / 1000) * (p.breadthMm / 1000);
   for (const c of cutouts) {
@@ -232,14 +252,6 @@ function assignCutouts(panels: PanelProposalBox[], cutouts: Cutout[]): void {
         const share = c.areaM2 * (ov / totalOv);
         p.openingM2 = Math.min(p.openingM2 + share, capOf(p));
       }
-    } else {
-      // no overlap → nearest panel by centre
-      let target: PanelProposalBox | undefined; let bd = Infinity;
-      for (const p of panels) {
-        const d = Math.hypot((p.box.x0 + p.box.x1) / 2 - c.cx, (p.box.y0 + p.box.y1) / 2 - c.cy);
-        if (d < bd) { bd = d; target = p; }
-      }
-      if (target) target.openingM2 = Math.min(target.openingM2 + c.areaM2, capOf(target));
     }
   }
 }
@@ -251,16 +263,34 @@ function rectOverlap(a: { x0: number; y0: number; x1: number; y1: number }, b: {
 
 // --- overlap gate: if two panels overlap materially, keep the smaller (true bay), flag the larger ---
 function markDuplicates(panels: PanelProposalBox[]): void {
-  const idx = panels.map((_, i) => i).sort((a, b) => boxArea(panels[a].box) - boxArea(panels[b].box));
+  const idx = panels.map((_, i) => i).sort((a, b) => {
+    const ac = !!panels[a].cantileverBoundary && !panels[a].polygon;
+    const bc = !!panels[b].cantileverBoundary && !panels[b].polygon;
+    // A cantilever is frequently represented by several parallel beam-face
+    // lines. Retain the full slab up to the outer continuous edge, rather
+    // than the narrow 300/450 mm beam band nested inside it.
+    if (ac && bc) return boxArea(panels[b].box) - boxArea(panels[a].box);
+    // Structurally verified boundaries are authoritative. Process them before
+    // approximate S-label ray-cast boxes so the latter cannot remain as an
+    // overlapping second measurement (for example 40,300 over 41,450 mm).
+    const ar = panels[a].dottedBoundary || panels[a].cantileverBoundary ? 0 : panels[a].polygon ? 1 : 2;
+    const br = panels[b].dottedBoundary || panels[b].cantileverBoundary ? 0 : panels[b].polygon ? 1 : 2;
+    if (ar !== br) return ar - br;
+    return boxArea(panels[a].box) - boxArea(panels[b].box);
+  });
   const kept: PanelProposalBox[] = [];
   for (const i of idx) {
     const p = panels[i];
     // A sloping polygon's bounding rectangle contains large triangular areas
     // that are not part of the slab. Do not compare that loose box with an
     // ordinary rectangular S-panel when deciding duplicates.
-    const duplicate = p.polygon
+    const duplicate = p.cantileverBoundary
+      ? kept.some((k) => k.cantileverBoundary && overlapFrac(p.box, k.box) > 0.6)
+      : p.dottedBoundary
+      ? kept.some((k) => k.dottedBoundary && overlapFrac(p.box, k.box) > 0.8)
+      : p.polygon
       ? kept.some((k) => k.polygon && overlapFrac(p.box, k.box) > 0.8)
-      : kept.some((k) => !k.polygon && overlapFrac(p.box, k.box) > 0.6);
+      : kept.some((k) => !k.polygon && !k.cantileverBoundary && overlapFrac(p.box, k.box) > 0.6);
     if (duplicate) { p.duplicate = true; p.confident = false; }
     else kept.push(p);
   }
@@ -277,6 +307,7 @@ function overlapFrac(a: PanelProposalBox['box'], b: PanelProposalBox['box']): nu
 interface Cutout { cx: number; cy: number; areaM2: number; box: { x0: number; y0: number; x1: number; y1: number }; }
 function extractCutouts(dwg: NormalizedDwg): Cutout[] {
   const out: Cutout[] = [];
+  const voidNotes = dwg.texts.filter((t) => /\b(?:OPENING|VOID|LIFT|STAIR|SHAFT|DUCT|OTS)\b/i.test(t.text));
   for (const pl of dwg.polylines.filter((p) => CUTOUT_LAYERS.test(p.layer))) {
     const a = Math.abs(shoelace(pl.pts)) / 1e6;
     if (a > 0.05 && a < 100) out.push({ ...centroid(pl.pts), areaM2: a, box: bbox(pl.pts) });
@@ -298,6 +329,12 @@ function extractCutouts(dwg: NormalizedDwg): Cutout[] {
     // centres must be close (the diagonals cross)
     const c1 = mid(s1.a, s1.b), c2 = mid(s2.a, s2.b);
     if (Math.hypot(c1.x - c2.x, c1.y - c2.y) > Math.max(w, h) * 0.5) continue;
+    const explicitVoidLayer = CUTOUT_LAYERS.test(s1.layer) || CUTOUT_LAYERS.test(s2.layer);
+    const labelledVoid = voidNotes.some((note) => note.pos.x >= b.x0 - 1500 && note.pos.x <= b.x1 + 1500
+      && note.pos.y >= b.y0 - 1500 && note.pos.y <= b.y1 + 1500);
+    // Cross bracing, expansion-joint symbols and detail-table cells also form
+    // an X. They are not openings without explicit CAD evidence.
+    if (!explicitVoidLayer && !labelledVoid) continue;
     const areaM2 = (w * h) / 1e6;
     const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
     if (!out.some((o) => Math.hypot(o.cx - cx, o.cy - cy) < 1500)) out.push({ cx, cy, areaM2, box: b });
@@ -314,20 +351,148 @@ const centroid = (pts: Pt[]) => { let x = 0, y = 0; for (const p of pts) { x += 
 const bbox = (pts: Pt[]) => ({ x0: Math.min(...pts.map((p) => p.x)), y0: Math.min(...pts.map((p) => p.y)), x1: Math.max(...pts.map((p) => p.x)), y1: Math.max(...pts.map((p) => p.y)) });
 const mid = (a: Pt, b: Pt) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 
-export function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[] = []): PanelProposalBox[] {
-  const dashed = segments.filter((s) => /dash|hidden|center/i.test(s.lineType || ''));
-  const continuous = segments.filter((s) => !/dash|hidden|center/i.test(s.lineType || ''));
+/** Join collinear beam-face fragments across columns/supports. CAD framing
+ * plans commonly split one 40 m dotted face into many 3–8 m entities. */
+export function mergeAxisBeamSegments(segments: Segment[], bridge = 2000): Segment[] {
+  const source = segments.filter((s) => /beam|slab|chajja|edge/i.test(s.layer));
+  const items = source.map((s) => {
+    const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
+    const horizontal = Math.abs(dx) >= Math.abs(dy) * 4;
+    const vertical = Math.abs(dy) >= Math.abs(dx) * 4;
+    if (!horizontal && !vertical) return null;
+    return { horizontal, dashed: /dash|hidden|center/i.test(s.lineType || ''),
+      coord: horizontal ? (s.a.y + s.b.y) / 2 : (s.a.x + s.b.x) / 2,
+      lo: horizontal ? Math.min(s.a.x, s.b.x) : Math.min(s.a.y, s.b.y),
+      hi: horizontal ? Math.max(s.a.x, s.b.x) : Math.max(s.a.y, s.b.y) };
+  }).filter((x): x is NonNullable<typeof x> => !!x);
+  const out: Segment[] = [];
+  for (const horizontal of [true, false]) for (const dashed of [true, false]) {
+    const group = items.filter((x) => x.horizontal === horizontal && x.dashed === dashed).sort((a, b) => a.coord - b.coord || a.lo - b.lo);
+    const lines: { coord: number; intervals: [number, number][] }[] = [];
+    for (const item of group) {
+      let line = lines.find((candidate) => Math.abs(candidate.coord - item.coord) <= 80);
+      if (!line) { line = { coord: item.coord, intervals: [] }; lines.push(line); }
+      line.intervals.push([item.lo, item.hi]);
+    }
+    for (const line of lines) {
+      line.intervals.sort((a, b) => a[0] - b[0]);
+      const merged: [number, number][] = [];
+      for (const interval of line.intervals) {
+        const last = merged[merged.length - 1];
+        if (last && interval[0] <= last[1] + bridge) last[1] = Math.max(last[1], interval[1]);
+        else merged.push([...interval]);
+      }
+      for (const [lo, hi] of merged) if (hi - lo >= 600) out.push(horizontal
+        ? { layer: 'MERGED BEAM', lineType: dashed ? 'HIDDEN' : 'CONTINUOUS', a: { x: lo, y: line.coord }, b: { x: hi, y: line.coord } }
+        : { layer: 'MERGED BEAM', lineType: dashed ? 'HIDDEN' : 'CONTINUOUS', a: { x: line.coord, y: lo }, b: { x: line.coord, y: hi } });
+    }
+  }
+  return out;
+}
+
+/** Long internal slab/corridor bounded by dotted beam faces. It is accepted
+ * only when an unresolved S-code lies inside and both ends are structurally
+ * closed; this prevents grids, schedules and section tables becoming slabs. */
+export function detectLongDottedSlabStrips(segments: Segment[], labels: { text: string; pos: Pt }[], thks: ThkText[] = []): PanelProposalBox[] {
+  const merged = mergeAxisBeamSegments(segments);
+  const dashed = merged.filter((s) => /hidden/i.test(s.lineType || ''));
+  // Internal dotted cross-lines are beam faces, not necessarily slab-strip
+  // terminations. Only a solid transverse boundary closes one long strip.
+  const closuresOnly = merged.filter((s) => !/hidden/i.test(s.lineType || ''));
   const out: PanelProposalBox[] = [];
-  const closes = (coord: number, lo: number, hi: number, horizontal: boolean) => continuous.some((s) => {
+  const chosenByMark = new Map<string, { panel: PanelProposalBox; score: number }>();
+  // Beam faces commonly stop at opposite faces of a 900-1500 mm column.
+  // That offset is still a closed structural support, not an open slab end.
+  const SUPPORT_END_TOL = 1600;
+  const closureGroups = (lo: number, hi: number, bandLo: number, bandHi: number, horizontal: boolean) => {
+    const coords = closuresOnly.flatMap((s) => {
+    const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
+    if (horizontal ? Math.abs(dy) < Math.abs(dx) * 4 : Math.abs(dx) < Math.abs(dy) * 4) return [];
+    const fixed = horizontal ? (s.a.x + s.b.x) / 2 : (s.a.y + s.b.y) / 2;
+    const a = horizontal ? Math.min(s.a.y, s.b.y) : Math.min(s.a.x, s.b.x);
+    const b = horizontal ? Math.max(s.a.y, s.b.y) : Math.max(s.a.x, s.b.x);
+      return fixed >= lo - SUPPORT_END_TOL && fixed <= hi + SUPPORT_END_TOL
+      && a <= bandLo + SUPPORT_END_TOL && b >= bandHi - SUPPORT_END_TOL ? [fixed] : [];
+    }).sort((a, b) => a - b);
+    const groups: { lo: number; hi: number }[] = [];
+    for (const coord of coords) {
+      const last = groups[groups.length - 1];
+      // Column faces and the two beams at an expansion joint form one support.
+      if (last && coord - last.hi <= 2000) last.hi = coord;
+      else groups.push({ lo: coord, hi: coord });
+    }
+    return groups;
+  };
+  for (let i = 0; i < dashed.length; i++) for (let j = i + 1; j < dashed.length; j++) {
+    const a = dashed[i], b = dashed[j];
+    const ah = Math.abs(a.b.x - a.a.x) >= Math.abs(a.b.y - a.a.y) * 4;
+    const bh = Math.abs(b.b.x - b.a.x) >= Math.abs(b.b.y - b.a.y) * 4;
+    if (ah !== bh) continue;
+    const ac = ah ? a.a.y : a.a.x, bc = ah ? b.a.y : b.a.x;
+    const width = Math.abs(ac - bc);
+    if (width < 600 || width > 8000) continue;
+    const lo = Math.max(ah ? Math.min(a.a.x, a.b.x) : Math.min(a.a.y, a.b.y), ah ? Math.min(b.a.x, b.b.x) : Math.min(b.a.y, b.b.y));
+    const hi = Math.min(ah ? Math.max(a.a.x, a.b.x) : Math.max(a.a.y, a.b.y), ah ? Math.max(b.a.x, b.b.x) : Math.max(b.a.y, b.b.y));
+    const closures = closureGroups(lo, hi, Math.min(ac, bc), Math.max(ac, bc), ah);
+    for (let k = 0; k < closures.length - 1; k++) {
+      // Slab lies between supports: use the rightmost face of the left support
+      // and the leftmost face of the right support.
+      const start = closures[k].hi, end = closures[k + 1].lo, span = end - start;
+      if (span < 15_000 || span > 60_000) continue;
+      const box = ah ? { x0: start, y0: Math.min(ac, bc), x1: end, y1: Math.max(ac, bc) }
+        : { x0: Math.min(ac, bc), y0: start, x1: Math.max(ac, bc), y1: end };
+      const mark = labels.find((label) => label.pos.x >= box.x0 - 300 && label.pos.x <= box.x1 + 300 && label.pos.y >= box.y0 - 300 && label.pos.y <= box.y1 + 300);
+      if (!mark) continue;
+      const c = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
+      const panel: PanelProposalBox = { label: mark.text, box, lengthMm: ah ? span : width, breadthMm: ah ? width : span,
+        openingM2: 0, thicknessMm: panelThickness(box, c, thks), confident: false, duplicate: false, dottedBoundary: true };
+      const key = `${Math.round(mark.pos.x)}:${Math.round(mark.pos.y)}`;
+      // One S-mark may sit inside several nested dashed-face combinations.
+      // Select the enclosure whose centre best matches the mark instead of
+      // adding every combination and double-counting the same long panel.
+      const score = Math.hypot((mark.pos.x - c.x) / Math.max(box.x1 - box.x0, 1),
+        (mark.pos.y - c.y) / Math.max(box.y1 - box.y0, 1));
+      const previous = chosenByMark.get(key);
+      if (!previous || score < previous.score) chosenByMark.set(key, { panel, score });
+    }
+  }
+  out.push(...[...chosenByMark.values()].map((choice) => choice.panel));
+  return out;
+}
+
+export function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[] = []): PanelProposalBox[] {
+  const mergedAxis = mergeAxisBeamSegments(segments);
+  // The free edge of a balcony/chajja is often placed on A-PLNT instead of a
+  // structural beam layer. Admit only long, continuous, axis-aligned plan
+  // edges here; A-GRID/CENTER lines remain excluded.
+  const planEdges = segments.filter((s) => {
+    if (!/^A-PLNT$/i.test(s.layer) || /dash|hidden|center/i.test(s.lineType || '')) return false;
+    const dx = Math.abs(s.b.x - s.a.x), dy = Math.abs(s.b.y - s.a.y);
+    return Math.max(dx, dy) >= 3000 && (dx >= dy * 4 || dy >= dx * 4);
+  });
+  const diagonal = segments.filter((s) => {
+    const dx = Math.abs(s.b.x - s.a.x), dy = Math.abs(s.b.y - s.a.y);
+    return dx > 200 && dy > 200;
+  });
+  const candidates = [...mergedAxis, ...planEdges, ...diagonal];
+  const dashed = candidates.filter((s) => /dash|hidden|center/i.test(s.lineType || ''));
+  const continuous = candidates.filter((s) => !/dash|hidden|center/i.test(s.lineType || ''));
+  const structuralBoundary = (s: Segment) => /beam|slab|chajja|edge/i.test(s.layer) || /^A-PLNT$/i.test(s.layer);
+  const out: PanelProposalBox[] = [];
+  const SUPPORT_END_TOL = 1600;
+  // At a cantilever return, the closing member may itself be drawn as a
+  // dashed beam face or a short diagonal return. Both are valid closures.
+  const closes = (coord: number, lo: number, hi: number, horizontal: boolean) => candidates.some((s) => {
     const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
     if (horizontal ? Math.abs(dy) < Math.abs(dx) * 4 : Math.abs(dx) < Math.abs(dy) * 4) return false;
     const fixed = horizontal ? (s.a.x + s.b.x) / 2 : (s.a.y + s.b.y) / 2;
     const a = horizontal ? Math.min(s.a.y, s.b.y) : Math.min(s.a.x, s.b.x);
     const b = horizontal ? Math.max(s.a.y, s.b.y) : Math.max(s.a.x, s.b.x);
-    return Math.abs(fixed - coord) <= ALIGN_TOL && a <= lo + ALIGN_TOL && b >= hi - ALIGN_TOL;
+    return Math.abs(fixed - coord) <= SUPPORT_END_TOL
+      && a <= lo + SUPPORT_END_TOL && b >= hi - SUPPORT_END_TOL;
   });
   for (const dash of dashed) for (const solid of continuous) {
-    if (!/beam|slab|chajja|edge/i.test(dash.layer) || !/beam|slab|chajja|edge/i.test(solid.layer)) continue;
+    if (!structuralBoundary(dash) || !structuralBoundary(solid)) continue;
     const ddx = dash.b.x - dash.a.x, ddy = dash.b.y - dash.a.y, sdx = solid.b.x - solid.a.x, sdy = solid.b.y - solid.a.y;
     const horizontal = Math.abs(ddx) >= Math.abs(ddy) * 4 && Math.abs(sdx) >= Math.abs(sdy) * 4;
     const vertical = Math.abs(ddy) >= Math.abs(ddx) * 4 && Math.abs(sdy) >= Math.abs(sdx) * 4;
@@ -335,14 +500,16 @@ export function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[
     const dc = horizontal ? (dash.a.y + dash.b.y) / 2 : (dash.a.x + dash.b.x) / 2;
     const sc = horizontal ? (solid.a.y + solid.b.y) / 2 : (solid.a.x + solid.b.x) / 2;
     const width = Math.abs(dc - sc);
-    if (width < 300 || width > 5000) continue;
+    // A 300/450/600 mm band is the beam itself, not the projecting slab.
+    if (width < 800 || width > 8000) continue;
     const lo = Math.max(horizontal ? Math.min(dash.a.x, dash.b.x) : Math.min(dash.a.y, dash.b.y), horizontal ? Math.min(solid.a.x, solid.b.x) : Math.min(solid.a.y, solid.b.y));
     const hi = Math.min(horizontal ? Math.max(dash.a.x, dash.b.x) : Math.max(dash.a.y, dash.b.y), horizontal ? Math.max(solid.a.x, solid.b.x) : Math.max(solid.a.y, solid.b.y));
-    if (hi - lo < 600 || hi - lo > 15_000 || !closes(lo, Math.min(dc, sc), Math.max(dc, sc), horizontal) || !closes(hi, Math.min(dc, sc), Math.max(dc, sc), horizontal)) continue;
+    if (hi - lo < 600 || hi - lo > 60_000 || !closes(lo, Math.min(dc, sc), Math.max(dc, sc), horizontal) || !closes(hi, Math.min(dc, sc), Math.max(dc, sc), horizontal)) continue;
     const box = horizontal ? { x0: lo, y0: Math.min(dc, sc), x1: hi, y1: Math.max(dc, sc) } : { x0: Math.min(dc, sc), y0: lo, x1: Math.max(dc, sc), y1: hi };
     const c = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
     if (out.some((p) => Math.hypot((p.box.x0 + p.box.x1) / 2 - c.x, (p.box.y0 + p.box.y1) / 2 - c.y) < 500)) continue;
-    out.push({ label: 'CANTILEVER', box, lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0, openingM2: 0, thicknessMm: panelThickness(box, c, thks), confident: false, duplicate: false });
+    out.push({ label: 'CANTILEVER', box, lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0, openingM2: 0,
+      thicknessMm: panelThickness(box, c, thks), confident: false, duplicate: false, cantileverBoundary: true });
   }
 
   // Diagonal/sloping chajja edges occur at the two external L-shaped corners
@@ -350,7 +517,7 @@ export function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[
   // free edge and retain the exact quadrilateral instead of inflating it to
   // its rectangular bounding box.
   for (const dash of dashed) for (const solid of continuous) {
-    if (!/beam|slab|chajja|edge/i.test(dash.layer) || !/beam|slab|chajja|edge/i.test(solid.layer)) continue;
+    if (!structuralBoundary(dash) || !structuralBoundary(solid)) continue;
     const dv = { x: dash.b.x - dash.a.x, y: dash.b.y - dash.a.y };
     const sv = { x: solid.b.x - solid.a.x, y: solid.b.y - solid.a.y };
     const dl = Math.hypot(dv.x, dv.y), sl = Math.hypot(sv.x, sv.y);
@@ -368,7 +535,7 @@ export function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[
     const sp0 = projection(solid.a), sp1 = projection(solid.b);
     const lo = Math.max(Math.min(d0, d1), Math.min(sp0, sp1));
     const hi = Math.min(Math.max(d0, d1), Math.max(sp0, sp1));
-    if (hi - lo < 600 || hi - lo > 15_000) continue;
+    if (hi - lo < 600 || hi - lo > 60_000) continue;
     const onDash = (t: number): Pt => ({ x: dash.a.x + u.x * t, y: dash.a.y + u.y * t });
     const onSolid = (t: number): Pt => {
       const base = projection(solid.a);

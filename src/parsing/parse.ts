@@ -177,7 +177,7 @@ export function normalize(db: any, fileName: string): NormalizedDwg {
     } else if (e.type === 'TEXT' || e.type === 'MTEXT') {
       const p = e.insertionPoint || e.startPoint;
       if (p) { const w = apply(mat, p); texts.push({ text: cleanCadText(e.text), pos: w, layer }); }
-    } else if (e.type === 'LWPOLYLINE' || e.type === 'POLYLINE') {
+    } else if (e.type === 'LWPOLYLINE' || e.type === 'POLYLINE' || e.type === 'POLYLINE2D' || e.type === 'POLYLINE3D') {
       const raw = e.vertices || e.points || [];
       const closed = !!(e.closed || e.isClosed || ((e.flag || 0) & 1));
       const pts: Pt[] = bulgedLoop(raw, closed, mat);

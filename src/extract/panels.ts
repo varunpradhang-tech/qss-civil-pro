@@ -49,11 +49,15 @@ const ALIGN_TOL = 200;
 
 export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const allSegs: Segment[] = [...dwg.segments];
-  for (const pl of dwg.polylines)
+  for (const pl of dwg.polylines) {
     for (let i = 0; i < pl.pts.length - 1; i++) allSegs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer, lineType: pl.lineType });
+    if (pl.closed && pl.pts.length > 2) allSegs.push({ a: pl.pts[pl.pts.length - 1], b: pl.pts[0], layer: pl.layer, lineType: pl.lineType });
+  }
   const segs: Segment[] = [...dwg.segments.filter((s) => BOUND_LAYERS.test(s.layer))];
-  for (const pl of dwg.polylines.filter((p) => BOUND_LAYERS.test(p.layer)))
-    for (let i = 0; i < pl.pts.length - 1; i++) segs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer });
+  for (const pl of dwg.polylines.filter((p) => BOUND_LAYERS.test(p.layer))) {
+    for (let i = 0; i < pl.pts.length - 1; i++) segs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer, lineType: pl.lineType });
+    if (pl.closed && pl.pts.length > 2) segs.push({ a: pl.pts[pl.pts.length - 1], b: pl.pts[0], layer: pl.layer, lineType: pl.lineType });
+  }
   for (const hatch of dwg.hatches.filter((h) => BOUND_LAYERS.test(h.layer)))
     for (let i = 0; i < hatch.pts.length; i++) segs.push({ a: hatch.pts[i], b: hatch.pts[(i + 1) % hatch.pts.length], layer: hatch.layer });
 
@@ -334,8 +338,12 @@ function markDuplicates(panels: PanelProposalBox[]): void {
     // Structurally verified boundaries are authoritative. Process them before
     // approximate S-label ray-cast boxes so the latter cannot remain as an
     // overlapping second measurement (for example 40,300 over 41,450 mm).
-    const rank = (panel: PanelProposalBox) => panel.polygon && panel.label !== 'CANTILEVER' ? 0
-      : panel.dottedBoundary ? 1 : panel.label !== 'CANTILEVER' ? 2 : 3;
+    // A panel tied to an explicit slab mark is authoritative. Generated
+    // hatch/cantilever polygons may fill otherwise unmeasured space, but must
+    // never displace or survive inside an established S-coded bay.
+    const rank = (panel: PanelProposalBox) => /^S\d+[A-Z]?$/i.test(panel.label || '') ? 0
+      : panel.polygon && panel.label !== 'CANTILEVER' ? 1
+      : panel.dottedBoundary ? 2 : panel.label !== 'CANTILEVER' ? 3 : 4;
     const ar = rank(panels[a]), br = rank(panels[b]);
     if (ar !== br) return ar - br;
     return boxArea(panels[a].box) - boxArea(panels[b].box);
@@ -355,7 +363,9 @@ function markDuplicates(panels: PanelProposalBox[]): void {
       : p.dottedBoundary
       ? kept.some((k) => k.dottedBoundary && overlapFrac(p.box, k.box) > 0.8)
       : p.polygon
-      ? kept.some((k) => k.polygon && overlapFrac(p.box, k.box) > 0.8)
+      ? kept.some((k) => /^S\d+[A-Z]?$/i.test(k.label || '')
+        ? polygonRectOverlapFrac(p.polygon as Pt[], k.box) > 0.1
+        : !!k.polygon && overlapFrac(p.box, k.box) > 0.8)
       : kept.some((k) => k.polygon
         ? polygonRectOverlapFrac(k.polygon, p.box) > 0.6
         : !k.cantileverBoundary && overlapFrac(p.box, k.box) > 0.6);

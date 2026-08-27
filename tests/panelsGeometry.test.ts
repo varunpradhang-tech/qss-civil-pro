@@ -24,6 +24,16 @@ describe('unmarked slab geometry', () => {
     expect(member).toMatchObject({ length: 4, breadth: 3, needsReview: false });
   });
 
+  it('uses the final closing edge of a closed structural polyline', () => {
+    const closed = drawing();
+    closed.segments = [];
+    closed.polylines = [{ layer: 'RCC SLAB EDGE', closed: true,
+      pts: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 3000 }, { x: 0, y: 3000 }] }];
+    expect(autoProposePanels(closed)).toContainEqual(expect.objectContaining({
+      label: 'S1A', box: { x0: 0, y0: 0, x1: 4000, y1: 3000 },
+    }));
+  });
+
   it('selects the sheet with slab labels and RCC geometry instead of a dimension-heavy schedule', () => {
     const schedule = { ...drawing(), fileName: 'schedule.dwg', segments: [], texts: [], dimensions: Array.from({ length: 20 }, (_, i) => ({ layer: 'TABLE', measurement: 1000, dir: 'H' as const, mid: { x: i, y: 0 }, p1: { x: 0, y: 0 }, p2: { x: 1000, y: 0 } })) };
     expect(extractMembers([schedule, drawing()], 'slab')).toHaveLength(1);
@@ -136,6 +146,17 @@ describe('unmarked slab geometry', () => {
     expect(panels).toHaveLength(1);
     expect(panels[0].polygon).toHaveLength(4);
     expect(panels[0].netAreaM2).toBeCloseTo(4.08, 3);
+  });
+
+  it('does not retain an inferred polygon inside an established S-coded panel', () => {
+    const plan = drawing();
+    plan.segments.push(
+      { layer: '1-BEAM', lineType: 'HIDDEN', a: { x: 200, y: 200 }, b: { x: 2800, y: 2800 } },
+      { layer: '1-BEAM', lineType: 'CONTINUOUS', a: { x: 900, y: 200 }, b: { x: 3500, y: 2800 } },
+    );
+    const panels = autoProposePanels(plan);
+    expect(panels).toHaveLength(1);
+    expect(panels[0]).toMatchObject({ label: 'S1A', box: { x0: 0, y0: 0, x1: 4000, y1: 3000 } });
   });
 
   it('joins a stepped dotted beam face into one exterior cantilever band', () => {
@@ -254,4 +275,5 @@ describe('unmarked slab geometry', () => {
     expect(panel?.netAreaM2).toBeUndefined();
     expect(panel).toMatchObject({ lengthMm: 4000, breadthMm: 3000 });
   });
+
 });

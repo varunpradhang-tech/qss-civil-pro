@@ -138,31 +138,6 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const box = { x0: left.x, y0: below.y, x1: right.x, y1: above.y };
     out.push({ label: L.text, box, lengthMm: sL.v, breadthMm: sB.v, openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: sL.ok && sB.ok && !expandedFromBeamFace, duplicate: false });
   }
-  // Corner/edge bays are frequently drawn as an ordinary rectangular beam
-  // bay cut by one diagonal A-PLNT/structural boundary. Ray-casting sees only
-  // the rectangle. Clip it by the diagonal and keep the side containing its
-  // S-mark, yielding the actual triangle or trapezoid at every repeated corner.
-  const clippingEdges = allSegs.filter((s) => {
-    const dx = Math.abs(s.b.x - s.a.x), dy = Math.abs(s.b.y - s.a.y);
-    return dx >= 400 && dy >= 400 && /beam|slab|chajja|edge|^A-PLNT$/i.test(s.layer);
-  });
-  for (const panel of out) {
-    if (panel.polygon || !/^S\d+[A-Z]?$/i.test(panel.label || '')) continue;
-    const mark = labels.find((label) => label.text === panel.label && label.pos.x >= panel.box.x0
-      && label.pos.x <= panel.box.x1 && label.pos.y >= panel.box.y0 && label.pos.y <= panel.box.y1);
-    if (!mark) continue;
-    const candidates = clippingEdges.flatMap((edge) => {
-      const clipped = clipRectangleByLine(panel.box, edge, mark.pos);
-      if (!clipped) return [];
-      const area = Math.abs(shoelace(clipped)), fraction = area / boxArea(panel.box);
-      return fraction >= 0.08 && fraction <= 0.85 ? [{ polygon: clipped, area, fraction }] : [];
-    }).sort((a, b) => a.area - b.area);
-    const chosen = candidates[0];
-    if (!chosen) continue;
-    panel.polygon = chosen.polygon; panel.netAreaM2 = chosen.area / 1e6;
-    panel.box = bbox(chosen.polygon); panel.lengthMm = panel.box.x1 - panel.box.x0;
-    panel.breadthMm = panel.box.y1 - panel.box.y0; panel.confident = true;
-  }
   // Learn slab hatch semantics from this drawing itself. If an S-coded panel
   // uses a hatch signature, other bounded regions with the same AutoCAD
   // pattern/scale/angle are slab panels even when the consultant omitted the
@@ -393,29 +368,6 @@ function polygonRectOverlapFrac(polygon: Pt[], rect: PanelProposalBox['box']): n
   const intersection = polygonRectIntersectionArea(polygon, rect);
   const smaller = Math.min(Math.abs(shoelace(polygon)), boxArea(rect));
   return smaller > 0 ? intersection / smaller : 0;
-}
-
-function clipRectangleByLine(box: PanelProposalBox['box'], edge: Segment, keep: Pt): Pt[] | null {
-  const polygon: Pt[] = [
-    { x: box.x0, y: box.y0 }, { x: box.x1, y: box.y0 },
-    { x: box.x1, y: box.y1 }, { x: box.x0, y: box.y1 },
-  ];
-  const cross = (p: Pt) => (edge.b.x - edge.a.x) * (p.y - edge.a.y) - (edge.b.y - edge.a.y) * (p.x - edge.a.x);
-  const keepSign = Math.sign(cross(keep));
-  if (!keepSign || polygon.every((p) => Math.sign(cross(p)) === keepSign || Math.abs(cross(p)) < 1)) return null;
-  const result: Pt[] = [];
-  for (let i = 0; i < polygon.length; i++) {
-    const a = polygon[i], b = polygon[(i + 1) % polygon.length];
-    const ca = cross(a) * keepSign, cb = cross(b) * keepSign, ai = ca >= 0, bi = cb >= 0;
-    const intersection = () => {
-      const t = ca / (ca - cb || 1e-9);
-      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-    };
-    if (ai && bi) result.push(b);
-    else if (ai && !bi) result.push(intersection());
-    else if (!ai && bi) result.push(intersection(), b);
-  }
-  return result.length >= 3 ? result : null;
 }
 
 function polygonRectIntersectionArea(polygon: Pt[], rect: PanelProposalBox['box']): number {

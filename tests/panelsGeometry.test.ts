@@ -229,15 +229,6 @@ describe('unmarked slab geometry', () => {
     expect(panel?.netAreaM2).toBeCloseTo(6, 3);
   });
 
-  it('clips every S-marked corner bay by its diagonal structural boundary', () => {
-    const corner = drawing();
-    corner.texts = [{ layer: 'SLABS NO', text: 'S1', pos: { x: 700, y: 700 } }];
-    corner.segments.push({ layer: 'A-PLNT', lineType: 'CONTINUOUS', a: { x: 0, y: 3000 }, b: { x: 4000, y: 0 } });
-    const panel = autoProposePanels(corner)[0];
-    expect(panel.polygon?.length).toBe(3);
-    expect(panel.netAreaM2).toBeCloseTo(6, 3);
-  });
-
   it('does not deduct a rectangular opening that only touches an irregular panel bounding box', () => {
     const hatched = drawing();
     hatched.hatches = [{ layer: 'SLAB HATCH', solid: false, pattern: 'TRIANG',

@@ -104,12 +104,12 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // rejecting the resulting 200–450 mm band as non-slab geometry.
     if (above && below && above.y - below.y < 600) {
       const pair = belowOptions.slice(0, 4).flatMap((b) => aboveOptions.slice(0, 4).map((a) => ({ a, b, span: a.y - b.y })))
-        .filter((p) => p.span >= 600 && p.span <= 60_000).sort((a, b) => a.span - b.span)[0];
+        .filter((p) => p.span >= 600).sort((a, b) => a.span - b.span)[0];
       if (pair) { above = pair.a; below = pair.b; expandedFromBeamFace = true; }
     }
     if (right && left && right.x - left.x < 600) {
       const pair = leftOptions.slice(0, 4).flatMap((l) => rightOptions.slice(0, 4).map((r) => ({ r, l, span: r.x - l.x })))
-        .filter((p) => p.span >= 600 && p.span <= 60_000).sort((a, b) => a.span - b.span)[0];
+        .filter((p) => p.span >= 600).sort((a, b) => a.span - b.span)[0];
       if (pair) { right = pair.r; left = pair.l; expandedFromBeamFace = true; }
     }
 
@@ -123,7 +123,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       // already removed by excludedDetailPoint above.
       const structuralSides = Number(!!above) + Number(!!below) + Number(!!right) + Number(!!left);
       const partialBay = structuralSides >= 2 && !!(above || below) && !!(left || right)
-        && nl >= 300 && nl <= 60_000 && nb >= 300 && nb <= 60_000;
+        && nl >= 300 && nb >= 300;
       if (!L.trustedLayer && !partialBay) continue;
       const x0 = left?.x ?? (right ? right.x - nl : c.x - nl / 2);
       const x1 = right?.x ?? (left ? left.x + nl : c.x + nl / 2);
@@ -148,7 +148,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   ].join('|');
   const hatchCandidates = dwg.hatches.map((hatch) => ({ hatch, box: bbox(hatch.pts) })).filter(({ hatch, box }) => {
     const w = box.x1 - box.x0, h = box.y1 - box.y0;
-    return !hatch.solid && !!hatch.pattern && w >= 300 && h >= 300 && w <= 30_000 && h <= 30_000
+    return !hatch.solid && !!hatch.pattern && w >= 300 && h >= 300
       && (w * h) / 1e6 <= 400;
   });
   const confirmedHatchSignatures = new Set(hatchCandidates.filter(({ box }) => labels.some((label) =>
@@ -238,8 +238,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // numbering, Excel export, totals, and reference-file marking.
   const measurable = out.filter((panel) => {
     const grossM2 = (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
-    const verifiedLongSlab = /^S\d+[A-Z]?$|^CANTILEVER$|^SLAB STRIP$/i.test(panel.label || '');
-    const maxSpan = verifiedLongSlab ? 60_000 : 30_000;
+    const verifiedLongSlab = /^S\d+[A-Z]?$|^CANTILEVER$|^SLAB STRIP$|^HATCH-SLAB$/i.test(panel.label || '');
+    const maxSpan = verifiedLongSlab ? Infinity : 30_000;
     const plausibleBay = panel.lengthMm >= 300 && panel.breadthMm >= 300
       && panel.lengthMm <= maxSpan && panel.breadthMm <= maxSpan
       && grossM2 <= 400;

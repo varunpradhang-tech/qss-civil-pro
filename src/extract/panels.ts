@@ -160,10 +160,30 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const c = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
     if (excludedDetailPoint(c) || holdNotes.some((note) => note.pos.x >= box.x0 && note.pos.x <= box.x1
       && note.pos.y >= box.y0 && note.pos.y <= box.y1)) continue;
-    if (labels.some((label) => label.pos.x >= box.x0 && label.pos.x <= box.x1
-      && label.pos.y >= box.y0 && label.pos.y <= box.y1)) continue;
+    const containedLabel = labels.find((label) => label.pos.x >= box.x0 && label.pos.x <= box.x1
+      && label.pos.y >= box.y0 && label.pos.y <= box.y1);
+    const bboxAreaM2 = ((box.x1 - box.x0) * (box.y1 - box.y0)) / 1e6;
+    const rectangular = areaM2 >= bboxAreaM2 * 0.985;
+    if (containedLabel) {
+      // An irregular hatch is a stronger boundary than four independent ray
+      // hits. Replace the label's rectangular proxy with the exact triangle,
+      // trapezoid or curved outline. A true rectangular hatch remains the
+      // ordinary dimensioned bay and does not get a redundant area label.
+      if (!rectangular) {
+        const measured = out.find((panel) => panel.label === containedLabel.text
+          && containedLabel.pos.x >= panel.box.x0 && containedLabel.pos.x <= panel.box.x1
+          && containedLabel.pos.y >= panel.box.y0 && containedLabel.pos.y <= panel.box.y1);
+        if (measured) {
+          measured.box = box; measured.polygon = polygon; measured.netAreaM2 = areaM2;
+          measured.lengthMm = box.x1 - box.x0; measured.breadthMm = box.y1 - box.y0;
+          measured.confident = true;
+        }
+      }
+      continue;
+    }
     if (out.some((panel) => overlapFrac(panel.box, box) > 0.8)) continue;
-    out.push({ label: 'HATCH-SLAB', box, polygon, netAreaM2: areaM2,
+    out.push({ label: 'HATCH-SLAB', box, polygon: rectangular ? undefined : polygon,
+      netAreaM2: rectangular ? undefined : areaM2,
       lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0,
       openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: true, duplicate: false });
   }
@@ -189,6 +209,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         && label.pos.y <= measured.box.y1 + ALIGN_TOL));
     if (unresolvedSlabMark) panel.label = unresolvedSlabMark.text;
     if (excludedDetailPoint(centre)) return false;
+    // A short 1–3 m rectangle immediately outside one beam face is normally
+    // the beam/column return symbol, not the long balcony or chajja. Genuine
+    // non-polygon cantilevers must have a continuous verified run.
+    if (!panel.polygon && Math.max(panel.lengthMm, panel.breadthMm) < 3000) return false;
     // With no explicit cantilever text, accept geometry-only additions only
     // around the exterior of the labelled framing-plan envelope. This keeps
     // internal beam/grid cells out of the cantilever list.
@@ -269,10 +293,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
 // Distribute each cutout only across panels its geometry actually overlaps.
 // A nearby lift/shaft outside a panel must never become an unverified deduction.
 function assignCutouts(panels: PanelProposalBox[], cutouts: Cutout[]): void {
-  const capOf = (p: PanelProposalBox) => (p.lengthMm / 1000) * (p.breadthMm / 1000);
+  const capOf = (p: PanelProposalBox) => p.netAreaM2 ?? (p.lengthMm / 1000) * (p.breadthMm / 1000);
   for (const c of cutouts) {
     const overlaps = panels
-      .map((p) => ({ p, ov: rectOverlap(c.box, p.box) }))
+      .map((p) => ({ p, ov: p.polygon ? polygonRectIntersectionArea(p.polygon, c.box) / 1e6 : rectOverlap(c.box, p.box) }))
       .filter((o) => o.ov > 0);
     const totalOv = overlaps.reduce((s, o) => s + o.ov, 0);
     if (totalOv > 0) {
@@ -301,8 +325,8 @@ function markDuplicates(panels: PanelProposalBox[]): void {
     // Structurally verified boundaries are authoritative. Process them before
     // approximate S-label ray-cast boxes so the latter cannot remain as an
     // overlapping second measurement (for example 40,300 over 41,450 mm).
-    const ar = panels[a].dottedBoundary || panels[a].cantileverBoundary ? 0 : panels[a].polygon ? 1 : 2;
-    const br = panels[b].dottedBoundary || panels[b].cantileverBoundary ? 0 : panels[b].polygon ? 1 : 2;
+    const ar = panels[a].polygon ? 0 : panels[a].dottedBoundary || panels[a].cantileverBoundary ? 1 : 2;
+    const br = panels[b].polygon ? 0 : panels[b].dottedBoundary || panels[b].cantileverBoundary ? 1 : 2;
     if (ar !== br) return ar - br;
     return boxArea(panels[a].box) - boxArea(panels[b].box);
   });
@@ -318,10 +342,38 @@ function markDuplicates(panels: PanelProposalBox[]): void {
       ? kept.some((k) => k.dottedBoundary && overlapFrac(p.box, k.box) > 0.8)
       : p.polygon
       ? kept.some((k) => k.polygon && overlapFrac(p.box, k.box) > 0.8)
-      : kept.some((k) => !k.polygon && !k.cantileverBoundary && overlapFrac(p.box, k.box) > 0.6);
+      : kept.some((k) => k.polygon
+        ? polygonRectOverlapFrac(k.polygon, p.box) > 0.6
+        : !k.cantileverBoundary && overlapFrac(p.box, k.box) > 0.6);
     if (duplicate) { p.duplicate = true; p.confident = false; }
     else kept.push(p);
   }
+}
+
+function polygonRectOverlapFrac(polygon: Pt[], rect: PanelProposalBox['box']): number {
+  const intersection = polygonRectIntersectionArea(polygon, rect);
+  const smaller = Math.min(Math.abs(shoelace(polygon)), boxArea(rect));
+  return smaller > 0 ? intersection / smaller : 0;
+}
+
+function polygonRectIntersectionArea(polygon: Pt[], rect: PanelProposalBox['box']): number {
+  let clipped = polygon.map((p) => ({ ...p }));
+  const clip = (inside: (p: Pt) => boolean, intersect: (a: Pt, b: Pt) => Pt) => {
+    const input = clipped; clipped = [];
+    for (let i = 0; i < input.length; i++) {
+      const a = input[i], b = input[(i + 1) % input.length], ai = inside(a), bi = inside(b);
+      if (ai && bi) clipped.push(b);
+      else if (ai && !bi) clipped.push(intersect(a, b));
+      else if (!ai && bi) clipped.push(intersect(a, b), b);
+    }
+  };
+  const atX = (x: number) => (a: Pt, b: Pt): Pt => ({ x, y: a.y + (b.y - a.y) * (x - a.x) / ((b.x - a.x) || 1e-9) });
+  const atY = (y: number) => (a: Pt, b: Pt): Pt => ({ x: a.x + (b.x - a.x) * (y - a.y) / ((b.y - a.y) || 1e-9), y });
+  clip((p) => p.x >= rect.x0, atX(rect.x0)); if (!clipped.length) return 0;
+  clip((p) => p.x <= rect.x1, atX(rect.x1)); if (!clipped.length) return 0;
+  clip((p) => p.y >= rect.y0, atY(rect.y0)); if (!clipped.length) return 0;
+  clip((p) => p.y <= rect.y1, atY(rect.y1)); if (!clipped.length) return 0;
+  return Math.abs(shoelace(clipped));
 }
 const boxArea = (b: PanelProposalBox['box']) => Math.max(0, b.x1 - b.x0) * Math.max(0, b.y1 - b.y0);
 function overlapFrac(a: PanelProposalBox['box'], b: PanelProposalBox['box']): number {
@@ -557,7 +609,9 @@ export function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[
     if (Math.abs(u.x * su.x + u.y * su.y) < 0.985) continue;
     const normal = { x: -u.y, y: u.x };
     const distance = Math.abs((solid.a.x - dash.a.x) * normal.x + (solid.a.y - dash.a.y) * normal.y);
-    if (distance < 300 || distance > 5000) continue;
+    // 300/450/600 mm parallel bands are the beam itself. Cantilever soffit
+    // begins beyond the slab-side beam face.
+    if (distance < 800 || distance > 5000) continue;
     const projection = (p: Pt) => (p.x - dash.a.x) * u.x + (p.y - dash.a.y) * u.y;
     const d0 = 0, d1 = dl;
     const sp0 = projection(solid.a), sp1 = projection(solid.b);

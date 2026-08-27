@@ -130,12 +130,12 @@ describe('unmarked slab geometry', () => {
 
   it('keeps the exact area of a sloping cantilever between hidden and solid beam faces', () => {
     const panels = detectClosedCantileverStrips([
-      { layer: '1-BEAM', lineType: 'HIDDEN', a: { x: 0, y: 450 }, b: { x: 4000, y: 4450 } },
+      { layer: '1-BEAM', lineType: 'HIDDEN', a: { x: 0, y: 1200 }, b: { x: 4000, y: 5200 } },
       { layer: '1-BEAM', lineType: 'CONTINUOUS', a: { x: 0, y: 0 }, b: { x: 4000, y: 4000 } },
     ]);
     expect(panels).toHaveLength(1);
     expect(panels[0].polygon).toHaveLength(4);
-    expect(panels[0].netAreaM2).toBeCloseTo(1.69875, 3);
+    expect(panels[0].netAreaM2).toBeCloseTo(4.08, 3);
   });
 
   it('keeps one structurally verified measurement for a 40 m dotted-beam corridor', () => {
@@ -205,5 +205,40 @@ describe('unmarked slab geometry', () => {
     const irregular = autoProposePanels(hatched).find((panel) => panel.label === 'HATCH-SLAB');
     expect(irregular?.polygon).toHaveLength(4);
     expect(irregular?.netAreaM2).toBeCloseTo(9.25, 3);
+  });
+
+  it('replaces a rectangular ray-cast proxy when its S mark belongs to an irregular hatch', () => {
+    const hatched = drawing();
+    hatched.hatches = [{ layer: 'SLAB HATCH', solid: false, pattern: 'TRIANG',
+      pts: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 0, y: 3000 }] }];
+    const panel = autoProposePanels(hatched).find((candidate) => candidate.label === 'S1');
+    expect(panel?.polygon).toHaveLength(3);
+    expect(panel?.netAreaM2).toBeCloseTo(6, 3);
+  });
+
+  it('does not deduct a rectangular opening that only touches an irregular panel bounding box', () => {
+    const hatched = drawing();
+    hatched.hatches = [{ layer: 'SLAB HATCH', solid: false, pattern: 'TRIANG',
+      pts: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 0, y: 3000 }] }];
+    hatched.polylines = [{ layer: 'OPENING', closed: true,
+      pts: [{ x: 3300, y: 2300 }, { x: 3900, y: 2300 }, { x: 3900, y: 2900 }, { x: 3300, y: 2900 }] }];
+    const panel = autoProposePanels(hatched).find((candidate) => candidate.label === 'S1');
+    expect(panel?.openingM2).toBe(0);
+  });
+
+  it('keeps a true rectangular hatch as a normal length by breadth panel', () => {
+    const hatched = drawing();
+    hatched.texts = [];
+    hatched.hatches = [
+      { layer: 'SLAB HATCH', solid: false, pattern: 'TRIANG', pts: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 3000 }, { x: 0, y: 3000 }] },
+      { layer: 'SLAB HATCH', solid: false, pattern: 'TRIANG', pts: [{ x: 5000, y: 0 }, { x: 9000, y: 0 }, { x: 9000, y: 3000 }, { x: 5000, y: 3000 }] },
+    ];
+    // Confirm the hatch signature with an S mark in the first bay, but retain
+    // the second unmarked rectangle as an ordinary dimensional panel.
+    hatched.texts = [{ layer: 'SLABS NO', text: 'S1', pos: { x: 1000, y: 1000 } }];
+    const panel = autoProposePanels(hatched).find((candidate) => candidate.label === 'HATCH-SLAB');
+    expect(panel?.polygon).toBeUndefined();
+    expect(panel?.netAreaM2).toBeUndefined();
+    expect(panel).toMatchObject({ lengthMm: 4000, breadthMm: 3000 });
   });
 });

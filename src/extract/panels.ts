@@ -2,6 +2,7 @@
 // geometry, snap to exact marked dims, deduct cutout/void openings, and flag overlapping duplicates.
 // Best-effort; low-confidence/duplicate proposals are flagged for review. Pure/headless.
 import type { NormalizedDwg, Pt, Segment } from '../domain/types.js';
+import { polygoniseCadFaces } from './topology.js';
 
 export interface PanelProposalBox {
   label?: string;
@@ -141,6 +142,70 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const sL = snap(right.x - left.x, Hdims), sB = snap(above.y - below.y, Vdims);
     const box = { x0: left.x, y0: below.y, x1: right.x, y1: above.y };
     out.push({ label: L.text, box, lengthMm: sL.v, breadthMm: sB.v, openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: sL.ok && sB.ok && !expandedFromBeamFace, duplicate: false });
+  }
+  // Resolve labelled bays against actual connected CAD faces. This pass can
+  // represent rectangles, right-angle triangles and quadrilaterals without
+  // letting an unrelated diagonal line cut every rectangular proxy.
+  const topologySegments = allSegs.filter((segment) => BOUND_LAYERS.test(segment.layer)
+    || /slab|chajja|edge/i.test(segment.layer) || /^A-PLNT$/i.test(segment.layer));
+  const topologyFaces = polygoniseCadFaces(topologySegments);
+  for (const label of labels) {
+    const measured = out.find((panel) => label.pos.x >= panel.box.x0 - ALIGN_TOL
+      && label.pos.x <= panel.box.x1 + ALIGN_TOL && label.pos.y >= panel.box.y0 - ALIGN_TOL
+      && label.pos.y <= panel.box.y1 + ALIGN_TOL && panel.label === label.text);
+    if (!measured) continue;
+    const candidates = topologyFaces.filter((face) => pointInPolygon(label.pos, face.polygon)
+      && !excludedDetailPoint({ x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 })
+      && face.areaM2 >= 0.15 && face.areaM2 <= 400)
+      .sort((a, b) => a.areaM2 - b.areaM2);
+    const face = candidates.find((candidate) => {
+      const proxyArea = boxArea(measured.box) / 1e6;
+      return candidate.areaM2 >= proxyArea * 0.2 && candidate.areaM2 <= proxyArea * 1.25;
+    });
+    if (!face) continue;
+    const bboxArea = boxArea(face.box) / 1e6;
+    measured.box = face.box;
+    measured.lengthMm = face.box.x1 - face.box.x0;
+    measured.breadthMm = face.box.y1 - face.box.y0;
+    if (face.areaM2 < bboxArea * 0.985) {
+      measured.polygon = face.polygon;
+      measured.netAreaM2 = face.areaM2;
+    }
+    measured.confident = true;
+  }
+  // Consultant drawings mark exterior chajjas/cantilevers with a standalone
+  // "C" leader.  Accept the real closed CAD face containing that mark rather
+  // than constructing a rectangular/diagonal proxy.  This is deliberately an
+  // additive pass: it cannot reshape an existing S-coded room panel.
+  const cMarks = dwg.texts.filter((text) => /^C$/i.test(text.text.trim()))
+    .filter((text) => !excludedDetailPoint(text.pos));
+  const markEnvelope = labels.length ? {
+    minX: Math.min(...labels.map((label) => label.pos.x)), maxX: Math.max(...labels.map((label) => label.pos.x)),
+    minY: Math.min(...labels.map((label) => label.pos.y)), maxY: Math.max(...labels.map((label) => label.pos.y)),
+  } : null;
+  for (const face of topologyFaces) {
+    const marks = cMarks.filter((mark) => pointInPolygon(mark.pos, face.polygon));
+    if (!marks.length || face.areaM2 < 0.2 || face.areaM2 > 400) continue;
+    const centre = { x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 };
+    if (excludedDetailPoint(centre) || holdNotes.some((note) => pointInPolygon(note.pos, face.polygon))) continue;
+    // C marks in details/legends must not generate quantities. A measured
+    // cantilever must touch or cross the perimeter of the S-labelled plan.
+    if (markEnvelope) {
+      const reachesPerimeter = face.box.x0 <= markEnvelope.minX + 3000 || face.box.x1 >= markEnvelope.maxX - 3000
+        || face.box.y0 <= markEnvelope.minY + 3000 || face.box.y1 >= markEnvelope.maxY - 3000;
+      if (!reachesPerimeter) continue;
+    }
+    // A face already substantially occupied by an S panel is that panel, not
+    // an extra cantilever. Boundary contact and a narrow support overlap are
+    // allowed, but double-counting a room is not.
+    if (out.some((panel) => polygonRectIntersectionArea(face.polygon, panel.box) / 1e6 > face.areaM2 * 0.35)) continue;
+    const bboxArea = boxArea(face.box) / 1e6;
+    out.push({ label: 'CANTILEVER', box: face.box, polygon: face.polygon,
+      netAreaM2: face.areaM2, lengthMm: face.box.x1 - face.box.x0,
+      breadthMm: face.areaM2 * 1e6 / Math.max(face.box.x1 - face.box.x0, 1),
+      openingM2: 0, thicknessMm: panelThickness(face.box, centre, thicknesses),
+      confident: face.areaM2 < bboxArea * 0.995, duplicate: false,
+      cantileverBoundary: true });
   }
   // Learn slab hatch semantics from this drawing itself. If an S-coded panel
   // uses a hatch signature, other bounded regions with the same AutoCAD
@@ -454,6 +519,16 @@ const shoelace = (pts: Pt[]) => { let a = 0; for (let i = 0; i < pts.length; i++
 const centroid = (pts: Pt[]) => { let x = 0, y = 0; for (const p of pts) { x += p.x; y += p.y; } return { cx: x / pts.length, cy: y / pts.length }; };
 const bbox = (pts: Pt[]) => ({ x0: Math.min(...pts.map((p) => p.x)), y0: Math.min(...pts.map((p) => p.y)), x1: Math.max(...pts.map((p) => p.x)), y1: Math.max(...pts.map((p) => p.y)) });
 const mid = (a: Pt, b: Pt) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+function pointInPolygon(point: Pt, polygon: Pt[]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i], b = polygon[j];
+    const crosses = (a.y > point.y) !== (b.y > point.y)
+      && point.x < (b.x - a.x) * (point.y - a.y) / ((b.y - a.y) || 1e-9) + a.x;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
 
 /** Join collinear beam-face fragments across columns/supports. CAD framing
  * plans commonly split one 40 m dotted face into many 3–8 m entities. */

@@ -584,7 +584,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         const left = (panel.box.x0 + panel.box.x1) / 2 < labelEnvelope.minX;
         const outerX = left ? panel.box.x0 : panel.box.x1;
         const innerX = left ? outerX + width : outerX - width;
-        const returnX = left ? outerX + returnRun : outerX - returnRun;
+        // The return starts at the vertical leg's inner face and projects
+        // toward the building. Starting it at outerX sends the left return in
+        // the wrong direction and overlaps the vertical rectangle.
+        const returnX = left ? innerX + returnRun : innerX - returnRun;
         panel.box = { x0: Math.min(outerX, innerX), x1: Math.max(outerX, innerX), y0, y1 };
         panel.polygon = undefined;
         panel.netAreaM2 = undefined;
@@ -597,7 +600,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
           // Show the complete horizontal slab up to its true exterior end.
           // The grid line at the vertical-leg face is not the slab endpoint;
           // the shared corner is removed later from quantity as overlap.
-          x0: Math.min(outerX, returnX), x1: Math.max(outerX, returnX),
+          x0: Math.min(innerX, returnX), x1: Math.max(innerX, returnX),
           y0: y1 - width, y1,
         };
         if (boxArea(returnBox) / 1e6 >= 0.2) returnPanels.push({

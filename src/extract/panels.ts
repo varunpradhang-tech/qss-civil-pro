@@ -160,6 +160,36 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     minX: Math.min(...labels.map((label) => label.pos.x)), maxX: Math.max(...labels.map((label) => label.pos.x)),
     minY: Math.min(...labels.map((label) => label.pos.y)), maxY: Math.max(...labels.map((label) => label.pos.y)),
   } : null;
+  // A closed loop made entirely from hidden/dotted beam faces is the clear
+  // soffit between the inner faces of its surrounding beams. It remains a
+  // slab panel even when the consultant omitted the repeated S1/S2 mark.
+  const slabCodeCounts = labels.reduce((counts, label) => {
+    counts.set(label.text, (counts.get(label.text) || 0) + 1); return counts;
+  }, new Map<string, number>());
+  const inferredSlabCode = [...slabCodeCounts].sort((a, b) => b[1] - a[1])[0]?.[0] || 'S1';
+  const dottedBeamSegments = allSegs.filter((segment) => /beam/i.test(segment.layer)
+    && /dash|hidden/i.test(segment.lineType || '') && !/center/i.test(segment.lineType || ''));
+  const dottedFaces = polygoniseCadFaces(dottedBeamSegments, 120);
+  for (const face of dottedFaces) {
+    const width = face.box.x1 - face.box.x0, height = face.box.y1 - face.box.y0;
+    const centre = { x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 };
+    if (width < 600 || height < 600 || face.areaM2 < 0.2 || face.areaM2 > 400) continue;
+    if (excludedDetailPoint(centre) || labels.some((label) => pointInPolygon(label.pos, face.polygon))) continue;
+    if (holdNotes.some((note) => pointInPolygon(note.pos, face.polygon))) continue;
+    if (markEnvelope && (centre.x < markEnvelope.minX - 3000 || centre.x > markEnvelope.maxX + 3000
+      || centre.y < markEnvelope.minY - 3000 || centre.y > markEnvelope.maxY + 3000)) continue;
+    // The face must occupy previously unmeasured space. Boundary contact is
+    // harmless, but material overlap would create a second panel.
+    if (out.some((panel) => polygonRectIntersectionArea(face.polygon, panel.box) / 1e6 > face.areaM2 * 0.1)) continue;
+    const bboxArea = boxArea(face.box) / 1e6;
+    const irregular = face.areaM2 < bboxArea * 0.985;
+    out.push({ label: inferredSlabCode, box: face.box,
+      polygon: irregular ? face.polygon : undefined,
+      netAreaM2: irregular ? face.areaM2 : undefined,
+      lengthMm: width, breadthMm: height, openingM2: 0,
+      thicknessMm: panelThickness(face.box, centre, thicknesses),
+      confident: true, duplicate: false, dottedBoundary: true });
+  }
   for (const face of topologyFaces) {
     const marks = cMarks.filter((mark) => pointInPolygon(mark.pos, face.polygon));
     if (!marks.length || face.areaM2 < 0.2 || face.areaM2 > 400) continue;

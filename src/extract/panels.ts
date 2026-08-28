@@ -34,6 +34,30 @@ function extractThicknesses(dwg: NormalizedDwg): ThkText[] {
   }
   return out;
 }
+
+// Cantilever/chajja marks often carry only a section callout (for example
+// 1-1), while the slab depth is dimensioned in the matching section detail.
+// Recover a plausible slab-depth dimension only when that detail is explicitly
+// identified as a slab section; this must not become a global thickness rule.
+function cantileverSectionThickness(dwg: NormalizedDwg): number {
+  const sectionNotes = dwg.texts.filter((t) => /\bSECTION\s*[:\-–]*\s*(\d+)\s*[-–]\s*\1\b/i.test(t.text));
+  const slabDetailTexts = dwg.texts.filter((t) => /\bSLAB\s+(?:R\/?F|REINF|THK)/i.test(t.text));
+  let best = 0, bestDistance = Infinity;
+  for (const section of sectionNotes) {
+    const hasSlabDetail = slabDetailTexts.some((text) => Math.hypot(text.pos.x - section.pos.x,
+      text.pos.y - section.pos.y) <= 30_000);
+    if (!hasSlabDetail) continue;
+    for (const dimension of dwg.dimensions) {
+      const mm = dimension.measurement;
+      if (mm < 75 || mm > 225) continue;
+      const distance = Math.hypot(dimension.mid.x - section.pos.x, dimension.mid.y - section.pos.y);
+      if (distance <= 30_000 && distance < bestDistance) {
+        best = Math.round(mm); bestDistance = distance;
+      }
+    }
+  }
+  return best;
+}
 const nearestThickness = (c: Pt, thks: ThkText[], maxDist = 4000): number => {
   let best = 0, bd = maxDist;
   for (const t of thks) { const d = Math.hypot(t.pos.x - c.x, t.pos.y - c.y); if (d < bd) { bd = d; best = t.mm; } }
@@ -100,6 +124,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     .map((t) => ({ text: t.text.replace(/\s/g, '').toUpperCase(), pos: t.pos, trustedLayer: /slabs?\s*no/i.test(t.layer) }));
   const cutouts = extractCutouts(dwg);
   const thicknesses = extractThicknesses(dwg);
+  const sectionCantileverThickness = cantileverSectionThickness(dwg);
   const holdNotes = dwg.texts.filter((t) => /HOLD/i.test(t.text.replace(/\s+/g, '')));
 
   const snap = (val: number, opts: number[]) => {
@@ -600,6 +625,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         panel.netAreaM2 = undefined;
         panel.lengthMm = longRun;
         panel.breadthMm = width;
+        panel.thicknessMm ||= sectionCantileverThickness;
         panel.inferredSlabCode = inferredCode;
         panel.steppedBoundary = true;
         panel.confident = true;
@@ -613,7 +639,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         if (boxArea(returnBox) / 1e6 >= 0.2) returnPanels.push({
           label: 'CANTILEVER', inferredSlabCode: inferredCode, box: returnBox,
           lengthMm: fullReturnRun, breadthMm: width, openingM2: 0,
-          thicknessMm: panel.thicknessMm, confident: true, duplicate: false,
+          thicknessMm: panel.thicknessMm || sectionCantileverThickness, confident: true, duplicate: false,
           cantileverBoundary: true, steppedBoundary: true, dimensionBounded: true,
         });
       }

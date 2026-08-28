@@ -593,14 +593,16 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         panel.inferredSlabCode = inferredCode;
         panel.steppedBoundary = true;
         panel.confident = true;
-        const returnInnerX = left ? innerX : innerX;
         const returnBox = {
-          x0: Math.min(returnInnerX, returnX), x1: Math.max(returnInnerX, returnX),
+          // Show the complete horizontal slab up to its true exterior end.
+          // The grid line at the vertical-leg face is not the slab endpoint;
+          // the shared corner is removed later from quantity as overlap.
+          x0: Math.min(outerX, returnX), x1: Math.max(outerX, returnX),
           y0: y1 - width, y1,
         };
         if (boxArea(returnBox) / 1e6 >= 0.2) returnPanels.push({
           label: 'CANTILEVER', inferredSlabCode: inferredCode, box: returnBox,
-          lengthMm: returnRun - width, breadthMm: width, openingM2: 0,
+          lengthMm: returnRun, breadthMm: width, openingM2: 0,
           thicknessMm: panel.thicknessMm, confident: true, duplicate: false,
           cantileverBoundary: true, steppedBoundary: true, dimensionBounded: true,
         });

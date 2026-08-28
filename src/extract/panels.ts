@@ -85,6 +85,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       // so schedule/detail S-marks are not mistaken for slab panels.
       trustedLayer: /slabs?\s*no/i.test(t.layer),
     }));
+  const rawSlabMarks = dwg.texts.filter((t) => /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
+    .map((t) => ({ text: t.text.replace(/\s/g, '').toUpperCase(), pos: t.pos, trustedLayer: /slabs?\s*no/i.test(t.layer) }));
   const cutouts = extractCutouts(dwg);
   const thicknesses = extractThicknesses(dwg);
   const holdNotes = dwg.texts.filter((t) => /HOLD/i.test(t.text.replace(/\s+/g, '')));
@@ -169,22 +171,49 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const inferredSlabCode = [...slabCodeCounts].sort((a, b) => b[1] - a[1])[0]?.[0] || 'S1';
   const dottedBeamSegments = allSegs.filter((segment) => /beam/i.test(segment.layer)
     && /dash|hidden/i.test(segment.lineType || '') && !/center/i.test(segment.lineType || ''));
-  const dottedFaces = polygoniseCadFaces(dottedBeamSegments, 120);
+  // Beam faces commonly terminate on opposite sides of a small column/node;
+  // a 300 mm CAD snap joins those intended corners without bridging a normal
+  // slab bay or beam spacing.
+  const dottedFaces = polygoniseCadFaces(dottedBeamSegments, 300);
   for (const face of dottedFaces) {
+    const shape = simplifyCollinearPolygon(face.polygon);
     const width = face.box.x1 - face.box.x0, height = face.box.y1 - face.box.y0;
     const centre = { x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 };
     if (width < 600 || height < 600 || face.areaM2 < 0.2 || face.areaM2 > 400) continue;
-    if (excludedDetailPoint(centre) || labels.some((label) => pointInPolygon(label.pos, face.polygon))) continue;
     if (holdNotes.some((note) => pointInPolygon(note.pos, face.polygon))) continue;
     if (markEnvelope && (centre.x < markEnvelope.minX - 3000 || centre.x > markEnvelope.maxX + 3000
       || centre.y < markEnvelope.minY - 3000 || centre.y > markEnvelope.maxY + 3000)) continue;
+    const containedLabel = labels.find((label) => pointInPolygon(label.pos, shape))
+      || rawSlabMarks.find((label) => pointInPolygon(label.pos, shape));
+    if (containedLabel) {
+      // The only labelled irregular override permitted is an actual closed
+      // three-sided loop made exclusively from dotted beam faces. This covers
+      // true triangular slab bays without allowing a single diagonal/detail
+      // line to cut an otherwise rectangular panel.
+      if (shape.length !== 3) continue;
+      const measured = out.find((panel) => panel.label === containedLabel.text
+        && containedLabel.pos.x >= panel.box.x0 - ALIGN_TOL && containedLabel.pos.x <= panel.box.x1 + ALIGN_TOL
+        && containedLabel.pos.y >= panel.box.y0 - ALIGN_TOL && containedLabel.pos.y <= panel.box.y1 + ALIGN_TOL);
+      if (measured) {
+        measured.box = face.box; measured.polygon = shape; measured.netAreaM2 = face.areaM2;
+        measured.lengthMm = width; measured.breadthMm = height; measured.confident = true;
+        measured.dottedBoundary = true;
+      } else {
+        out.push({ label: containedLabel.text, box: face.box, polygon: shape,
+          netAreaM2: face.areaM2, lengthMm: width, breadthMm: height,
+          openingM2: 0, thicknessMm: panelThickness(face.box, centre, thicknesses),
+          confident: true, duplicate: false, dottedBoundary: true });
+      }
+      continue;
+    }
+    if (excludedDetailPoint(centre)) continue;
     // The face must occupy previously unmeasured space. Boundary contact is
     // harmless, but material overlap would create a second panel.
     if (out.some((panel) => polygonRectIntersectionArea(face.polygon, panel.box) / 1e6 > face.areaM2 * 0.1)) continue;
     const bboxArea = boxArea(face.box) / 1e6;
     const irregular = face.areaM2 < bboxArea * 0.985;
     out.push({ label: inferredSlabCode, box: face.box,
-      polygon: irregular ? face.polygon : undefined,
+      polygon: irregular ? shape : undefined,
       netAreaM2: irregular ? face.areaM2 : undefined,
       lengthMm: width, breadthMm: height, openingM2: 0,
       thicknessMm: panelThickness(face.box, centre, thicknesses),
@@ -403,7 +432,9 @@ export function markDuplicates(panels: PanelProposalBox[]): void {
     // A panel tied to an explicit slab mark is authoritative. Generated
     // hatch/cantilever polygons may fill otherwise unmeasured space, but must
     // never displace or survive inside an established S-coded bay.
-    const rank = (panel: PanelProposalBox) => /^S\d+[A-Z]?$/i.test(panel.label || '') ? 0
+    const rank = (panel: PanelProposalBox) => /^S\d+[A-Z]?$/i.test(panel.label || '')
+      && panel.dottedBoundary && panel.polygon?.length === 3 ? -1
+      : /^S\d+[A-Z]?$/i.test(panel.label || '') ? 0
       : panel.polygon && panel.label !== 'CANTILEVER' ? 1
       : panel.dottedBoundary ? 2 : panel.label !== 'CANTILEVER' ? 3 : 4;
     const ar = rank(panels[a]), br = rank(panels[b]);
@@ -531,6 +562,25 @@ function pointInPolygon(point: Pt, polygon: Pt[]): boolean {
     if (crosses) inside = !inside;
   }
   return inside;
+}
+
+function simplifyCollinearPolygon(polygon: Pt[]): Pt[] {
+  let points = polygon.map((point) => ({ ...point }));
+  for (let pass = 0; pass < polygon.length && points.length > 3; pass++) {
+    let changed = false;
+    points = points.filter((point, index, source) => {
+      const before = source[(index - 1 + source.length) % source.length];
+      const after = source[(index + 1) % source.length];
+      const ax = point.x - before.x, ay = point.y - before.y;
+      const bx = after.x - point.x, by = after.y - point.y;
+      const scale = Math.max(Math.hypot(ax, ay) * Math.hypot(bx, by), 1);
+      const collinear = Math.abs(ax * by - ay * bx) / scale < 0.002 && ax * bx + ay * by >= 0;
+      if (collinear) changed = true;
+      return !collinear;
+    });
+    if (!changed) break;
+  }
+  return points;
 }
 
 /** Join collinear beam-face fragments across columns/supports. CAD framing

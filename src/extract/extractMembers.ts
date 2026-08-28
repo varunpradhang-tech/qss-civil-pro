@@ -138,7 +138,7 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     r.cadY1 = p.box.y1;
     r.length = round3(p.lengthMm / 1000);
     r.breadth = round3(p.breadthMm / 1000);
-    const slabCode = p.label?.replace(/\s/g, '').toUpperCase();
+    const slabCode = (p.inferredSlabCode || p.label)?.replace(/\s/g, '').toUpperCase();
     const thicknessMm = p.thicknessMm || (slabCode ? schedule.get(slabCode) : undefined) || unoThickness || 175;
     const missingThickness = !p.thicknessMm && !(slabCode && schedule.has(slabCode)) && !unoThickness;
     r.height = round3(thicknessMm / 1000); // slab thickness → concrete depth

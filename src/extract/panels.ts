@@ -6,6 +6,7 @@ import { polygoniseCadFaces } from './topology.js';
 
 export interface PanelProposalBox {
   label?: string;
+  inferredSlabCode?: string; // schedule lookup when the panel itself has no S1/S2 mark
   box: { x0: number; y0: number; x1: number; y1: number }; // mm
   lengthMm: number;
   breadthMm: number;
@@ -18,6 +19,7 @@ export interface PanelProposalBox {
   dottedBoundary?: boolean; // verified long strip enclosed by dashed beam faces
   cantileverBoundary?: boolean; // dashed beam face to continuous free edge
   steppedBoundary?: boolean; // continuous exterior edge against bay-by-bay hidden beam fragments
+  mixedBoundary?: boolean; // exact C-marked dotted-inner/continuous-outer closed face
 }
 
 interface ThkText { pos: Pt; mm: number; }
@@ -219,7 +221,41 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       thicknessMm: panelThickness(face.box, centre, thicknesses),
       confident: true, duplicate: false, dottedBoundary: true });
   }
-  for (const face of topologyFaces) {
+  // Polygonise the real band around each standalone C mark. A valid band has
+  // a dashed/hidden inner beam face AND a continuous outer slab/free edge.
+  // This preserves tapered, curved (segmented), L-shaped and other irregular
+  // boundaries rather than replacing them with a bounding rectangle.
+  const isDashed = (segment: Segment) => /dash|hidden/i.test(segment.lineType || '') && !/center/i.test(segment.lineType || '');
+  const innerBandSegments = allSegs.filter((segment) => /beam|slab|rcc/i.test(segment.layer) && isDashed(segment));
+  const outerBandSegments = allSegs.filter((segment) => !isDashed(segment)
+    && (/^A-(?:PLNT|STRS)$/i.test(segment.layer) || /^0$/i.test(segment.layer)
+      || /beam|slab|chajja|cantilever|edge|rcc/i.test(segment.layer)));
+  const mixedCantileverFaces = polygoniseCadFaces([...innerBandSegments, ...outerBandSegments], 300);
+  const edgeNearSegment = (a: Pt, b: Pt, candidates: Segment[]) => {
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    return candidates.some((segment) => {
+      const vx = segment.b.x - segment.a.x, vy = segment.b.y - segment.a.y;
+      const wx = mx - segment.a.x, wy = my - segment.a.y;
+      const vv = vx * vx + vy * vy;
+      if (!vv) return false;
+      const t = Math.max(0, Math.min(1, (wx * vx + wy * vy) / vv));
+      const distance = Math.hypot(mx - (segment.a.x + t * vx), my - (segment.a.y + t * vy));
+      const cross = Math.abs((b.x - a.x) * vy - (b.y - a.y) * vx);
+      return distance <= 350 && cross <= Math.hypot(b.x - a.x, b.y - a.y) * Math.hypot(vx, vy) * 0.08;
+    });
+  };
+  const verifiedMixedFaces = mixedCantileverFaces.filter((face) => {
+    if (!cMarks.some((mark) => pointInPolygon(mark.pos, face.polygon))) return false;
+    let inner = false, outer = false;
+    for (let i = 0; i < face.polygon.length; i++) {
+      const a = face.polygon[i], b = face.polygon[(i + 1) % face.polygon.length];
+      inner ||= edgeNearSegment(a, b, innerBandSegments);
+      outer ||= edgeNearSegment(a, b, outerBandSegments);
+    }
+    return inner && outer;
+  });
+  const cTopologyFaces = verifiedMixedFaces.length ? verifiedMixedFaces : topologyFaces;
+  for (const face of cTopologyFaces) {
     const marks = cMarks.filter((mark) => pointInPolygon(mark.pos, face.polygon));
     if (!marks.length || face.areaM2 < 0.2 || face.areaM2 > 400) continue;
     const centre = { x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 };
@@ -236,12 +272,12 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // allowed, but double-counting a room is not.
     if (out.some((panel) => polygonRectIntersectionArea(face.polygon, panel.box) / 1e6 > face.areaM2 * 0.35)) continue;
     const bboxArea = boxArea(face.box) / 1e6;
-    out.push({ label: 'CANTILEVER', box: face.box, polygon: face.polygon,
+    out.push({ label: 'CANTILEVER', inferredSlabCode, box: face.box, polygon: simplifyCollinearPolygon(face.polygon),
       netAreaM2: face.areaM2, lengthMm: face.box.x1 - face.box.x0,
       breadthMm: face.areaM2 * 1e6 / Math.max(face.box.x1 - face.box.x0, 1),
       openingM2: 0, thicknessMm: panelThickness(face.box, centre, thicknesses),
       confident: face.areaM2 < bboxArea * 0.995, duplicate: false,
-      cantileverBoundary: true });
+      cantileverBoundary: true, mixedBoundary: true });
   }
   // Learn slab hatch semantics from this drawing itself. If an S-coded panel
   // uses a hatch signature, other bounded regions with the same AutoCAD
@@ -437,7 +473,8 @@ export function markDuplicates(panels: PanelProposalBox[]): void {
       : /^S\d+[A-Z]?$/i.test(panel.label || '') ? 0
       : panel.polygon && panel.label !== 'CANTILEVER' ? 1
       : panel.dottedBoundary ? 2 : panel.label !== 'CANTILEVER' ? 3 : 4;
-    const ar = rank(panels[a]), br = rank(panels[b]);
+    const exactCantileverRank = (panel: PanelProposalBox) => panel.mixedBoundary ? 3 : rank(panel);
+    const ar = exactCantileverRank(panels[a]), br = exactCantileverRank(panels[b]);
     if (ar !== br) return ar - br;
     if (ar === 0) {
       // For two competing S-coded proposals, the full structural bay is the

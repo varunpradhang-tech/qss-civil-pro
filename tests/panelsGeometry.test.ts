@@ -186,6 +186,21 @@ describe('unmarked slab geometry', () => {
     expect(panels[0].netAreaM2).toBeCloseTo(4.08, 3);
   });
 
+  it('polygonises a C-marked tapered band from its dotted inner and continuous outer edges', () => {
+    const plan = drawing();
+    plan.texts = [{ layer: 'TEXT', text: 'C', pos: { x: 2000, y: -700 } }];
+    plan.segments = [
+      { layer: '1-BEAM', lineType: 'HIDDEN', a: { x: 0, y: 0 }, b: { x: 4000, y: 0 } },
+      { layer: 'A-PLNT', lineType: 'CONTINUOUS', a: { x: 0, y: -1000 }, b: { x: 4000, y: -2000 } },
+      { layer: 'A-PLNT', lineType: 'CONTINUOUS', a: { x: 0, y: 0 }, b: { x: 0, y: -1000 } },
+      { layer: 'A-PLNT', lineType: 'CONTINUOUS', a: { x: 4000, y: 0 }, b: { x: 4000, y: -2000 } },
+    ];
+    const panel = autoProposePanels(plan).find((candidate) => candidate.label === 'CANTILEVER');
+    expect(panel?.polygon).toHaveLength(4);
+    expect(panel?.netAreaM2).toBeCloseTo(6, 3);
+    expect(panel?.inferredSlabCode).toBe('S1');
+  });
+
   it('does not retain an inferred polygon inside an established S-coded panel', () => {
     const plan = drawing();
     plan.segments.push(

@@ -288,7 +288,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         row.needsReview = false; row.reviewReason = undefined;
       }
     }
-    return rows.sort((a, b) => compareBeamLabels(a.member, b.member));
+    return consolidateBeamRows(rows).sort((a, b) => compareBeamLabels(a.member, b.member));
   }
 
   let n = 1;
@@ -308,5 +308,41 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
     r.needsReview = !size;
     r.reviewReason = size ? undefined : 'no beam size found in uploaded plan/schedule';
     return r;
+  });
+}
+
+/** One MB row per beam mark. Repeated labels are the clear spans of the same
+ * continuous beam through multiple RCC supports, not separate beam marks. */
+function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
+  const groups = new Map<string, MemberRow[]>();
+  for (const row of rows) groups.set(row.member, [...(groups.get(row.member) || []), row]);
+  return [...groups.values()].map((spans) => {
+    if (spans.length === 1) return spans[0];
+    const sizeCounts = new Map<string, number>();
+    for (const span of spans) {
+      const key = `${span.breadth}|${span.height}`;
+      sizeCounts.set(key, (sizeCounts.get(key) || 0) + 1);
+    }
+    const selectedSize = [...sizeCounts].sort((a, b) => b[1] - a[1])[0]?.[0].split('|').map(Number) ?? [0, 0];
+    const totalLength = spans.reduce((sum, span) => sum + span.length, 0);
+    const totalSideLength = spans.reduce((sum, span) => sum + (span.sideLength || span.length), 0);
+    const weightedThickness = (side: 1 | 2) => totalSideLength > 0
+      ? spans.reduce((sum, span) => sum + (span.sideLength || span.length)
+        * (side === 1 ? span.slabThicknessSide1 || 0 : span.slabThicknessSide2 || 0), 0) / totalSideLength
+      : 0;
+    const row = { ...spans[0] };
+    row.length = round3(totalLength);
+    row.sideLength = round3(totalSideLength);
+    row.breadth = selectedSize[0]; row.height = selectedSize[1];
+    row.slabThicknessSide1 = round3(weightedThickness(1));
+    row.slabThicknessSide2 = round3(weightedThickness(2));
+    row.innerSideCount = Number(!!row.slabThicknessSide1) + Number(!!row.slabThicknessSide2);
+    row.columnCapDeduction = round3(spans.reduce((sum, span) => sum + (span.columnCapDeduction || 0), 0));
+    row.nos = 1;
+    row.measurementSource = spans.every((span) => span.measurementSource === 'marked dimension')
+      ? 'marked dimension' : 'drawing geometry';
+    row.needsReview = spans.some((span) => span.needsReview);
+    row.reviewReason = [...new Set(spans.map((span) => span.reviewReason).filter(Boolean))].join('; ') || undefined;
+    return row;
   });
 }

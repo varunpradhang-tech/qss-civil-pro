@@ -552,9 +552,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // yields the full vertical run while the opposite end yields the top return.
   // When two dimension-bounded exterior strips have the same width, one is a
   // long (>15 m) leg and the other is a shorter return, assemble the actual
-  // mirrored L outlines. This keeps both legs and counts the shared corner
-  // exactly once instead of exporting one rectangle at 8.4 m and the other at
-  // 24.225 m.
+  // mirrored L slabs. Export them as two real, non-overlapping rectangles per
+  // side: the full vertical leg and the horizontal return after the shared
+  // 2.475 m corner. An "equivalent breadth" (total L area / long length) is
+  // not a physical dimension and makes the reference mark misleading.
   const dimensionStrips = out.filter((panel) => panel.label === 'CANTILEVER'
     && panel.dimensionBounded && !panel.polygon);
   if (dimensionStrips.length === 2 && labelEnvelope) {
@@ -569,28 +570,42 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         && (a.box.x0 + a.box.x1) / 2 > labelEnvelope.maxX);
     if (sameWidth && oppositeSides && longRun > 15_000 && returnRun >= 3000
       && longRun / returnRun > 1.8) {
-      const width = (widthA + widthB) / 2;
+      // One end commonly exposes the true cantilever width while the other
+      // recovered proxy includes extra support geometry. The narrower value
+      // is the physical slab width (2.475 m in the verified Fifth Floor plan).
+      const width = Math.min(widthA, widthB);
       const longSource = runA >= runB ? a : b;
       const y0 = longSource.box.y0, y1 = longSource.box.y1;
+      const returnPanels: PanelProposalBox[] = [];
+      const inferredCode = [...labels.reduce((counts, label) => counts.set(label.text,
+        (counts.get(label.text) || 0) + 1), new Map<string, number>())]
+        .sort((x, y) => y[1] - x[1])[0]?.[0];
       for (const panel of dimensionStrips) {
         const left = (panel.box.x0 + panel.box.x1) / 2 < labelEnvelope.minX;
         const outerX = left ? panel.box.x0 : panel.box.x1;
         const innerX = left ? outerX + width : outerX - width;
         const returnX = left ? outerX + returnRun : outerX - returnRun;
-        panel.box = { x0: Math.min(outerX, returnX), x1: Math.max(outerX, returnX), y0, y1 };
-        panel.polygon = left ? [
-          { x: outerX, y: y0 }, { x: innerX, y: y0 }, { x: innerX, y: y1 - width },
-          { x: returnX, y: y1 - width }, { x: returnX, y: y1 }, { x: outerX, y: y1 },
-        ] : [
-          { x: outerX, y: y0 }, { x: innerX, y: y0 }, { x: innerX, y: y1 - width },
-          { x: returnX, y: y1 - width }, { x: returnX, y: y1 }, { x: outerX, y: y1 },
-        ];
-        panel.netAreaM2 = (width * longRun + width * returnRun - width * width) / 1e6;
+        panel.box = { x0: Math.min(outerX, innerX), x1: Math.max(outerX, innerX), y0, y1 };
+        panel.polygon = undefined;
+        panel.netAreaM2 = undefined;
         panel.lengthMm = longRun;
-        panel.breadthMm = panel.netAreaM2 * 1e6 / longRun;
+        panel.breadthMm = width;
+        panel.inferredSlabCode = inferredCode;
         panel.steppedBoundary = true;
         panel.confident = true;
+        const returnInnerX = left ? innerX : innerX;
+        const returnBox = {
+          x0: Math.min(returnInnerX, returnX), x1: Math.max(returnInnerX, returnX),
+          y0: y1 - width, y1,
+        };
+        if (boxArea(returnBox) / 1e6 >= 0.2) returnPanels.push({
+          label: 'CANTILEVER', inferredSlabCode: inferredCode, box: returnBox,
+          lengthMm: returnRun - width, breadthMm: width, openingM2: 0,
+          thicknessMm: panel.thicknessMm, confident: true, duplicate: false,
+          cantileverBoundary: true, steppedBoundary: true, dimensionBounded: true,
+        });
       }
+      out.push(...returnPanels);
     }
   }
   // Do not merge a corridor into one long slab merely because dotted beam

@@ -545,6 +545,51 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     if (unresolvedSlabMark) return true;
     return !labelledPanels.some((labelled) => overlapFrac(panel.box, labelled.box) > 0.1);
   }));
+  // Some symmetric end chajjas expose complementary dimensions: one end
+  // yields the full vertical run while the opposite end yields the top return.
+  // When two dimension-bounded exterior strips have the same width, one is a
+  // long (>15 m) leg and the other is a shorter return, assemble the actual
+  // mirrored L outlines. This keeps both legs and counts the shared corner
+  // exactly once instead of exporting one rectangle at 8.4 m and the other at
+  // 24.225 m.
+  const dimensionStrips = out.filter((panel) => panel.label === 'CANTILEVER'
+    && panel.dimensionBounded && !panel.polygon);
+  if (dimensionStrips.length === 2 && labelEnvelope) {
+    const [a, b] = dimensionStrips;
+    const widthA = Math.min(a.lengthMm, a.breadthMm), widthB = Math.min(b.lengthMm, b.breadthMm);
+    const runA = Math.max(a.lengthMm, a.breadthMm), runB = Math.max(b.lengthMm, b.breadthMm);
+    const longRun = Math.max(runA, runB), returnRun = Math.min(runA, runB);
+    const sameWidth = Math.abs(widthA - widthB) <= Math.max(widthA, widthB) * 0.15;
+    const oppositeSides = ((a.box.x0 + a.box.x1) / 2 < labelEnvelope.minX
+      && (b.box.x0 + b.box.x1) / 2 > labelEnvelope.maxX)
+      || ((b.box.x0 + b.box.x1) / 2 < labelEnvelope.minX
+        && (a.box.x0 + a.box.x1) / 2 > labelEnvelope.maxX);
+    if (sameWidth && oppositeSides && longRun > 15_000 && returnRun >= 3000
+      && longRun / returnRun > 1.8) {
+      const width = (widthA + widthB) / 2;
+      const longSource = runA >= runB ? a : b;
+      const y0 = longSource.box.y0, y1 = longSource.box.y1;
+      for (const panel of dimensionStrips) {
+        const left = (panel.box.x0 + panel.box.x1) / 2 < labelEnvelope.minX;
+        const outerX = left ? panel.box.x0 : panel.box.x1;
+        const innerX = left ? outerX + width : outerX - width;
+        const returnX = left ? outerX + returnRun : outerX - returnRun;
+        panel.box = { x0: Math.min(outerX, returnX), x1: Math.max(outerX, returnX), y0, y1 };
+        panel.polygon = left ? [
+          { x: outerX, y: y0 }, { x: innerX, y: y0 }, { x: innerX, y: y1 - width },
+          { x: returnX, y: y1 - width }, { x: returnX, y: y1 }, { x: outerX, y: y1 },
+        ] : [
+          { x: outerX, y: y0 }, { x: innerX, y: y0 }, { x: innerX, y: y1 - width },
+          { x: returnX, y: y1 - width }, { x: returnX, y: y1 }, { x: outerX, y: y1 },
+        ];
+        panel.netAreaM2 = (width * longRun + width * returnRun - width * width) / 1e6;
+        panel.lengthMm = longRun;
+        panel.breadthMm = panel.netAreaM2 * 1e6 / longRun;
+        panel.steppedBoundary = true;
+        panel.confident = true;
+      }
+    }
+  }
   // Do not merge a corridor into one long slab merely because dotted beam
   // faces are collinear. The ordinary S/hatch proposals above retain every
   // transverse beam as a separate panel boundary.

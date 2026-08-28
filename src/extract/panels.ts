@@ -47,8 +47,15 @@ function panelThickness(box: PanelProposalBox['box'], c: Pt, thks: ThkText[]): n
   return best || nearestThickness(c, thks);
 }
 
-const BOUND_LAYERS = /beam|wall|col|pardi|rcc|cut/i;
+const BOUND_LAYERS = /beam|wall|col|pardi|rcc/i;
 const CUTOUT_LAYERS = /cut|open|void|shaft|lift|duct|ots/i;
+// Grid/axis/centre lines can be carried on names such as "COLUMN GRID" and
+// therefore used to pass the old broad /col/ test. They are annotations, not
+// slab faces. Likewise, cutout outlines are applied after the gross panel is
+// found and must never shorten or subdivide that panel.
+const NON_STRUCTURAL_BOUNDARY_LAYERS = /grid|axis|centre|center|dim|dimension|annot|text|title|schedule|section|cut|open|void|shaft|lift|duct|ots/i;
+const isStructuralBoundaryLayer = (layer: string) => BOUND_LAYERS.test(layer)
+  && !NON_STRUCTURAL_BOUNDARY_LAYERS.test(layer);
 const ALIGN_TOL = 200;
 
 export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
@@ -57,12 +64,12 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     for (let i = 0; i < pl.pts.length - 1; i++) allSegs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer, lineType: pl.lineType });
     if (pl.closed && pl.pts.length > 2) allSegs.push({ a: pl.pts[pl.pts.length - 1], b: pl.pts[0], layer: pl.layer, lineType: pl.lineType });
   }
-  const segs: Segment[] = [...dwg.segments.filter((s) => BOUND_LAYERS.test(s.layer))];
-  for (const pl of dwg.polylines.filter((p) => BOUND_LAYERS.test(p.layer))) {
+  const segs: Segment[] = [...dwg.segments.filter((s) => isStructuralBoundaryLayer(s.layer))];
+  for (const pl of dwg.polylines.filter((p) => isStructuralBoundaryLayer(p.layer))) {
     for (let i = 0; i < pl.pts.length - 1; i++) segs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer, lineType: pl.lineType });
     if (pl.closed && pl.pts.length > 2) segs.push({ a: pl.pts[pl.pts.length - 1], b: pl.pts[0], layer: pl.layer, lineType: pl.lineType });
   }
-  for (const hatch of dwg.hatches.filter((h) => BOUND_LAYERS.test(h.layer)))
+  for (const hatch of dwg.hatches.filter((h) => isStructuralBoundaryLayer(h.layer)))
     for (let i = 0; i < hatch.pts.length; i++) segs.push({ a: hatch.pts[i], b: hatch.pts[(i + 1) % hatch.pts.length], layer: hatch.layer });
 
   const H = segs.filter((s) => Math.abs(s.a.y - s.b.y) < ALIGN_TOL)
@@ -152,7 +159,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // Never replace an already bounded S-labelled slab with a smaller face:
   // opening frames, bracing diagonals and detail lines can form closed
   // quadrilaterals inside an otherwise complete rectangular slab panel.
-  const topologySegments = allSegs.filter((segment) => BOUND_LAYERS.test(segment.layer)
+  const topologySegments = allSegs.filter((segment) => isStructuralBoundaryLayer(segment.layer)
     || /slab|chajja|edge/i.test(segment.layer) || /^A-PLNT$/i.test(segment.layer));
   const topologyFaces = polygoniseCadFaces(topologySegments);
   // Some consultants place the outer structural/free edge on A-STRS or layer

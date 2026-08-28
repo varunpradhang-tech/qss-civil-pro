@@ -335,6 +335,21 @@ describe('unmarked slab geometry', () => {
     expect(panel?.openingM2).toBe(0);
   });
 
+  it('ignores grid lines and cutout outlines when finding gross panel boundaries', () => {
+    const plan = drawing();
+    plan.texts = [{ layer: 'SLAB NO', text: 'S1', pos: { x: 2410, y: 2000 } }];
+    plan.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 4820, y: 0 } },
+      { layer: 'BEAM', a: { x: 4820, y: 0 }, b: { x: 4820, y: 4000 } },
+      { layer: 'BEAM', a: { x: 4820, y: 4000 }, b: { x: 0, y: 4000 } },
+      { layer: 'BEAM', a: { x: 0, y: 4000 }, b: { x: 0, y: 0 } },
+      // These cross the bay but are not structural slab faces.
+      { layer: 'COLUMN GRID', a: { x: -1000, y: 2850 }, b: { x: 6000, y: 2850 } },
+      { layer: 'CUTOUT', a: { x: 1000, y: 1000 }, b: { x: 3800, y: 1000 } },
+    ];
+    expect(autoProposePanels(plan)[0]).toMatchObject({ lengthMm: 4820, breadthMm: 4000 });
+  });
+
   it('keeps a true rectangular hatch as a normal length by breadth panel', () => {
     const hatched = drawing();
     hatched.texts = [];

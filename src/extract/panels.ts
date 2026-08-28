@@ -21,6 +21,7 @@ export interface PanelProposalBox {
   steppedBoundary?: boolean; // continuous exterior edge against bay-by-bay hidden beam fragments
   mixedBoundary?: boolean; // exact C-marked dotted-inner/continuous-outer closed face
   closedStructuralBoundary?: boolean; // missing S mark recovered from its actual closed CAD face
+  dimensionBounded?: boolean; // rectangular cantilever recovered from associated CAD dimension endpoints
 }
 
 interface ThkText { pos: Pt; mm: number; }
@@ -353,6 +354,36 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     return inner && outer;
   });
   const cTopologyFaces = verifiedMixedFaces.length ? verifiedMixedFaces : topologyFaces;
+  // A grid/extension line can split an otherwise rectangular exterior strip
+  // into a small topology face even when the CAD has explicit overall
+  // dimensions beside the same C mark. In that case use the *endpoints* of a
+  // local H/V dimension pair, never the grid line itself, as the panel extent.
+  // This is deliberately limited to rectangular mixed-boundary cantilevers;
+  // tapered/curved/L-shaped panels retain their exact polygon.
+  const dimensionBoundedCantilever = (mark: Pt, face: typeof cTopologyFaces[number]) => {
+    const bboxArea = boxArea(face.box) / 1e6;
+    if (bboxArea <= 0 || face.areaM2 < bboxArea * 0.985) return null;
+    const nearby = dwg.dimensions.filter((dimension) => dimension.measurement >= 300
+      && dimension.measurement <= 30_000
+      && Math.hypot(dimension.mid.x - mark.x, dimension.mid.y - mark.y) <= 12_000);
+    const horizontal = nearby.filter((dimension) => dimension.dir === 'H'
+      && mark.x >= Math.min(dimension.p1.x, dimension.p2.x) - 300
+      && mark.x <= Math.max(dimension.p1.x, dimension.p2.x) + 300);
+    const vertical = nearby.filter((dimension) => dimension.dir === 'V'
+      && mark.y >= Math.min(dimension.p1.y, dimension.p2.y) - 300
+      && mark.y <= Math.max(dimension.p1.y, dimension.p2.y) + 300);
+    let best: { box: PanelProposalBox['box']; score: number } | null = null;
+    for (const h of horizontal) for (const v of vertical) {
+      const box = { x0: Math.min(h.p1.x, h.p2.x), x1: Math.max(h.p1.x, h.p2.x),
+        y0: Math.min(v.p1.y, v.p2.y), y1: Math.max(v.p1.y, v.p2.y) };
+      const area = boxArea(box) / 1e6;
+      if (area < face.areaM2 || area > 400) continue;
+      const score = Math.hypot(h.mid.x - mark.x, h.mid.y - mark.y)
+        + Math.hypot(v.mid.x - mark.x, v.mid.y - mark.y);
+      if (!best || score < best.score) best = { box, score };
+    }
+    return best?.box || null;
+  };
   for (const face of cTopologyFaces) {
     const marks = cMarks.filter((mark) => pointInPolygon(mark.pos, face.polygon));
     if (!marks.length || face.areaM2 < 0.2 || face.areaM2 > 400) continue;
@@ -369,13 +400,18 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // an extra cantilever. Boundary contact and a narrow support overlap are
     // allowed, but double-counting a room is not.
     if (out.some((panel) => polygonRectIntersectionArea(face.polygon, panel.box) / 1e6 > face.areaM2 * 0.35)) continue;
-    const bboxArea = boxArea(face.box) / 1e6;
-    out.push({ label: 'CANTILEVER', inferredSlabCode, box: face.box, polygon: simplifyCollinearPolygon(face.polygon),
-      netAreaM2: face.areaM2, lengthMm: face.box.x1 - face.box.x0,
-      breadthMm: face.areaM2 * 1e6 / Math.max(face.box.x1 - face.box.x0, 1),
-      openingM2: 0, thicknessMm: panelThickness(face.box, centre, thicknesses),
-      confident: face.areaM2 < bboxArea * 0.995, duplicate: false,
-      cantileverBoundary: true, mixedBoundary: true });
+    const dimensionBox = marks.length === 1 ? dimensionBoundedCantilever(marks[0].pos, face) : null;
+    const measuredBox = dimensionBox || face.box;
+    const bboxArea = boxArea(measuredBox) / 1e6;
+    out.push({ label: 'CANTILEVER', inferredSlabCode, box: measuredBox,
+      polygon: dimensionBox ? undefined : simplifyCollinearPolygon(face.polygon),
+      netAreaM2: dimensionBox ? bboxArea : face.areaM2,
+      lengthMm: measuredBox.x1 - measuredBox.x0,
+      breadthMm: dimensionBox ? measuredBox.y1 - measuredBox.y0
+        : face.areaM2 * 1e6 / Math.max(face.box.x1 - face.box.x0, 1),
+      openingM2: 0, thicknessMm: panelThickness(measuredBox, centre, thicknesses),
+      confident: !!dimensionBox || face.areaM2 < bboxArea * 0.995, duplicate: false,
+      cantileverBoundary: true, mixedBoundary: true, dimensionBounded: !!dimensionBox });
   }
   // Learn slab hatch semantics from this drawing itself. If an S-coded panel
   // uses a hatch signature, other bounded regions with the same AutoCAD
@@ -431,6 +467,25 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   } : null;
   out.push(...detectClosedCantileverStrips(allSegs, thicknesses).filter((panel) => {
     const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+    const localCMark = cMarks.find((mark) => mark.pos.x >= panel.box.x0 - ALIGN_TOL
+      && mark.pos.x <= panel.box.x1 + ALIGN_TOL && mark.pos.y >= panel.box.y0 - ALIGN_TOL
+      && mark.pos.y <= panel.box.y1 + ALIGN_TOL);
+    if (localCMark && !panel.polygon) {
+      const dimensionBox = dimensionBoundedCantilever(localCMark.pos, {
+        polygon: [
+          { x: panel.box.x0, y: panel.box.y0 }, { x: panel.box.x1, y: panel.box.y0 },
+          { x: panel.box.x1, y: panel.box.y1 }, { x: panel.box.x0, y: panel.box.y1 },
+        ], box: panel.box, areaM2: boxArea(panel.box) / 1e6,
+      });
+      if (dimensionBox) {
+        panel.box = dimensionBox;
+        panel.lengthMm = dimensionBox.x1 - dimensionBox.x0;
+        panel.breadthMm = dimensionBox.y1 - dimensionBox.y0;
+        panel.netAreaM2 = boxArea(dimensionBox) / 1e6;
+        panel.dimensionBounded = true;
+        panel.confident = true;
+      }
+    }
     const unresolvedSlabMark = labels.find((label) => label.pos.x >= panel.box.x0 - ALIGN_TOL
       && label.pos.x <= panel.box.x1 + ALIGN_TOL && label.pos.y >= panel.box.y0 - ALIGN_TOL
       && label.pos.y <= panel.box.y1 + ALIGN_TOL
@@ -514,6 +569,14 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   markDuplicates(measurable);
   assignCutouts(measurable.filter((panel) => !panel.duplicate), cutouts); // QSS-SLAB-004
   for (const panel of measurable) if (panel.openingM2 < 0.4) panel.openingM2 = 0;
+  // An inferred hatch/cantilever proposal that is mostly an opening is an
+  // opening symbol, not a second slab panel. Explicit S-coded gross panels
+  // are retained and receive the normal IS-code opening deduction instead.
+  for (const panel of measurable) {
+    const gross = panel.netAreaM2 ?? boxArea(panel.box) / 1e6;
+    if (!/^S\d+[A-Z]?$/i.test(panel.label || '') && gross > 0
+      && panel.openingM2 / gross >= 0.5) panel.duplicate = true;
+  }
   // An L-shaped chajja is commonly drawn as two perpendicular strips. Deduct
   // their shared corner only after nested/false candidates have been removed;
   // otherwise a rejected beam band can silently reduce the retained slab.
@@ -577,7 +640,8 @@ export function markDuplicates(panels: PanelProposalBox[]): void {
       : /^S\d+[A-Z]?$/i.test(panel.label || '') ? 0
       : panel.polygon && panel.label !== 'CANTILEVER' ? 1
       : panel.dottedBoundary ? 2 : panel.label !== 'CANTILEVER' ? 3 : 4;
-    const exactCantileverRank = (panel: PanelProposalBox) => panel.mixedBoundary ? 3 : rank(panel);
+    const exactCantileverRank = (panel: PanelProposalBox) => panel.dimensionBounded ? 2
+      : panel.mixedBoundary ? 3 : rank(panel);
     const ar = exactCantileverRank(panels[a]), br = exactCantileverRank(panels[b]);
     if (ar !== br) return ar - br;
     if (ar === 0) {
@@ -600,7 +664,8 @@ export function markDuplicates(panels: PanelProposalBox[]): void {
         : polygonRectOverlapFrac(p.polygon as Pt[], k.box) > 0.1)
       : p.cantileverBoundary
       ? kept.some((k) => (k.cantileverBoundary && overlapFrac(p.box, k.box) > 0.6)
-        || (/^S\d+[A-Z]?$/i.test(k.label || '') && overlapFrac(p.box, k.box) > 0.25))
+        || (/^S\d+[A-Z]?$/i.test(k.label || '')
+          && overlapFrac(p.box, k.box) > (p.dimensionBounded ? 0.8 : 0.25)))
       : p.dottedBoundary
       ? kept.some((k) => k.dottedBoundary && overlapFrac(p.box, k.box) > 0.8)
       : p.polygon

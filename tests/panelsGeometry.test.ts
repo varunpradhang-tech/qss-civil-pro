@@ -350,6 +350,25 @@ describe('unmarked slab geometry', () => {
     expect(autoProposePanels(plan)[0]).toMatchObject({ lengthMm: 4820, breadthMm: 4000 });
   });
 
+  it('uses associated dimension endpoints for a rectangular C-marked cantilever fragmented by a grid', () => {
+    const plan = drawing();
+    plan.texts = [{ layer: 'TEXT', text: 'C', pos: { x: 1000, y: 3000 } }];
+    plan.segments = [
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 2475, y: 0 }, b: { x: 2475, y: 8400 } },
+      { layer: 'EDGE', a: { x: 0, y: 0 }, b: { x: 0, y: 8400 } },
+      { layer: 'EDGE', a: { x: 0, y: 0 }, b: { x: 2475, y: 0 } },
+      { layer: 'EDGE', a: { x: 0, y: 8400 }, b: { x: 2475, y: 8400 } },
+      { layer: 'BEAM', a: { x: 0, y: 1150 }, b: { x: 2475, y: 1150 } },
+    ];
+    plan.dimensions = [
+      { layer: 'ELE', measurement: 2475, dir: 'H', mid: { x: 1237.5, y: 100 }, p1: { x: 0, y: 100 }, p2: { x: 2475, y: 100 } },
+      { layer: 'GRIDDIM', measurement: 8400, dir: 'V', mid: { x: -100, y: 4200 }, p1: { x: -100, y: 0 }, p2: { x: -100, y: 8400 } },
+    ];
+    expect(autoProposePanels(plan)).toContainEqual(expect.objectContaining({
+      label: 'CANTILEVER', lengthMm: 2475, breadthMm: 8400, netAreaM2: 20.79,
+    }));
+  });
+
   it('keeps a true rectangular hatch as a normal length by breadth panel', () => {
     const hatched = drawing();
     hatched.texts = [];

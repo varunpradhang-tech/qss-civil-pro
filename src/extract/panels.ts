@@ -161,6 +161,56 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const recoveryTopologySegments = [...topologySegments, ...allSegs.filter((segment) =>
     /^A-STRS$|^0$/i.test(segment.layer))];
   const sMarkRecoveryFaces = polygoniseCadFaces(recoveryTopologySegments, 300);
+  const locallyRepairDraftingGaps = (mark: Pt) => {
+    const radius = 12_000, maxGap = 1200;
+    const local = recoveryTopologySegments.filter((segment) => {
+      const mx = (segment.a.x + segment.b.x) / 2, my = (segment.a.y + segment.b.y) / 2;
+      return Math.min(Math.hypot(segment.a.x - mark.x, segment.a.y - mark.y),
+        Math.hypot(segment.b.x - mark.x, segment.b.y - mark.y), Math.hypot(mx - mark.x, my - mark.y)) <= radius;
+    });
+    const bridges: Segment[] = [];
+    const endpoints = local.flatMap((segment, segmentIndex) => [
+      { p: segment.a, segmentIndex }, { p: segment.b, segmentIndex },
+    ]);
+    for (let i = 0; i < endpoints.length; i++) for (let j = i + 1; j < endpoints.length; j++) {
+      if (endpoints[i].segmentIndex === endpoints[j].segmentIndex) continue;
+      const gap = Math.hypot(endpoints[i].p.x - endpoints[j].p.x, endpoints[i].p.y - endpoints[j].p.y);
+      if (gap > 40 && gap <= maxGap) bridges.push({ a: endpoints[i].p, b: endpoints[j].p,
+        layer: 'S-PANEL-DRAFTING-GAP', lineType: 'RECOVERY' });
+    }
+    return polygoniseCadFaces([...local, ...bridges]);
+  };
+  const inferOpenDraftedTriangle = (mark: Pt) => {
+    const nearby = recoveryTopologySegments.filter((segment) => /beam|slab|rcc|wall|col/i.test(segment.layer)
+      && /dash|hidden/i.test(segment.lineType || '')
+      && Math.min(Math.hypot(segment.a.x - mark.x, segment.a.y - mark.y),
+        Math.hypot(segment.b.x - mark.x, segment.b.y - mark.y)) <= 12_000);
+    const horizontal = nearby.filter((s) => Math.abs(s.b.y - s.a.y) <= 200 && Math.abs(s.b.x - s.a.x) >= 600);
+    const vertical = nearby.filter((s) => Math.abs(s.b.x - s.a.x) <= 200 && Math.abs(s.b.y - s.a.y) >= 600);
+    const diagonal = nearby.filter((s) => Math.abs(s.b.x - s.a.x) >= 600 && Math.abs(s.b.y - s.a.y) >= 600);
+    const intersection = (a: Segment, b: Segment): Pt | null => {
+      const rx = a.b.x - a.a.x, ry = a.b.y - a.a.y, sx = b.b.x - b.a.x, sy = b.b.y - b.a.y;
+      const den = rx * sy - ry * sx;
+      if (Math.abs(den) < 1e-6) return null;
+      const qx = b.a.x - a.a.x, qy = b.a.y - a.a.y;
+      const t = (qx * sy - qy * sx) / den, u = (qx * ry - qy * rx) / den;
+      // Permit a drafting gap/column width beyond an endpoint, but not an
+      // unrelated infinite-line intersection elsewhere in the plan.
+      const aTol = 1200 / Math.max(Math.hypot(rx, ry), 1), bTol = 1200 / Math.max(Math.hypot(sx, sy), 1);
+      if (t < -aTol || t > 1 + aTol || u < -bTol || u > 1 + bTol) return null;
+      return { x: a.a.x + t * rx, y: a.a.y + t * ry };
+    };
+    const faces: ReturnType<typeof polygoniseCadFaces> = [];
+    for (const h of horizontal) for (const v of vertical) for (const d of diagonal) {
+      const hv = intersection(h, v), hd = intersection(h, d), vd = intersection(v, d);
+      if (!hv || !hd || !vd) continue;
+      const polygon = [hv, hd, vd];
+      const areaM2 = Math.abs(shoelace(polygon)) / 1e6;
+      if (areaM2 < 0.2 || areaM2 > 400 || !pointInPolygon(mark, polygon)) continue;
+      faces.push({ polygon, areaM2, box: bbox(polygon) });
+    }
+    return faces.sort((a, b) => a.areaM2 - b.areaM2);
+  };
   // Consultant drawings mark exterior chajjas/cantilevers with a standalone
   // "C" leader.  Accept the real closed CAD face containing that mark rather
   // than constructing a rectangular/diagonal proxy.  This is deliberately an
@@ -231,15 +281,26 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // so their loop is not made exclusively from dotted entities. Recover only
   // S marks that are STILL unmeasured. This cannot modify or split any stable
   // rectangle already found by the ordinary four-side ray cast.
-  for (const slabMark of labels) {
+  const recoverableSlabMarks = rawSlabMarks.filter((mark) => !/table|schedule|bram\s*no/i.test(
+    dwg.texts.find((text) => text.pos.x === mark.pos.x && text.pos.y === mark.pos.y)?.layer || ''))
+    .filter((mark) => markEnvelope ? (mark.pos.x >= markEnvelope.minX - 5000 && mark.pos.x <= markEnvelope.maxX + 5000
+      && mark.pos.y >= markEnvelope.minY - 5000 && mark.pos.y <= markEnvelope.maxY + 5000) : mark.trustedLayer);
+  for (const slabMark of recoverableSlabMarks) {
     const alreadyMeasured = out.some((panel) => slabMark.pos.x >= panel.box.x0 - ALIGN_TOL
       && slabMark.pos.x <= panel.box.x1 + ALIGN_TOL && slabMark.pos.y >= panel.box.y0 - ALIGN_TOL
       && slabMark.pos.y <= panel.box.y1 + ALIGN_TOL);
     if (alreadyMeasured) continue;
-    const candidates = [...topologyFaces, ...sMarkRecoveryFaces].filter((face) => pointInPolygon(slabMark.pos, face.polygon)
+    let candidates = [...topologyFaces, ...sMarkRecoveryFaces].filter((face) => pointInPolygon(slabMark.pos, face.polygon)
       && face.areaM2 >= 0.2 && face.areaM2 <= 400
-      && face.box.x1 - face.box.x0 >= 600 && face.box.y1 - face.box.y0 >= 600)
+      && face.box.x1 - face.box.x0 >= 600 && face.box.y1 - face.box.y0 >= 600
+      && simplifyCollinearPolygon(face.polygon).length <= 12)
       .sort((a, b) => a.areaM2 - b.areaM2);
+    if (!candidates.length) candidates = locallyRepairDraftingGaps(slabMark.pos).filter((face) =>
+      pointInPolygon(slabMark.pos, face.polygon) && face.areaM2 >= 0.2 && face.areaM2 <= 400
+      && face.box.x1 - face.box.x0 >= 600 && face.box.y1 - face.box.y0 >= 600
+      && simplifyCollinearPolygon(face.polygon).length <= 12)
+      .sort((a, b) => a.areaM2 - b.areaM2);
+    if (!candidates.length) candidates = inferOpenDraftedTriangle(slabMark.pos);
     const face = candidates[0];
     if (!face || holdNotes.some((note) => pointInPolygon(note.pos, face.polygon))) continue;
     const shape = simplifyCollinearPolygon(face.polygon);

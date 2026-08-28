@@ -335,6 +335,25 @@ describe('unmarked slab geometry', () => {
     expect(panel?.openingM2).toBe(0);
   });
 
+  it('deducts one rectangular U-outline once and ignores decorative open geometry on the same shaft layer', () => {
+    const plan = drawing();
+    plan.texts = [{ layer: 'SLAB NO', text: 'S1', pos: { x: 2000, y: 1500 } }];
+    plan.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 4000, y: 0 } },
+      { layer: 'BEAM', a: { x: 4000, y: 0 }, b: { x: 4000, y: 3000 } },
+      { layer: 'BEAM', a: { x: 4000, y: 3000 }, b: { x: 0, y: 3000 } },
+      { layer: 'BEAM', a: { x: 0, y: 3000 }, b: { x: 0, y: 0 } },
+    ];
+    plan.polylines = [
+      { layer: 'PL-SHAFT', closed: false, pts: [
+        { x: 1000, y: 500 }, { x: 1400, y: 500 }, { x: 1400, y: 1950 },
+        { x: 1000, y: 1950 }, { x: 1000, y: 1950 },
+      ] },
+      { layer: 'PL-SHAFT', closed: false, pts: Array.from({ length: 12 }, (_, i) => ({ x: 2500 + i * 30, y: 1000 + (i % 2) * 100 })) },
+    ];
+    expect(autoProposePanels(plan)[0].openingM2).toBeCloseTo(0.58, 3);
+  });
+
   it('ignores grid lines and cutout outlines when finding gross panel boundaries', () => {
     const plan = drawing();
     plan.texts = [{ layer: 'SLAB NO', text: 'S1', pos: { x: 2410, y: 2000 } }];

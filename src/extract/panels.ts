@@ -315,7 +315,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     if (shape.length < 3 || shape.length > 12) continue;
     const centre = { x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 };
     if (out.some((panel) => polygonRectIntersectionArea(shape, panel.box) / 1e6 > face.areaM2 * 0.1)) continue;
-    out.push({ label: slabMark.text, box: face.box, polygon: shape, netAreaM2: face.areaM2,
+    const rectangular = face.areaM2 >= boxArea(face.box) / 1e6 * 0.985;
+    out.push({ label: slabMark.text, box: face.box,
+      polygon: rectangular ? undefined : shape,
+      netAreaM2: rectangular ? undefined : face.areaM2,
       lengthMm: face.box.x1 - face.box.x0, breadthMm: face.box.y1 - face.box.y0,
       openingM2: 0, thicknessMm: panelThickness(face.box, centre, thicknesses),
       confident: true, duplicate: false, closedStructuralBoundary: true });
@@ -764,8 +767,24 @@ function extractCutouts(dwg: NormalizedDwg): Cutout[] {
   const out: Cutout[] = [];
   const voidNotes = dwg.texts.filter((t) => /\b(?:OPENING|VOID|LIFT|STAIR|SHAFT|DUCT|OTS)\b/i.test(t.text));
   for (const pl of dwg.polylines.filter((p) => CUTOUT_LAYERS.test(p.layer))) {
-    const a = Math.abs(shoelace(pl.pts)) / 1e6;
-    if (a > 0.05 && a < 100) out.push({ ...centroid(pl.pts), areaM2: a, box: bbox(pl.pts) });
+    // Many consultant layers named *SHAFT* also contain leaders, dimensions,
+    // curves and other open detail geometry. Only a compact rectangular loop
+    // (closed, or an open 4-sided U whose implicit closing edge is clear) is a
+    // measurable opening. Never apply shoelace closure to arbitrary polylines.
+    const unique = pl.pts.filter((point, index, points) => index === 0
+      || Math.hypot(point.x - points[index - 1].x, point.y - points[index - 1].y) > 1);
+    if (unique.length < 4 || unique.length > 5) continue;
+    const box = bbox(unique), boxM2 = boxArea(box) / 1e6;
+    const polygonM2 = Math.abs(shoelace(unique)) / 1e6;
+    const axisAligned = unique.slice(1).every((point, index) => {
+      const before = unique[index];
+      return Math.abs(point.x - before.x) <= 10 || Math.abs(point.y - before.y) <= 10;
+    });
+    if (!axisAligned || boxM2 <= 0.05 || boxM2 >= 100 || polygonM2 < boxM2 * 0.98) continue;
+    const c = { cx: (box.x0 + box.x1) / 2, cy: (box.y0 + box.y1) / 2 };
+    const duplicate = out.some((opening) => Math.hypot(opening.cx - c.cx, opening.cy - c.cy) <= 25
+      && Math.abs(opening.areaM2 - boxM2) <= 0.01);
+    if (!duplicate) out.push({ ...c, areaM2: boxM2, box });
   }
   // X-void diagonal pairs
   const diags = dwg.segments.filter((s) => {

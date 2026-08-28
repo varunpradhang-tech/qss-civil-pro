@@ -506,6 +506,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // is subsequently deleted, silently losing part of the deduction.
   markDuplicates(measurable);
   assignCutouts(measurable.filter((panel) => !panel.duplicate), cutouts); // QSS-SLAB-004
+  for (const panel of measurable) if (panel.openingM2 < 0.4) panel.openingM2 = 0;
   // An L-shaped chajja is commonly drawn as two perpendicular strips. Deduct
   // their shared corner only after nested/false candidates have been removed;
   // otherwise a rejected beam band can silently reduce the retained slab.
@@ -526,6 +527,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
 function assignCutouts(panels: PanelProposalBox[], cutouts: Cutout[]): void {
   const capOf = (p: PanelProposalBox) => p.netAreaM2 ?? (p.lengthMm / 1000) * (p.breadthMm / 1000);
   for (const c of cutouts) {
+    // IS 1200 soffit measurement: openings below 0.40 m² are not deducted.
+    // Keep them out of the extracted opening column as well, so the browser,
+    // Excel formula and total quantity all apply the same rule.
+    if (c.areaM2 < 0.4) continue;
     const overlaps = panels
       .map((p) => ({ p, ov: p.polygon ? polygonRectIntersectionArea(p.polygon, c.box) / 1e6 : rectOverlap(c.box, p.box) }))
       .filter((o) => o.ov > 0);
@@ -561,6 +566,7 @@ export function markDuplicates(panels: PanelProposalBox[]): void {
     // never displace or survive inside an established S-coded bay.
     const rank = (panel: PanelProposalBox) => /^S\d+[A-Z]?$/i.test(panel.label || '')
       && panel.dottedBoundary && panel.polygon?.length === 3 ? -1
+      : panel.closedStructuralBoundary ? 1
       : /^S\d+[A-Z]?$/i.test(panel.label || '') ? 0
       : panel.polygon && panel.label !== 'CANTILEVER' ? 1
       : panel.dottedBoundary ? 2 : panel.label !== 'CANTILEVER' ? 3 : 4;
@@ -586,7 +592,8 @@ export function markDuplicates(panels: PanelProposalBox[]): void {
         ? !!k.polygon && overlapFrac(p.box, k.box) > 0.6
         : polygonRectOverlapFrac(p.polygon as Pt[], k.box) > 0.1)
       : p.cantileverBoundary
-      ? kept.some((k) => k.cantileverBoundary && overlapFrac(p.box, k.box) > 0.6)
+      ? kept.some((k) => (k.cantileverBoundary && overlapFrac(p.box, k.box) > 0.6)
+        || (/^S\d+[A-Z]?$/i.test(k.label || '') && overlapFrac(p.box, k.box) > 0.25))
       : p.dottedBoundary
       ? kept.some((k) => k.dottedBoundary && overlapFrac(p.box, k.box) > 0.8)
       : p.polygon

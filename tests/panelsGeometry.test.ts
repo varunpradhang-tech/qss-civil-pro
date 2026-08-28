@@ -276,6 +276,14 @@ describe('unmarked slab geometry', () => {
     expect(autoProposePanels(outside)[0].openingM2).toBe(0);
   });
 
+  it('does not deduct an opening below the 0.40 square metre IS threshold', () => {
+    const small = drawing();
+    small.polylines = [{ layer: 'OPENING', closed: true, pts: [
+      { x: 500, y: 500 }, { x: 1000, y: 500 }, { x: 1000, y: 1000 }, { x: 500, y: 1000 }, { x: 500, y: 500 },
+    ] }];
+    expect(autoProposePanels(small)[0].openingM2).toBe(0);
+  });
+
   it('recognises an unmarked hatch when the same hatch is confirmed by an S-marked panel', () => {
     const hatched = drawing();
     hatched.extents.max.x = 41000;

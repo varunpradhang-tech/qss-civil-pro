@@ -201,6 +201,20 @@ describe('unmarked slab geometry', () => {
     expect(panel?.inferredSlabCode).toBe('S1');
   });
 
+  it('recovers an otherwise unmeasured S-coded triangle closed by mixed structural faces', () => {
+    const plan = drawing();
+    plan.texts = [{ layer: 'SLABS NO', text: 'S1', pos: { x: 3000, y: 800 } }];
+    plan.segments = [
+      { layer: '1-BEAM', lineType: 'HIDDEN', a: { x: 0, y: 0 }, b: { x: 4000, y: 0 } },
+      { layer: 'RCC WALL', lineType: 'CONTINUOUS', a: { x: 4000, y: 0 }, b: { x: 4000, y: 3000 } },
+      { layer: '1-BEAM', lineType: 'CONTINUOUS', a: { x: 4000, y: 3000 }, b: { x: 0, y: 0 } },
+    ];
+    const panel = autoProposePanels(plan)[0];
+    expect(panel?.closedStructuralBoundary).toBe(true);
+    expect(panel?.polygon).toHaveLength(3);
+    expect(panel?.netAreaM2).toBeCloseTo(6, 3);
+  });
+
   it('does not retain an inferred polygon inside an established S-coded panel', () => {
     const plan = drawing();
     plan.segments.push(

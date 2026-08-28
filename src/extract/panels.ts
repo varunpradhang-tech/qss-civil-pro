@@ -20,6 +20,7 @@ export interface PanelProposalBox {
   cantileverBoundary?: boolean; // dashed beam face to continuous free edge
   steppedBoundary?: boolean; // continuous exterior edge against bay-by-bay hidden beam fragments
   mixedBoundary?: boolean; // exact C-marked dotted-inner/continuous-outer closed face
+  closedStructuralBoundary?: boolean; // missing S mark recovered from its actual closed CAD face
 }
 
 interface ThkText { pos: Pt; mm: number; }
@@ -154,6 +155,12 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const topologySegments = allSegs.filter((segment) => BOUND_LAYERS.test(segment.layer)
     || /slab|chajja|edge/i.test(segment.layer) || /^A-PLNT$/i.test(segment.layer));
   const topologyFaces = polygoniseCadFaces(topologySegments);
+  // Some consultants place the outer structural/free edge on A-STRS or layer
+  // 0. Include those entities only in the unresolved-S recovery graph; they
+  // are not allowed to reshape any normally measured panel.
+  const recoveryTopologySegments = [...topologySegments, ...allSegs.filter((segment) =>
+    /^A-STRS$|^0$/i.test(segment.layer))];
+  const sMarkRecoveryFaces = polygoniseCadFaces(recoveryTopologySegments, 300);
   // Consultant drawings mark exterior chajjas/cantilevers with a standalone
   // "C" leader.  Accept the real closed CAD face containing that mark rather
   // than constructing a rectangular/diagonal proxy.  This is deliberately an
@@ -192,15 +199,14 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       // three-sided loop made exclusively from dotted beam faces. This covers
       // true triangular slab bays without allowing a single diagonal/detail
       // line to cut an otherwise rectangular panel.
-      if (shape.length !== 3) continue;
       const measured = out.find((panel) => panel.label === containedLabel.text
         && containedLabel.pos.x >= panel.box.x0 - ALIGN_TOL && containedLabel.pos.x <= panel.box.x1 + ALIGN_TOL
         && containedLabel.pos.y >= panel.box.y0 - ALIGN_TOL && containedLabel.pos.y <= panel.box.y1 + ALIGN_TOL);
-      if (measured) {
+      if (measured && shape.length === 3) {
         measured.box = face.box; measured.polygon = shape; measured.netAreaM2 = face.areaM2;
         measured.lengthMm = width; measured.breadthMm = height; measured.confident = true;
         measured.dottedBoundary = true;
-      } else {
+      } else if (!measured && shape.length >= 3 && shape.length <= 8) {
         out.push({ label: containedLabel.text, box: face.box, polygon: shape,
           netAreaM2: face.areaM2, lengthMm: width, breadthMm: height,
           openingM2: 0, thicknessMm: panelThickness(face.box, centre, thicknesses),
@@ -220,6 +226,30 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       lengthMm: width, breadthMm: height, openingM2: 0,
       thicknessMm: panelThickness(face.box, centre, thicknesses),
       confident: true, duplicate: false, dottedBoundary: true });
+  }
+  // Some corner bays close against a column/wall or a continuous beam return,
+  // so their loop is not made exclusively from dotted entities. Recover only
+  // S marks that are STILL unmeasured. This cannot modify or split any stable
+  // rectangle already found by the ordinary four-side ray cast.
+  for (const slabMark of labels) {
+    const alreadyMeasured = out.some((panel) => slabMark.pos.x >= panel.box.x0 - ALIGN_TOL
+      && slabMark.pos.x <= panel.box.x1 + ALIGN_TOL && slabMark.pos.y >= panel.box.y0 - ALIGN_TOL
+      && slabMark.pos.y <= panel.box.y1 + ALIGN_TOL);
+    if (alreadyMeasured) continue;
+    const candidates = [...topologyFaces, ...sMarkRecoveryFaces].filter((face) => pointInPolygon(slabMark.pos, face.polygon)
+      && face.areaM2 >= 0.2 && face.areaM2 <= 400
+      && face.box.x1 - face.box.x0 >= 600 && face.box.y1 - face.box.y0 >= 600)
+      .sort((a, b) => a.areaM2 - b.areaM2);
+    const face = candidates[0];
+    if (!face || holdNotes.some((note) => pointInPolygon(note.pos, face.polygon))) continue;
+    const shape = simplifyCollinearPolygon(face.polygon);
+    if (shape.length < 3 || shape.length > 12) continue;
+    const centre = { x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 };
+    if (out.some((panel) => polygonRectIntersectionArea(shape, panel.box) / 1e6 > face.areaM2 * 0.1)) continue;
+    out.push({ label: slabMark.text, box: face.box, polygon: shape, netAreaM2: face.areaM2,
+      lengthMm: face.box.x1 - face.box.x0, breadthMm: face.box.y1 - face.box.y0,
+      openingM2: 0, thicknessMm: panelThickness(face.box, centre, thicknesses),
+      confident: true, duplicate: false, closedStructuralBoundary: true });
   }
   // Polygonise the real band around each standalone C mark. A valid band has
   // a dashed/hidden inner beam face AND a continuous outer slab/free edge.

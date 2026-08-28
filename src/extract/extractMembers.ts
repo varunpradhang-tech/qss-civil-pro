@@ -25,8 +25,13 @@ export function extractMembers(input: NormalizedDwg | NormalizedDwg[], workGroup
 
 function beamLabel(text: string): string | null {
   const value = text.replace(/\s/g, '').toUpperCase();
-  return /^T\d+(?:M?B)\d+[A-Z]?$/.test(value) ? value : null;
+  // Projects use plain B1/MB1 as well as tower-prefixed T3B1/T3MB1 labels.
+  return /^(?:T\d+)?M?B\d+[A-Z]?$/.test(value) ? value : null;
 }
+
+const isBeamGeometryLayer = (layer: string) => /(?:^|[-_\s])beam(?:$|[-_\s])/i.test(layer)
+  && !/(?:beam|bram)\s*(?:no|number|size|text)/i.test(layer);
+const isBeamNumberLayer = (layer: string) => /b(?:ea|ra)m\s*(?:no|number)/i.test(layer);
 
 function compareBeamLabels(a: string, b: string): number {
   const am = a.match(/^T(\d+)(M?B)(\d+)([A-Z]?)$/), bm = b.match(/^T(\d+)(M?B)(\d+)([A-Z]?)$/);
@@ -47,7 +52,8 @@ function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): Normaliz
   })[0];
   if (workGroup !== 'beam') return [...dwgs].sort((a, b) => b.dimensions.length - a.dimensions.length)[0];
   return [...dwgs].sort((a, b) => {
-    const score = (d: NormalizedDwg) => d.texts.filter((t) => /beam no/i.test(t.layer) && beamLabel(t.text)).length * 1000 + d.segments.filter((s) => /^beam$/i.test(s.layer.trim())).length;
+    const score = (d: NormalizedDwg) => d.texts.filter((t) => isBeamNumberLayer(t.layer) && beamLabel(t.text)).length * 1000
+      + d.segments.filter((s) => isBeamGeometryLayer(s.layer)).length;
     return score(b) - score(a);
   })[0];
 }
@@ -162,9 +168,9 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
 
 // --- beam: group BEAM face segments into collinear runs (bridging support gaps), size from BEAM SIZE text ---
 function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { widthMm: number; depthMm: number }>, slabThicknesses: Map<string, number>): MemberRow[] {
-  const beams: Segment[] = dwg.segments.filter((s) => /^beam$/i.test(s.layer.trim()));
+  const beams: Segment[] = dwg.segments.filter((s) => isBeamGeometryLayer(s.layer));
   const sizeTexts = dwg.texts.filter((t) => /beam size/i.test(t.layer));
-  const noTexts = dwg.texts.filter((t) => /beam no/i.test(t.layer));
+  const noTexts = dwg.texts.filter((t) => isBeamNumberLayer(t.layer));
   const slabLabels = dwg.texts
     .filter((t) => /slab no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
     .map((t) => ({ ...t, code: t.text.replace(/\s/g, '').toUpperCase() }));
@@ -209,7 +215,16 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
   // Use labels as the primary member list so collinear beams separated by supports are not merged.
   const labelled = noTexts.map((t) => ({ text: t, label: beamLabel(t.text) })).filter((x): x is { text: typeof noTexts[number]; label: string } => !!x.label);
   if (labelled.length) {
-    return labelled.map(({ text, label }) => {
+    // A beam mark may be repeated along several spans while its size is printed
+    // beside only one occurrence. Share that verified size with every occurrence
+    // of the same mark instead of producing zero-quantity sibling rows.
+    const sizeByLabel = new Map(schedule);
+    for (const item of labelled) {
+      if (sizeByLabel.has(item.label)) continue;
+      const inline = parseBeamSize(nearestText(item.text.pos, sizeTexts, 6000) ?? '');
+      if (inline) sizeByLabel.set(item.label, inline);
+    }
+    const rows = labelled.map(({ text, label }) => {
       const nearest = [...beams].sort((a, b) => pointSegmentDistance(text.pos, a) - pointSegmentDistance(text.pos, b))[0];
       const nearestDistance = nearest ? pointSegmentDistance(text.pos, nearest) : Number.POSITIVE_INFINITY;
       const beamDirection = nearest ? (Math.abs(nearest.b.x - nearest.a.x) >= Math.abs(nearest.b.y - nearest.a.y) ? 'H' : 'V') : null;
@@ -243,7 +258,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       const side1 = adjacent(1), side2 = adjacent(-1);
       const midpoint = nearest ? { x: (nearest.a.x + nearest.b.x) / 2, y: (nearest.a.y + nearest.b.y) / 2 } : text.pos;
       const inlineSize = parseBeamSize(nearestText(midpoint, sizeTexts, 6000) ?? '');
-      const size = schedule.get(label) ?? inlineSize;
+      const size = schedule.get(label) ?? inlineSize ?? sizeByLabel.get(label);
       const r = emptyRow(nextId(), floor);
       r.member = label;
       r.length = round3(lengthMm / 1000);
@@ -262,7 +277,18 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       r.needsReview = !lengthMm || !size || unresolvedSlabs;
       r.reviewReason = !lengthMm ? 'no marked dimension or matching beam face found' : !size ? 'no beam size found in uploaded plan/schedule' : unresolvedSlabs ? 'adjacent slab code has no thickness schedule' : undefined;
       return r;
-    }).sort((a, b) => compareBeamLabels(a.member, b.member));
+    });
+    const verifiedSize = new Map<string, { breadth: number; height: number }>();
+    for (const row of rows) if (row.breadth > 0 && row.height > 0 && !verifiedSize.has(row.member))
+      verifiedSize.set(row.member, { breadth: row.breadth, height: row.height });
+    for (const row of rows) {
+      const sibling = verifiedSize.get(row.member);
+      if ((!row.breadth || !row.height) && sibling) {
+        row.breadth = sibling.breadth; row.height = sibling.height;
+        row.needsReview = false; row.reviewReason = undefined;
+      }
+    }
+    return rows.sort((a, b) => compareBeamLabels(a.member, b.member));
   }
 
   let n = 1;

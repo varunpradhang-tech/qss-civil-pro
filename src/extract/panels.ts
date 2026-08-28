@@ -143,36 +143,13 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const box = { x0: left.x, y0: below.y, x1: right.x, y1: above.y };
     out.push({ label: L.text, box, lengthMm: sL.v, breadthMm: sB.v, openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: sL.ok && sB.ok && !expandedFromBeamFace, duplicate: false });
   }
-  // Resolve labelled bays against actual connected CAD faces. This pass can
-  // represent rectangles, right-angle triangles and quadrilaterals without
-  // letting an unrelated diagonal line cut every rectangular proxy.
+  // Closed CAD faces are used only for additive exterior/cantilever evidence.
+  // Never replace an already bounded S-labelled slab with a smaller face:
+  // opening frames, bracing diagonals and detail lines can form closed
+  // quadrilaterals inside an otherwise complete rectangular slab panel.
   const topologySegments = allSegs.filter((segment) => BOUND_LAYERS.test(segment.layer)
     || /slab|chajja|edge/i.test(segment.layer) || /^A-PLNT$/i.test(segment.layer));
   const topologyFaces = polygoniseCadFaces(topologySegments);
-  for (const label of labels) {
-    const measured = out.find((panel) => label.pos.x >= panel.box.x0 - ALIGN_TOL
-      && label.pos.x <= panel.box.x1 + ALIGN_TOL && label.pos.y >= panel.box.y0 - ALIGN_TOL
-      && label.pos.y <= panel.box.y1 + ALIGN_TOL && panel.label === label.text);
-    if (!measured) continue;
-    const candidates = topologyFaces.filter((face) => pointInPolygon(label.pos, face.polygon)
-      && !excludedDetailPoint({ x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 })
-      && face.areaM2 >= 0.15 && face.areaM2 <= 400)
-      .sort((a, b) => a.areaM2 - b.areaM2);
-    const face = candidates.find((candidate) => {
-      const proxyArea = boxArea(measured.box) / 1e6;
-      return candidate.areaM2 >= proxyArea * 0.2 && candidate.areaM2 <= proxyArea * 1.25;
-    });
-    if (!face) continue;
-    const bboxArea = boxArea(face.box) / 1e6;
-    measured.box = face.box;
-    measured.lengthMm = face.box.x1 - face.box.x0;
-    measured.breadthMm = face.box.y1 - face.box.y0;
-    if (face.areaM2 < bboxArea * 0.985) {
-      measured.polygon = face.polygon;
-      measured.netAreaM2 = face.areaM2;
-    }
-    measured.confident = true;
-  }
   // Consultant drawings mark exterior chajjas/cantilevers with a standalone
   // "C" leader.  Accept the real closed CAD face containing that mark rather
   // than constructing a rectangular/diagonal proxy.  This is deliberately an
@@ -237,23 +214,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     if (!containedLabel && !confirmedHatchSignatures.has(hatchSignature(hatch))) continue;
     const bboxAreaM2 = ((box.x1 - box.x0) * (box.y1 - box.y0)) / 1e6;
     const rectangular = areaM2 >= bboxAreaM2 * 0.985;
-    if (containedLabel) {
-      // An irregular hatch is a stronger boundary than four independent ray
-      // hits. Replace the label's rectangular proxy with the exact triangle,
-      // trapezoid or curved outline. A true rectangular hatch remains the
-      // ordinary dimensioned bay and does not get a redundant area label.
-      if (!rectangular) {
-        const measured = out.find((panel) => panel.label === containedLabel.text
-          && containedLabel.pos.x >= panel.box.x0 && containedLabel.pos.x <= panel.box.x1
-          && containedLabel.pos.y >= panel.box.y0 && containedLabel.pos.y <= panel.box.y1);
-        if (measured) {
-          measured.box = box; measured.polygon = polygon; measured.netAreaM2 = areaM2;
-          measured.lengthMm = box.x1 - box.x0; measured.breadthMm = box.y1 - box.y0;
-          measured.confident = true;
-        }
-      }
-      continue;
-    }
+    // An S-labelled structural bay has already been measured from its four
+    // beam/wall faces. A hatch loop inside it may be an opening or symbol and
+    // must never reshape that complete panel.
+    if (containedLabel) continue;
     if (out.some((panel) => overlapFrac(panel.box, box) > 0.8)) continue;
     out.push({ label: 'HATCH-SLAB', box, polygon: rectangular ? undefined : polygon,
       netAreaM2: rectangular ? undefined : areaM2,

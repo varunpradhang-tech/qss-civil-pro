@@ -251,13 +251,13 @@ describe('unmarked slab geometry', () => {
     expect(irregular?.netAreaM2).toBeCloseTo(9.25, 3);
   });
 
-  it('replaces a rectangular ray-cast proxy when its S mark belongs to an irregular hatch', () => {
+  it('does not let an internal irregular hatch reshape a bounded S-labelled rectangle', () => {
     const hatched = drawing();
     hatched.hatches = [{ layer: 'SLAB HATCH', solid: false, pattern: 'TRIANG',
       pts: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 0, y: 3000 }] }];
     const panel = autoProposePanels(hatched).find((candidate) => candidate.label === 'S1');
-    expect(panel?.polygon).toHaveLength(3);
-    expect(panel?.netAreaM2).toBeCloseTo(6, 3);
+    expect(panel?.polygon).toBeUndefined();
+    expect(panel).toMatchObject({ lengthMm: 4000, breadthMm: 3000 });
   });
 
   it('does not deduct a rectangular opening that only touches an irregular panel bounding box', () => {

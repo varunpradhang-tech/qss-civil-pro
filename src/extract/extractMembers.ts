@@ -464,13 +464,25 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
  * continuous beam through multiple RCC supports, not separate beam marks. */
 function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
   const groups = new Map<string, MemberRow[]>();
-  // The same mark can legitimately identify separate beams of different
-  // sizes. Never merge those into a single artificial member.
+  const lanes = new Map<string, { horizontal: boolean; perpendicular: number }[]>();
+  // Repeated marks on the same physical centreline are spans of one beam,
+  // even when a nearby unrelated size note was associated differently.
+  // A mark is split only when its geometry lies on a genuinely separate line.
   for (const row of rows) {
-    const key = `${row.member}|${round3(row.breadth)}|${round3(row.height)}`;
+    let lane = 0;
+    if ([row.cadX0, row.cadY0, row.cadX1, row.cadY1].every((v) => v != null)) {
+      const dx = (row.cadX1 as number) - (row.cadX0 as number), dy = (row.cadY1 as number) - (row.cadY0 as number);
+      const horizontal = Math.abs(dx) >= Math.abs(dy);
+      const perpendicular = horizontal ? ((row.cadY0 as number) + (row.cadY1 as number)) / 2 : ((row.cadX0 as number) + (row.cadX1 as number)) / 2;
+      const memberLanes = lanes.get(row.member) || [];
+      const match = memberLanes.findIndex((candidate) => candidate.horizontal === horizontal && Math.abs(candidate.perpendicular - perpendicular) <= 250);
+      lane = match >= 0 ? match : memberLanes.length;
+      if (match < 0) { memberLanes.push({ horizontal, perpendicular }); lanes.set(row.member, memberLanes); }
+    }
+    const key = `${row.member}|lane:${lane}`;
     groups.set(key, [...(groups.get(key) || []), row]);
   }
-  return [...groups.values()].map((spans) => {
+  const consolidated = [...groups.values()].map((spans) => {
     if (spans.length === 1) return spans[0];
     const sizeCounts = new Map<string, number>();
     for (const span of spans) {
@@ -540,4 +552,15 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
     row.reviewReason = [...new Set(spans.map((span) => span.reviewReason).filter(Boolean))].join('; ') || undefined;
     return row;
   });
+  // Identical physical beams at different locations may share one MB row
+  // using Nos. Different length or size (such as the two B12 beams) stay as
+  // separate rows.
+  const combined = new Map<string, MemberRow>();
+  for (const row of consolidated) {
+    const key = `${row.member}|${round3(row.length)}|${round3(row.breadth)}|${round3(row.height)}`;
+    const prior = combined.get(key);
+    if (prior) prior.nos += row.nos;
+    else combined.set(key, { ...row });
+  }
+  return [...combined.values()];
 }

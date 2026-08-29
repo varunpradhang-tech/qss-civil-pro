@@ -19,17 +19,24 @@ export const MB_COLUMNS: { key: keyof MBRow; header: string }[] = [
 
 export function membersToRows(members: MemberRow[], quantityKey: string, capMode: CapMode): MBRow[] {
   const rule = RULES[quantityKey];
-  return members.map((m) => ({
+  return members.map((m) => {
+    // For excluded beam caps, make the support deduction visible where it
+    // belongs: in measured length. Quantity then remains L x B x D x Nos.
+    const supportDeduction = quantityKey === 'beam_concrete' && capMode === 'excluded'
+      ? (m.supportWidths || []).reduce((sum, width) => sum + Math.max(width, 0), 0)
+      : 0;
+    return ({
     member: quantityKey.startsWith('beam_') && m.breadth > 0 && m.height > 0
       ? `${m.member || m.id} ${Math.round(m.breadth * 1000)}x${Math.round(m.height * 1000)}`
       : m.member || m.id,
     floor: m.floor,
-    length: round(m.length), breadth: round(m.breadth), height: round(m.height),
+    length: round(Math.max(m.length - supportDeduction, 0)), breadth: round(m.breadth), height: round(m.height),
     dia: m.dia, spacing: m.spacing, nos: m.nos, openings: round(m.openings),
     quantity: round(rule.calculate(m, capMode)), unit: UNIT_LABEL[rule.unit],
     remarks: m.needsReview ? `need review${m.reviewReason ? ` (${m.reviewReason})` : ''}` : '',
     basis: rule.note,
-  }));
+    });
+  });
 }
 
 export function membersToCsv(members: MemberRow[], quantityKey: string, capMode: CapMode): string {

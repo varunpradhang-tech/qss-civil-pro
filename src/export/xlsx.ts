@@ -80,11 +80,8 @@ function genericQuantityFormula(quantityKey: string, row: number, member: Member
   switch (quantityKey) {
     case 'column_concrete': return `${C}*${D}*${E}*${I}`;
     case 'beam_concrete': {
-      const widths = capMode === 'excluded' ? member.supportWidths || [] : [];
-      const counts = new Map<number, number>();
-      for (const width of widths) counts.set(width, (counts.get(width) || 0) + 1);
-      const deduction = [...counts].map(([width, count]) => count > 1 ? `${width}*${count}` : `${width}`).join('+') || '0';
-      return `MAX((${C}-(${deduction}))*${D}*${E}*${I},0)`;
+      // membersToRows has already placed the net, support-excluded length in C.
+      return `${C}*${D}*${E}*${I}`;
     }
     case 'column_steel': case 'beam_steel': case 'steel_bbs': return `${C}*${I}*(${G}^2/162)`;
     case 'slab_concrete': return member.netArea != null

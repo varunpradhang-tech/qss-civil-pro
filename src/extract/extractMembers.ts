@@ -215,7 +215,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
   // Use labels as the primary member list so collinear beams separated by supports are not merged.
   const labelled = noTexts.map((t) => ({ text: t, label: beamLabel(t.text) })).filter((x): x is { text: typeof noTexts[number]; label: string } => !!x.label);
   if (labelled.length) {
-    const inferredDirection = new Map<string, 'H' | 'V'>();
+    const inferredDirection = new Map<typeof noTexts[number], 'H' | 'V'>();
     for (const item of labelled) {
       const siblings = labelled.filter((candidate) => candidate.label === item.label && candidate !== item);
       let horizontalVotes = 0, verticalVotes = 0;
@@ -224,7 +224,16 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         if (dx >= 1200 && dy <= 1000) horizontalVotes++;
         if (dy >= 1200 && dx <= 1000) verticalVotes++;
       }
-      if (horizontalVotes || verticalVotes) inferredDirection.set(item.label, horizontalVotes >= verticalVotes ? 'H' : 'V');
+      if (horizontalVotes || verticalVotes) inferredDirection.set(item.text, horizontalVotes >= verticalVotes ? 'H' : 'V');
+      else {
+        const nearbyRuns = runs.map((run) => {
+          const segment: Segment = { layer: 'BEAM-RUN', a: run.a, b: run.b };
+          return { direction: run.horizontal ? 'H' as const : 'V' as const, distance: pointSegmentDistance(item.text.pos, segment) };
+        }).sort((a, b) => a.distance - b.distance);
+        const first = nearbyRuns[0];
+        const opposite = nearbyRuns.find((candidate) => candidate.direction !== first?.direction);
+        if (first && first.distance <= 500 && (!opposite || opposite.distance >= first.distance * 1.5)) inferredDirection.set(item.text, first.direction);
+      }
     }
     const sizeForBeam = (labelPos: Pt, direction: 'H' | 'V' | null, beamCoord: number) => {
       if (!direction) return parseBeamSize(nearestText(labelPos, sizeTexts, 6000) ?? '');
@@ -255,14 +264,14 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
     }
     const rows = labelled.map(({ text, label }) => {
       let nearest = [...beams].sort((a, b) => pointSegmentDistance(text.pos, a) - pointSegmentDistance(text.pos, b))[0];
-      const expectedDirection = inferredDirection.get(label);
+      const expectedDirection = inferredDirection.get(text);
       const rawDirection = nearest ? (Math.abs(nearest.b.x - nearest.a.x) >= Math.abs(nearest.b.y - nearest.a.y) ? 'H' : 'V') : null;
       const rawLength = nearest ? Math.hypot(nearest.b.x - nearest.a.x, nearest.b.y - nearest.a.y) : 0;
-      if (expectedDirection === 'V' && (rawDirection !== expectedDirection || rawLength < 2500)) {
+      if (expectedDirection === 'V') {
         const full = runs.filter((run) => (run.horizontal ? 'H' : 'V') === expectedDirection)
           .map((run) => ({ run, segment: { layer: 'BEAM-RUN', a: run.a, b: run.b } as Segment }))
           .map((candidate) => ({ ...candidate, distance: pointSegmentDistance(text.pos, candidate.segment), length: Math.hypot(candidate.run.b.x - candidate.run.a.x, candidate.run.b.y - candidate.run.a.y) }))
-          .filter((candidate) => candidate.distance <= 1200 && candidate.length <= 30000)
+          .filter((candidate) => candidate.distance <= 1200 && candidate.length <= 60000)
           .sort((a, b) => a.distance - b.distance)[0];
         if (full) nearest = full.segment;
       }
@@ -482,8 +491,16 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
     }
     for (const group of comparable.values()) {
       if (group.length < 2) continue;
-      const longest = Math.max(...group.map((row) => row.length));
       for (const row of group) {
+        const horizontal = Math.abs((row.cadX1 as number) - (row.cadX0 as number)) >= Math.abs((row.cadY1 as number) - (row.cadY0 as number));
+        const lo = horizontal ? Math.min(row.cadX0 as number, row.cadX1 as number) : Math.min(row.cadY0 as number, row.cadY1 as number);
+        const hi = horizontal ? Math.max(row.cadX0 as number, row.cadX1 as number) : Math.max(row.cadY0 as number, row.cadY1 as number);
+        const aligned = group.filter((candidate) => {
+          const candidateLo = horizontal ? Math.min(candidate.cadX0 as number, candidate.cadX1 as number) : Math.min(candidate.cadY0 as number, candidate.cadY1 as number);
+          const candidateHi = horizontal ? Math.max(candidate.cadX0 as number, candidate.cadX1 as number) : Math.max(candidate.cadY0 as number, candidate.cadY1 as number);
+          return Math.abs(candidateLo - lo) <= 500 && Math.abs(candidateHi - hi) <= 500;
+        });
+        const longest = Math.max(...aligned.map((candidate) => candidate.length));
         if (longest > 0 && row.length / longest >= 0.85) row.length = longest;
       }
     }
@@ -518,9 +535,15 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
     // fold them into one MB row with Nos after support deductions are known.
     const finalRows = new Map<string, MemberRow>();
     for (const row of consolidated) {
-      const key = `${row.member}|${round3(row.length)}|${round3(row.breadth)}|${round3(row.height)}|${(row.supportWidths || []).join(',')}`;
+      // Repeated labels along one continuous beam resolve to the same CAD run.
+      // Keep that run once, but retain genuinely separate physical beams even
+      // when their mark, size and length happen to match.
+      const geometryKey = [row.cadX0, row.cadY0, row.cadX1, row.cadY1]
+        .map((value) => value == null ? '' : Math.round(value))
+        .join(',');
+      const key = `${row.member}|${round3(row.length)}|${round3(row.breadth)}|${round3(row.height)}|${(row.supportWidths || []).join(',')}|${geometryKey}`;
       const prior = finalRows.get(key);
-      if (prior) prior.nos += row.nos;
+      if (prior) prior.nos = Math.max(prior.nos, row.nos);
       else finalRows.set(key, { ...row });
     }
     return [...finalRows.values()].sort((a, b) => compareBeamLabels(a.member, b.member));

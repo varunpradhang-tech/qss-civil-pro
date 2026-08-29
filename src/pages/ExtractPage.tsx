@@ -95,7 +95,7 @@ export function ExtractPage() {
     } catch (err) { s.setStatus(`Parse failed: ${(err as Error).message}`); } finally { s.setParsing(false); }
   }
   function exportCsv() { downloadBlob(membersToCsv(s.members, s.quantityKey, s.capMode), 'qss-takeoff.csv', 'text/csv;charset=utf-8'); }
-  async function exportXlsx() { downloadBlob(await buildMbXlsx(s.members, s.quantityKey, s.capMode, s.projectName), 'qss-mb.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
+  async function exportXlsx() { downloadBlob(await buildMbXlsx(s.members, s.quantityKey, s.capMode, s.projectName, s.sheets.map((sheet) => sheet.dwg)), 'qss-mb.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
   async function exportReferenceCad() {
     setReferenceNotice(null);
     if (referenceReady) URL.revokeObjectURL(referenceReady.url);

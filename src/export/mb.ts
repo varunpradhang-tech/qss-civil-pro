@@ -11,7 +11,7 @@ export interface MBRow {
 }
 
 export const MB_COLUMNS: { key: keyof MBRow; header: string }[] = [
-  { key: 'member', header: 'Member' }, { key: 'floor', header: 'Floor' },
+  { key: 'member', header: 'Member' },
   { key: 'length', header: 'Length (m)' }, { key: 'breadth', header: 'Breadth/Thk (m)' }, { key: 'height', header: 'Height/Depth (m)' },
   { key: 'openings', header: 'Openings (m²)' }, { key: 'dia', header: 'Dia (mm)' }, { key: 'spacing', header: 'Spacing (mm)' }, { key: 'nos', header: 'Nos' },
   { key: 'quantity', header: 'Quantity' }, { key: 'unit', header: 'Unit' }, { key: 'remarks', header: 'Remarks' }, { key: 'basis', header: 'Measurement basis' },

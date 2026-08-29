@@ -52,6 +52,32 @@ function buildBeamShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
   for (const c of ['E', 'G', 'H', 'J', 'L', 'M']) ws.getColumn(c).numFmt = '0.000';
 }
 
+function buildBeamConcrete(ws: ExcelJS.Worksheet, members: MemberRow[], capMode: CapMode) {
+  ws.columns = [
+    { header: 'S.No.', key: 'serial', width: 8 }, { header: 'Member', key: 'member', width: 20 }, { header: 'Floor', key: 'floor', width: 14 },
+    { header: 'Length (m)', key: 'length', width: 12 }, { header: 'Beam width (m)', key: 'breadth', width: 15 },
+    { header: 'Beam depth (m)', key: 'height', width: 15 }, { header: 'Nos', key: 'nos', width: 8 },
+    { header: 'Quantity (m³)', key: 'quantity', width: 15 }, { header: 'Unit', key: 'unit', width: 9 },
+    { header: 'Remarks', key: 'remarks', width: 34 }, { header: 'Measurement basis', key: 'basis', width: 44 },
+  ];
+  styleHeader(ws);
+  const rows = membersToRows([...members].sort(naturalSort), 'beam_concrete', capMode);
+  for (const [index, data] of rows.entries()) {
+    const row = ws.addRow({
+      serial: index + 1, member: data.member, floor: data.floor, length: data.length,
+      breadth: data.breadth, height: data.height, nos: data.nos, unit: data.unit,
+      remarks: data.remarks || null, basis: data.basis,
+    });
+    row.getCell('quantity').value = {
+      formula: `D${row.number}*E${row.number}*F${row.number}*G${row.number}`,
+      result: data.quantity,
+    };
+    if (data.remarks) row.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF1F2' } }));
+  }
+  addFormulaTotal(ws, 'H', 'I', 'Total — Beam concrete', 'm³', members.reduce((sum, member) => sum + RULES.beam_concrete.calculate(member, capMode), 0));
+  for (const column of ['D', 'E', 'F', 'H']) ws.getColumn(column).numFmt = '0.000';
+}
+
 function buildSlabShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMode: CapMode) {
   ws.columns = [
     { header: 'S.No.', key: 'serial', width: 8 }, { header: 'Member', key: 'member', width: 22 }, { header: 'Floor', key: 'floor', width: 14 },
@@ -105,6 +131,10 @@ export async function buildMbXlsx(members: MemberRow[], quantityKey: string, cap
   const ws = wb.addWorksheet(rule.label.slice(0, 28));
   if (quantityKey === 'beam_shuttering') {
     buildBeamShuttering(ws, members, capMode);
+    return new Blob([await wb.xlsx.writeBuffer()], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+  if (quantityKey === 'beam_concrete') {
+    buildBeamConcrete(ws, members, capMode);
     return new Blob([await wb.xlsx.writeBuffer()], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   }
   if (quantityKey === 'slab_shuttering') {

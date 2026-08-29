@@ -215,6 +215,35 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
   // Use labels as the primary member list so collinear beams separated by supports are not merged.
   const labelled = noTexts.map((t) => ({ text: t, label: beamLabel(t.text) })).filter((x): x is { text: typeof noTexts[number]; label: string } => !!x.label);
   if (labelled.length) {
+    const inferredDirection = new Map<string, 'H' | 'V'>();
+    for (const item of labelled) {
+      const siblings = labelled.filter((candidate) => candidate.label === item.label && candidate !== item);
+      let horizontalVotes = 0, verticalVotes = 0;
+      for (const sibling of siblings) {
+        const dx = Math.abs(sibling.text.pos.x - item.text.pos.x), dy = Math.abs(sibling.text.pos.y - item.text.pos.y);
+        if (dx >= 1200 && dy <= 1000) horizontalVotes++;
+        if (dy >= 1200 && dx <= 1000) verticalVotes++;
+      }
+      if (horizontalVotes || verticalVotes) inferredDirection.set(item.label, horizontalVotes >= verticalVotes ? 'H' : 'V');
+    }
+    const sizeForBeam = (labelPos: Pt, direction: 'H' | 'V' | null, beamCoord: number) => {
+      if (!direction) return parseBeamSize(nearestText(labelPos, sizeTexts, 6000) ?? '');
+      const sameBaseline = sizeTexts.map((candidate) => {
+        const along = direction === 'H' ? candidate.pos.x - labelPos.x : candidate.pos.y - labelPos.y;
+        const normal = direction === 'H' ? candidate.pos.y - labelPos.y : candidate.pos.x - labelPos.x;
+        return { candidate, along, normal, score: Math.abs(along) + Math.abs(normal) * 2 };
+      }).filter(({ along, normal }) => Math.abs(along) <= 1600 && Math.abs(normal) <= 250)
+        .sort((a, b) => a.score - b.score)[0]?.candidate;
+      if (sameBaseline) return parseBeamSize(sameBaseline.text);
+      const labelNormal = direction === 'H' ? labelPos.y - beamCoord : labelPos.x - beamCoord;
+      const opposite = sizeTexts.map((candidate) => {
+        const along = direction === 'H' ? candidate.pos.x - labelPos.x : candidate.pos.y - labelPos.y;
+        const normal = direction === 'H' ? candidate.pos.y - beamCoord : candidate.pos.x - beamCoord;
+        return { candidate, along, normal, score: Math.abs(along) * 1.5 + Math.abs(normal) };
+      }).filter(({ along, normal }) => Math.abs(labelNormal) >= 40 && labelNormal * normal < 0 && Math.abs(along) <= 1800 && Math.abs(normal) <= 3200)
+        .sort((a, b) => a.score - b.score)[0]?.candidate;
+      return parseBeamSize((opposite?.text ?? nearestText(labelPos, sizeTexts, 6000)) ?? '');
+    };
     // A beam mark may be repeated along several spans while its size is printed
     // beside only one occurrence. Share that verified size with every occurrence
     // of the same mark instead of producing zero-quantity sibling rows.
@@ -225,7 +254,18 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       if (inline) sizeByLabel.set(item.label, inline);
     }
     const rows = labelled.map(({ text, label }) => {
-      const nearest = [...beams].sort((a, b) => pointSegmentDistance(text.pos, a) - pointSegmentDistance(text.pos, b))[0];
+      let nearest = [...beams].sort((a, b) => pointSegmentDistance(text.pos, a) - pointSegmentDistance(text.pos, b))[0];
+      const expectedDirection = inferredDirection.get(label);
+      const rawDirection = nearest ? (Math.abs(nearest.b.x - nearest.a.x) >= Math.abs(nearest.b.y - nearest.a.y) ? 'H' : 'V') : null;
+      const rawLength = nearest ? Math.hypot(nearest.b.x - nearest.a.x, nearest.b.y - nearest.a.y) : 0;
+      if (expectedDirection === 'V' && (rawDirection !== expectedDirection || rawLength < 2500)) {
+        const full = runs.filter((run) => (run.horizontal ? 'H' : 'V') === expectedDirection)
+          .map((run) => ({ run, segment: { layer: 'BEAM-RUN', a: run.a, b: run.b } as Segment }))
+          .map((candidate) => ({ ...candidate, distance: pointSegmentDistance(text.pos, candidate.segment), length: Math.hypot(candidate.run.b.x - candidate.run.a.x, candidate.run.b.y - candidate.run.a.y) }))
+          .filter((candidate) => candidate.distance <= 1200 && candidate.length <= 30000)
+          .sort((a, b) => a.distance - b.distance)[0];
+        if (full) nearest = full.segment;
+      }
       const nearestDistance = nearest ? pointSegmentDistance(text.pos, nearest) : Number.POSITIVE_INFINITY;
       const beamDirection = nearest ? (Math.abs(nearest.b.x - nearest.a.x) >= Math.abs(nearest.b.y - nearest.a.y) ? 'H' : 'V') : null;
       const markedDimension = dwg.dimensions
@@ -257,7 +297,8 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         .sort((a, b) => a.score - b.score)[0]?.slab;
       const side1 = adjacent(1), side2 = adjacent(-1);
       const midpoint = nearest ? { x: (nearest.a.x + nearest.b.x) / 2, y: (nearest.a.y + nearest.b.y) / 2 } : text.pos;
-      const inlineSize = parseBeamSize(nearestText(midpoint, sizeTexts, 6000) ?? '');
+      const beamCoord = beamDirection === 'H' ? midpoint.y : beamDirection === 'V' ? midpoint.x : 0;
+      const inlineSize = sizeForBeam(text.pos, beamDirection, beamCoord);
       // A size printed beside the actual framing-plan beam is the strongest
       // evidence. Use uploaded detail/schedule drawings only as fallback.
       const size = inlineSize ?? schedule.get(label) ?? sizeByLabel.get(label);
@@ -296,7 +337,24 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         row.needsReview = false; row.reviewReason = undefined;
       }
     }
-    const consolidated = consolidateBeamRows(rows);
+    let consolidated = consolidateBeamRows(rows);
+    const coverage = (row: MemberRow) => {
+      if ([row.cadX0, row.cadY0, row.cadX1, row.cadY1].some((value) => value == null)) return 0;
+      const segment: Segment = { layer: 'BEAM-ROW', a: { x: row.cadX0 as number, y: row.cadY0 as number }, b: { x: row.cadX1 as number, y: row.cadY1 as number } };
+      return labelled.filter((item) => item.label === row.member && pointSegmentDistance(item.text.pos, segment) <= 1200).length;
+    };
+    consolidated = consolidated.filter((row) => !consolidated.some((other) => {
+      if (other === row || other.member !== row.member || other.length < row.length * 1.25 || coverage(other) < 2) return false;
+      if ([row.cadX0, row.cadY0, row.cadX1, row.cadY1, other.cadX0, other.cadY0, other.cadX1, other.cadY1].some((value) => value == null)) return false;
+      const rowHorizontal = Math.abs((row.cadX1 as number) - (row.cadX0 as number)) >= Math.abs((row.cadY1 as number) - (row.cadY0 as number));
+      const otherHorizontal = Math.abs((other.cadX1 as number) - (other.cadX0 as number)) >= Math.abs((other.cadY1 as number) - (other.cadY0 as number));
+      if (rowHorizontal !== otherHorizontal) return false;
+      const rowLo = rowHorizontal ? Math.min(row.cadX0 as number, row.cadX1 as number) : Math.min(row.cadY0 as number, row.cadY1 as number);
+      const rowHi = rowHorizontal ? Math.max(row.cadX0 as number, row.cadX1 as number) : Math.max(row.cadY0 as number, row.cadY1 as number);
+      const otherLo = rowHorizontal ? Math.min(other.cadX0 as number, other.cadX1 as number) : Math.min(other.cadY0 as number, other.cadY1 as number);
+      const otherHi = rowHorizontal ? Math.max(other.cadX0 as number, other.cadX1 as number) : Math.max(other.cadY0 as number, other.cadY1 as number);
+      return rowLo >= otherLo - 100 && rowHi <= otherHi + 100;
+    }));
     for (const row of consolidated) {
       const marks = labelled.filter((item) => item.label === row.member).map((item) => item.text.pos);
       if (!marks.length || row.nos > 1) continue;
@@ -319,7 +377,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
           // A written dimension may extend a fragmented face run, but it must
           // not shorten an already complete first-to-last support run.
           && dimension.measurement >= Math.max(row.length * 1000 - (marks.length === 1 ? 2000 : 100), 600)
-          && dimension.measurement <= row.length * 1000 + 2000)
+          && dimension.measurement <= row.length * 1000 + (completeRun ? 100 : 2000))
         .filter((dimension) => marks.every((mark) => horizontal
           ? mark.x >= Math.min(dimension.p1.x, dimension.p2.x) - 500 && mark.x <= Math.max(dimension.p1.x, dimension.p2.x) + 500
           : mark.y >= Math.min(dimension.p1.y, dimension.p2.y) - 500 && mark.y <= Math.max(dimension.p1.y, dimension.p2.y) + 500))

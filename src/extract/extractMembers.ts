@@ -273,6 +273,12 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       r.slabThicknessSide2 = side2 ? round3((slabThicknesses.get(side2.code) ?? 0) / 1000) : 0;
       r.innerSideCount = Number(!!r.slabThicknessSide1) + Number(!!r.slabThicknessSide2);
       r.nos = 1;
+      const sourceA = useMarkedDimension ? markedDimension.dimension.p1 : nearest?.a;
+      const sourceB = useMarkedDimension ? markedDimension.dimension.p2 : nearest?.b;
+      if (sourceA && sourceB) {
+        r.cadX0 = sourceA.x; r.cadY0 = sourceA.y;
+        r.cadX1 = sourceB.x; r.cadY1 = sourceB.y;
+      }
       const unresolvedSlabs = (side1 && !r.slabThicknessSide1) || (side2 && !r.slabThicknessSide2);
       r.needsReview = !lengthMm || !size || unresolvedSlabs;
       r.reviewReason = !lengthMm ? 'no marked dimension or matching beam face found' : !size ? 'no beam size found in uploaded plan/schedule' : unresolvedSlabs ? 'adjacent slab code has no thickness schedule' : undefined;
@@ -288,7 +294,143 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         row.needsReview = false; row.reviewReason = undefined;
       }
     }
-    return consolidateBeamRows(rows).sort((a, b) => compareBeamLabels(a.member, b.member));
+    const consolidated = consolidateBeamRows(rows);
+    for (const row of consolidated) {
+      const marks = labelled.filter((item) => item.label === row.member).map((item) => item.text.pos);
+      if (!marks.length || row.nos > 1) continue;
+      const horizontal = Math.abs((row.cadX1 || 0) - (row.cadX0 || 0)) >= Math.abs((row.cadY1 || 0) - (row.cadY0 || 0));
+      const completeRun = runs.map((run) => {
+        const segment: Segment = { layer: 'BEAM-RUN', a: run.a, b: run.b };
+        return { run, length: Math.hypot(run.b.x - run.a.x, run.b.y - run.a.y), covered: marks.filter((mark) => pointSegmentDistance(mark, segment) <= 1200).length };
+      }).filter((candidate) => candidate.covered >= Math.min(marks.length, 2)
+        && candidate.run.horizontal === horizontal
+        && candidate.length >= row.length * 1000 - 100
+        && candidate.length <= row.length * 1000 + 2000)
+        .sort((a, b) => b.length - a.length)[0];
+      if (completeRun) {
+        row.length = round3(completeRun.length / 1000);
+        row.cadX0 = completeRun.run.a.x; row.cadY0 = completeRun.run.a.y;
+        row.cadX1 = completeRun.run.b.x; row.cadY1 = completeRun.run.b.y;
+      }
+      const marked = dwg.dimensions
+        .filter((dimension) => dimension.dir === (horizontal ? 'H' : 'V')
+          // A written dimension may extend a fragmented face run, but it must
+          // not shorten an already complete first-to-last support run.
+          && dimension.measurement >= Math.max(row.length * 1000 - 100, 600)
+          && dimension.measurement <= row.length * 1000 + 2000)
+        .filter((dimension) => marks.every((mark) => horizontal
+          ? mark.x >= Math.min(dimension.p1.x, dimension.p2.x) - 500 && mark.x <= Math.max(dimension.p1.x, dimension.p2.x) + 500
+          : mark.y >= Math.min(dimension.p1.y, dimension.p2.y) - 500 && mark.y <= Math.max(dimension.p1.y, dimension.p2.y) + 500))
+        .map((dimension) => ({ dimension, perpendicular: marks.reduce((sum, mark) => sum + (horizontal
+          ? Math.abs(mark.y - dimension.mid.y) : Math.abs(mark.x - dimension.mid.x)), 0) / marks.length }))
+        .filter((candidate) => candidate.perpendicular <= 5000)
+        .sort((a, b) => Math.abs(a.dimension.measurement - row.length * 1000) - Math.abs(b.dimension.measurement - row.length * 1000)
+          || a.perpendicular - b.perpendicular)[0];
+      if (marked) {
+        row.length = round3(marked.dimension.measurement / 1000);
+        row.sideLength = row.length;
+        row.measurementSource = 'marked dimension';
+        if (horizontal) {
+          row.cadX0 = marked.dimension.p1.x; row.cadX1 = marked.dimension.p2.x;
+        } else {
+          row.cadY0 = marked.dimension.p1.y; row.cadY1 = marked.dimension.p2.y;
+        }
+        continue;
+      }
+      // Where no written beam dimension is available, measure between the
+      // inner faces of the first and last RCC supports. Closed column/wall
+      // outlines are more reliable endpoints than fragmented beam face lines.
+      const x0 = Math.min(row.cadX0 || 0, row.cadX1 || 0), x1 = Math.max(row.cadX0 || 0, row.cadX1 || 0);
+      const y0 = Math.min(row.cadY0 || 0, row.cadY1 || 0), y1 = Math.max(row.cadY0 || 0, row.cadY1 || 0);
+      const supportBoxes = dwg.polylines
+        .filter((polyline) => (/column|wall|rcc/i.test(polyline.layer) || (polyline.layer === '0' && polyline.pts.length <= 6)) && polyline.pts.length >= 4)
+        .map((polyline) => ({
+          x0: Math.min(...polyline.pts.map((point) => point.x)), x1: Math.max(...polyline.pts.map((point) => point.x)),
+          y0: Math.min(...polyline.pts.map((point) => point.y)), y1: Math.max(...polyline.pts.map((point) => point.y)),
+        }))
+        .filter((box) => box.x1 - box.x0 >= 200 && box.x1 - box.x0 <= 2000 && box.y1 - box.y0 >= 200 && box.y1 - box.y0 <= 2000);
+      const rccBoxes = dwg.polylines
+        .filter((polyline) => /column|wall|rcc/i.test(polyline.layer) && polyline.pts.length >= 4)
+        .map((polyline) => ({
+          x0: Math.min(...polyline.pts.map((point) => point.x)), x1: Math.max(...polyline.pts.map((point) => point.x)),
+          y0: Math.min(...polyline.pts.map((point) => point.y)), y1: Math.max(...polyline.pts.map((point) => point.y)),
+        }));
+      if (horizontal) {
+        const lineY = (y0 + y1) / 2;
+        const near = supportBoxes.filter((box) => lineY >= box.y0 - 700 && lineY <= box.y1 + 700);
+        const left = near.filter((box) => Math.abs(box.x0 - x0) <= 150 && box.x1 > x0).sort((a, b) => a.x1 - b.x1)[0];
+        const right = near.filter((box) => Math.abs(box.x0 - x1) <= 150 && box.x1 > x1).sort((a, b) => a.x1 - b.x1)[0];
+        if (left && right && right.x0 > left.x1) {
+          const clear = (right.x0 - left.x1) / 1000;
+          const supportLength = ((left.x1 - left.x0) + (right.x1 - right.x0)) / 1000;
+          row.length = row.sideLength = round3(clear);
+          row.columnCapDeduction = round3(supportLength * row.breadth * row.height);
+          row.bottomJointDeduction = round3(supportLength * row.breadth);
+        } else {
+          const leftMass = rccBoxes.some((box) => Math.abs(box.x1 - x0) <= 150 && lineY >= box.y0 - 700 && lineY <= box.y1 + 700);
+          const rightMass = rccBoxes.some((box) => Math.abs(box.x0 - x1) <= 150 && lineY >= box.y0 - 700 && lineY <= box.y1 + 700);
+          const known = right ?? left;
+          if (known && marks.length === 2 && (leftMass || rightMass)) {
+            const terminalWidth = known.x1 - known.x0;
+            row.length = row.sideLength = round3(Math.max(row.length - terminalWidth / 1000, 0));
+            if (right) row.cadX1 = (row.cadX1 || 0) - terminalWidth;
+            else row.cadX0 = (row.cadX0 || 0) + terminalWidth;
+            row.columnCapDeduction = round3(terminalWidth / 1000 * row.breadth * row.height);
+            row.bottomJointDeduction = round3(terminalWidth / 1000 * row.breadth);
+            row.measurementSource = 'rcc support faces';
+          }
+        }
+      } else {
+        const lineX = (x0 + x1) / 2;
+        const near = supportBoxes.filter((box) => lineX >= box.x0 - 700 && lineX <= box.x1 + 700);
+        const bottom = near.filter((box) => Math.abs(box.y0 - y0) <= 150 && box.y1 > y0).sort((a, b) => a.y1 - b.y1)[0];
+        const top = near.filter((box) => Math.abs(box.y0 - y1) <= 150 && box.y1 > y1).sort((a, b) => a.y1 - b.y1)[0];
+        if (bottom && top && top.y0 > bottom.y1) {
+          const clear = (top.y0 - bottom.y1) / 1000;
+          const supportLength = ((bottom.y1 - bottom.y0) + (top.y1 - top.y0)) / 1000;
+          row.length = row.sideLength = round3(clear);
+          row.columnCapDeduction = round3(supportLength * row.breadth * row.height);
+          row.bottomJointDeduction = round3(supportLength * row.breadth);
+        }
+      }
+    }
+    // Calculate the RCC overlap for every physical beam from all intersecting
+    // closed column/wall outlines. The gross beam length remains unchanged;
+    // this overlap is deducted only when the user selects "exclude caps".
+    const supports = dwg.polylines
+      .filter((polyline) => (/column|wall|rcc/i.test(polyline.layer) || (polyline.layer === '0' && polyline.pts.length <= 6)) && polyline.pts.length >= 4)
+      .map((polyline) => ({
+        x0: Math.min(...polyline.pts.map((point) => point.x)), x1: Math.max(...polyline.pts.map((point) => point.x)),
+        y0: Math.min(...polyline.pts.map((point) => point.y)), y1: Math.max(...polyline.pts.map((point) => point.y)),
+      }))
+      .filter((box) => box.x1 - box.x0 >= 200 && box.x1 - box.x0 <= 2000 && box.y1 - box.y0 >= 200 && box.y1 - box.y0 <= 2000);
+    for (const row of consolidated) {
+      if ([row.cadX0, row.cadY0, row.cadX1, row.cadY1].some((value) => value == null)) continue;
+      const horizontal = Math.abs((row.cadX1 as number) - (row.cadX0 as number)) >= Math.abs((row.cadY1 as number) - (row.cadY0 as number));
+      let lo = horizontal ? Math.min(row.cadX0 as number, row.cadX1 as number) : Math.min(row.cadY0 as number, row.cadY1 as number);
+      let hi = horizontal ? Math.max(row.cadX0 as number, row.cadX1 as number) : Math.max(row.cadY0 as number, row.cadY1 as number);
+      const perpendicular = horizontal ? ((row.cadY0 as number) + (row.cadY1 as number)) / 2 : ((row.cadX0 as number) + (row.cadX1 as number)) / 2;
+      const intervals = supports.filter((box) => horizontal
+        ? perpendicular >= box.y0 - 700 && perpendicular <= box.y1 + 700 && box.x1 >= lo && box.x0 <= hi
+        : perpendicular >= box.x0 - 700 && perpendicular <= box.x1 + 700 && box.y1 >= lo && box.y0 <= hi)
+        .map((box): [number, number] => {
+          const b0 = horizontal ? box.x0 : box.y0, b1 = horizontal ? box.x1 : box.y1;
+          if (Math.abs(b0 - hi) <= 150 || Math.abs(b1 - lo) <= 150) return [b0, b1];
+          return [Math.max(lo, b0), Math.min(hi, b1)];
+        })
+        .sort((a, b) => a[0] - b[0]);
+      const merged: [number, number][] = [];
+      for (const interval of intervals) {
+        const last = merged[merged.length - 1];
+        if (last && interval[0] <= last[1] + 25) last[1] = Math.max(last[1], interval[1]);
+        else merged.push([...interval]);
+      }
+      const supportLength = merged.reduce((sum, interval) => sum + interval[1] - interval[0], 0) / 1000;
+      row.columnCapDeduction = round3(supportLength * row.breadth * row.height);
+      row.bottomJointDeduction = round3(supportLength * row.breadth);
+      row.sideLength = round3(Math.max(row.length - supportLength, 0));
+    }
+    return consolidated.sort((a, b) => compareBeamLabels(a.member, b.member));
   }
 
   let n = 1;
@@ -324,21 +466,62 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
       sizeCounts.set(key, (sizeCounts.get(key) || 0) + 1);
     }
     const selectedSize = [...sizeCounts].sort((a, b) => b[1] - a[1])[0]?.[0].split('|').map(Number) ?? [0, 0];
-    const totalLength = spans.reduce((sum, span) => sum + span.length, 0);
-    const totalSideLength = spans.reduce((sum, span) => sum + (span.sideLength || span.length), 0);
+    type LocatedSpan = { row: MemberRow; horizontal: boolean; perpendicular: number; lo: number; hi: number };
+    const located = spans.map((span): LocatedSpan | null => {
+      if ([span.cadX0, span.cadY0, span.cadX1, span.cadY1].some((v) => v == null)) return null;
+      const dx = (span.cadX1 as number) - (span.cadX0 as number);
+      const dy = (span.cadY1 as number) - (span.cadY0 as number);
+      const horizontal = Math.abs(dx) >= Math.abs(dy);
+      return {
+        row: span, horizontal,
+        perpendicular: horizontal ? ((span.cadY0 as number) + (span.cadY1 as number)) / 2 : ((span.cadX0 as number) + (span.cadX1 as number)) / 2,
+        lo: horizontal ? Math.min(span.cadX0 as number, span.cadX1 as number) : Math.min(span.cadY0 as number, span.cadY1 as number),
+        hi: horizontal ? Math.max(span.cadX0 as number, span.cadX1 as number) : Math.max(span.cadY0 as number, span.cadY1 as number),
+      };
+    }).filter((span): span is LocatedSpan => !!span);
+    const lineGroups: LocatedSpan[][] = [];
+    for (const span of located.sort((a, b) => Number(a.horizontal) - Number(b.horizontal) || a.perpendicular - b.perpendicular)) {
+      const group = lineGroups.find((candidate) => candidate[0].horizontal === span.horizontal
+        && Math.abs(candidate.reduce((sum, item) => sum + item.perpendicular, 0) / candidate.length - span.perpendicular) <= 1000);
+      if (group) group.push(span); else lineGroups.push([span]);
+    }
+    const physicalBeams = lineGroups.map((group) => {
+      const grossMm = Math.max(...group.map((span) => span.hi)) - Math.min(...group.map((span) => span.lo));
+      const clearM = group.reduce((sum, span) => sum + span.row.length, 0);
+      return { grossM: grossMm / 1000, clearM };
+    }).filter((beam) => beam.grossM > 0);
+    const grossLength = physicalBeams.length
+      ? physicalBeams.reduce((sum, beam) => sum + beam.grossM, 0) / physicalBeams.length
+      : spans.reduce((sum, span) => sum + span.length, 0);
+    const clearLength = physicalBeams.length
+      ? physicalBeams.reduce((sum, beam) => sum + Math.min(beam.clearM, beam.grossM), 0) / physicalBeams.length
+      : spans.reduce((sum, span) => sum + (span.sideLength || span.length), 0);
+    const totalSideLength = clearLength;
     const weightedThickness = (side: 1 | 2) => totalSideLength > 0
       ? spans.reduce((sum, span) => sum + (span.sideLength || span.length)
         * (side === 1 ? span.slabThicknessSide1 || 0 : span.slabThicknessSide2 || 0), 0) / totalSideLength
       : 0;
     const row = { ...spans[0] };
-    row.length = round3(totalLength);
+    row.length = round3(grossLength);
     row.sideLength = round3(totalSideLength);
     row.breadth = selectedSize[0]; row.height = selectedSize[1];
     row.slabThicknessSide1 = round3(weightedThickness(1));
     row.slabThicknessSide2 = round3(weightedThickness(2));
     row.innerSideCount = Number(!!row.slabThicknessSide1) + Number(!!row.slabThicknessSide2);
-    row.columnCapDeduction = round3(spans.reduce((sum, span) => sum + (span.columnCapDeduction || 0), 0));
-    row.nos = 1;
+    const supportLength = Math.max(grossLength - clearLength, 0);
+    row.columnCapDeduction = round3(supportLength * row.breadth * row.height);
+    row.bottomJointDeduction = round3(supportLength * row.breadth);
+    row.nos = Math.max(physicalBeams.length, 1);
+    if (lineGroups.length === 1) {
+      const group = lineGroups[0];
+      if (group[0].horizontal) {
+        row.cadX0 = Math.min(...group.map((span) => span.lo)); row.cadX1 = Math.max(...group.map((span) => span.hi));
+        row.cadY0 = row.cadY1 = group.reduce((sum, span) => sum + span.perpendicular, 0) / group.length;
+      } else {
+        row.cadY0 = Math.min(...group.map((span) => span.lo)); row.cadY1 = Math.max(...group.map((span) => span.hi));
+        row.cadX0 = row.cadX1 = group.reduce((sum, span) => sum + span.perpendicular, 0) / group.length;
+      }
+    }
     row.measurementSource = spans.every((span) => span.measurementSource === 'marked dimension')
       ? 'marked dimension' : 'drawing geometry';
     row.needsReview = spans.some((span) => span.needsReview);

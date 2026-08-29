@@ -27,7 +27,7 @@ function buildBeamShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
   ws.columns = [
     { header: 'S.No.', key: 'serial', width: 8 }, { header: 'Member', key: 'member', width: 18 }, { header: 'Floor', key: 'floor', width: 14 },
     { header: 'Shuttering item', key: 'item', width: 18 }, { header: 'Length (m)', key: 'length', width: 12 },
-    { header: 'Beam width (m)', key: 'width', width: 15 }, { header: 'Beam depth (m)', key: 'depth', width: 15 },
+    { header: 'Nos', key: 'nos', width: 8 }, { header: 'Beam width (m)', key: 'width', width: 15 }, { header: 'Beam depth (m)', key: 'depth', width: 15 },
     { header: 'Side 1 slab', key: 'side1Code', width: 12 }, { header: 'Side 1 thk (m)', key: 'side1Thickness', width: 14 },
     { header: 'Side 2 slab', key: 'side2Code', width: 12 }, { header: 'Side 2 thk (m)', key: 'side2Thickness', width: 14 },
     { header: 'Quantity (m²)', key: 'quantity', width: 15 }, { header: 'Unit', key: 'unit', width: 9 },
@@ -40,14 +40,15 @@ function buildBeamShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
     const side1Thickness = Math.min(Math.max(m.slabThicknessSide1 ?? (m.innerSideCount >= 1 ? m.slabThickness : 0), 0), depth);
     const side2Thickness = Math.min(Math.max(m.slabThicknessSide2 ?? (m.innerSideCount >= 2 ? m.slabThickness : 0), 0), depth);
     const remarks = m.needsReview ? `need review${m.reviewReason ? ` (${m.reviewReason})` : ''}` : '';
-    const bottom = ws.addRow({ serial: index + 1, member: m.member || m.id, floor: m.floor, item: 'Beam bottom', length, width, unit: 'm²', remarks: remarks || null });
-    bottom.getCell('quantity').value = { formula: `E${bottom.number}*F${bottom.number}`, result: length * width };
-    const sides = ws.addRow({ serial: index + 1, member: m.member || m.id, floor: m.floor, item: 'Beam sides', length, depth, side1Code: m.slabCodeSide1 ?? null, side1Thickness, side2Code: m.slabCodeSide2 ?? null, side2Thickness, unit: 'm²', remarks: remarks || null });
-    sides.getCell('quantity').value = { formula: `E${sides.number}*(2*G${sides.number}-I${sides.number}-K${sides.number})`, result: length * (2 * depth - side1Thickness - side2Thickness) };
+    const nos = Math.max(m.nos || 0, 0);
+    const bottom = ws.addRow({ serial: index + 1, member: m.member || m.id, floor: m.floor, item: 'Beam bottom', length, nos, width, unit: 'm²', remarks: remarks || null });
+    bottom.getCell('quantity').value = { formula: `E${bottom.number}*F${bottom.number}*G${bottom.number}`, result: length * nos * width };
+    const sides = ws.addRow({ serial: index + 1, member: m.member || m.id, floor: m.floor, item: 'Beam sides', length, nos, depth, side1Code: m.slabCodeSide1 ?? null, side1Thickness, side2Code: m.slabCodeSide2 ?? null, side2Thickness, unit: 'm²', remarks: remarks || null });
+    sides.getCell('quantity').value = { formula: `E${sides.number}*F${sides.number}*(2*H${sides.number}-J${sides.number}-L${sides.number})`, result: length * nos * (2 * depth - side1Thickness - side2Thickness) };
     if (remarks) for (const row of [bottom, sides]) row.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF1F2' } }));
   }
-  addFormulaTotal(ws, 'L', 'M', 'Total — Beam shuttering', 'm²', sorted.reduce((sum, m) => sum + RULES.beam_shuttering.calculate(m, capMode), 0));
-  for (const c of ['E', 'F', 'G', 'I', 'K', 'L']) ws.getColumn(c).numFmt = '0.000';
+  addFormulaTotal(ws, 'M', 'N', 'Total — Beam shuttering', 'm²', sorted.reduce((sum, m) => sum + RULES.beam_shuttering.calculate(m, capMode), 0));
+  for (const c of ['E', 'G', 'H', 'J', 'L', 'M']) ws.getColumn(c).numFmt = '0.000';
 }
 
 function buildSlabShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMode: CapMode) {
@@ -73,11 +74,11 @@ function buildSlabShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
   for (const c of ['E', 'F', 'G', 'H', 'I']) ws.getColumn(c).numFmt = '0.000';
 }
 
-function genericQuantityFormula(quantityKey: string, row: number, member: MemberRow, result: number): string {
+function genericQuantityFormula(quantityKey: string, row: number, member: MemberRow, result: number, capMode: CapMode): string {
   const C = `C${row}`, D = `D${row}`, E = `E${row}`, F = `F${row}`, G = `G${row}`, H = `H${row}`, I = `I${row}`;
   switch (quantityKey) {
     case 'column_concrete': return `${C}*${D}*${E}*${I}`;
-    case 'beam_concrete': return `MAX(${C}*${D}*${E}*${I},0)`;
+    case 'beam_concrete': return `MAX((${C}*${D}*${E}-${capMode === 'excluded' ? Math.max(member.columnCapDeduction || 0, 0) : 0})*${I},0)`;
     case 'column_steel': case 'beam_steel': case 'steel_bbs': return `${C}*${I}*(${G}^2/162)`;
     case 'slab_concrete': return member.netArea != null
       ? `${Math.max(member.netArea, 0)}*${E}*${I}`
@@ -112,7 +113,7 @@ export async function buildMbXlsx(members: MemberRow[], quantityKey: string, cap
   for (const [index, r] of exportRows.entries()) {
     const row = ws.addRow(r);
     row.getCell('quantity').value = {
-      formula: genericQuantityFormula(quantityKey, row.number, members[index], r.quantity),
+      formula: genericQuantityFormula(quantityKey, row.number, members[index], r.quantity, capMode),
       result: r.quantity,
     };
     if (r.remarks) row.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF1F2' } }));

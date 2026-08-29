@@ -356,18 +356,25 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       const marks = labelled.filter((item) => item.label === member).map((item) => item.text.pos);
       if (marks.length < 2) continue;
       const horizontal = memberRows.filter((row) => Math.abs((row.cadX1 || 0) - (row.cadX0 || 0)) >= Math.abs((row.cadY1 || 0) - (row.cadY0 || 0))).length >= memberRows.length / 2;
-      const overall = runs
+      const continuousCandidates = runs
         .filter((run) => run.horizontal === horizontal)
         .map((run) => ({ run, segment: { layer: 'BEAM-RUN', a: run.a, b: run.b } as Segment }))
-        .map((candidate) => ({ ...candidate, covered: marks.filter((mark) => pointSegmentDistance(mark, candidate.segment) <= 1200).length }))
-        .filter((candidate) => candidate.covered === marks.length)
-        .filter((candidate) => {
-          const markLo = Math.min(...marks.map((mark) => horizontal ? mark.x : mark.y));
-          const markHi = Math.max(...marks.map((mark) => horizontal ? mark.x : mark.y));
-          const runLength = Math.hypot(candidate.run.b.x - candidate.run.a.x, candidate.run.b.y - candidate.run.a.y);
-          return runLength <= markHi - markLo + 4000;
-        })
-        .sort((a, b) => Math.hypot(b.run.b.x - b.run.a.x, b.run.b.y - b.run.a.y) - Math.hypot(a.run.b.x - a.run.a.x, a.run.b.y - a.run.a.y))[0]?.run;
+        .map((candidate) => ({
+          ...candidate,
+          length: Math.hypot(candidate.run.b.x - candidate.run.a.x, candidate.run.b.y - candidate.run.a.y),
+          covered: marks.filter((mark) => pointSegmentDistance(mark, candidate.segment) <= 1200).length,
+          perpendicular: marks.reduce((sum, mark) => sum + pointSegmentDistance(mark, candidate.segment), 0) / marks.length,
+        }))
+        .filter((candidate) => candidate.covered === marks.length);
+      const dimensionMatched = continuousCandidates
+        .filter((candidate) => dwg.dimensions.some((dimension) => dimension.dir === (horizontal ? 'H' : 'V')
+          && Math.abs(dimension.measurement - candidate.length) <= 100
+          && marks.some((mark) => Math.hypot(dimension.mid.x - mark.x, dimension.mid.y - mark.y) <= 8000)))
+        .sort((a, b) => a.perpendicular - b.perpendicular)[0];
+      // When no explicit dimension distinguishes competing runs, strict
+      // continuity wins: use the longest uninterrupted run covering all marks.
+      const overall = (dimensionMatched ?? continuousCandidates
+        .sort((a, b) => b.length - a.length || a.perpendicular - b.perpendicular)[0])?.run;
       if (!overall) continue;
       const overallLength = Math.hypot(overall.b.x - overall.a.x, overall.b.y - overall.a.y);
       for (const row of memberRows) {

@@ -410,6 +410,25 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         y0: Math.min(...polyline.pts.map((point) => point.y)), y1: Math.max(...polyline.pts.map((point) => point.y)),
       }))
       .filter((box) => box.x1 - box.x0 >= 200 && box.x1 - box.x0 <= 2000 && box.y1 - box.y0 >= 200 && box.y1 - box.y0 <= 2000);
+    // Repeated parallel beams carrying the same mark and section between the
+    // same framing lines have one gross span. Small differences are normally
+    // face-to-face versus centreline measurements, not separate beam lengths.
+    // Normalize only close matches; genuinely different beams (for example
+    // the two differently sized B12 members) remain separate rows.
+    const comparable = new Map<string, MemberRow[]>();
+    for (const row of consolidated) {
+      if ([row.cadX0, row.cadY0, row.cadX1, row.cadY1].some((value) => value == null)) continue;
+      const horizontal = Math.abs((row.cadX1 as number) - (row.cadX0 as number)) >= Math.abs((row.cadY1 as number) - (row.cadY0 as number));
+      const key = `${row.member}|${horizontal ? 'H' : 'V'}|${row.breadth}|${row.height}`;
+      comparable.set(key, [...(comparable.get(key) || []), row]);
+    }
+    for (const group of comparable.values()) {
+      if (group.length < 2) continue;
+      const longest = Math.max(...group.map((row) => row.length));
+      for (const row of group) {
+        if (longest > 0 && row.length / longest >= 0.85) row.length = longest;
+      }
+    }
     for (const row of consolidated) {
       if ([row.cadX0, row.cadY0, row.cadX1, row.cadY1].some((value) => value == null)) continue;
       const horizontal = Math.abs((row.cadX1 as number) - (row.cadX0 as number)) >= Math.abs((row.cadY1 as number) - (row.cadY0 as number));
@@ -417,13 +436,13 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       let hi = horizontal ? Math.max(row.cadX0 as number, row.cadX1 as number) : Math.max(row.cadY0 as number, row.cadY1 as number);
       const perpendicular = horizontal ? ((row.cadY0 as number) + (row.cadY1 as number)) / 2 : ((row.cadX0 as number) + (row.cadX1 as number)) / 2;
       const intervals = supports.filter((box) => horizontal
-        ? perpendicular >= box.y0 - 700 && perpendicular <= box.y1 + 700 && box.x1 >= lo && box.x0 <= hi
-        : perpendicular >= box.x0 - 700 && perpendicular <= box.x1 + 700 && box.y1 >= lo && box.y0 <= hi)
+        ? perpendicular >= box.y0 - 50 && perpendicular <= box.y1 + 50 && box.x1 > lo + 50 && box.x0 < hi - 50
+        : perpendicular >= box.x0 - 50 && perpendicular <= box.x1 + 50 && box.y1 > lo + 50 && box.y0 < hi - 50)
         .map((box): [number, number] => {
           const b0 = horizontal ? box.x0 : box.y0, b1 = horizontal ? box.x1 : box.y1;
-          if (Math.abs(b0 - hi) <= 150 || Math.abs(b1 - lo) <= 150) return [b0, b1];
           return [Math.max(lo, b0), Math.min(hi, b1)];
         })
+        .filter((interval) => interval[1] - interval[0] > 50)
         .sort((a, b) => a[0] - b[0]);
       const merged: [number, number][] = [];
       for (const interval of intervals) {
@@ -437,7 +456,16 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       row.bottomJointDeduction = round3(supportLength * row.breadth);
       row.sideLength = round3(Math.max(row.length - supportLength, 0));
     }
-    return consolidated.sort((a, b) => compareBeamLabels(a.member, b.member));
+    // Normalization above can make equivalent parallel occurrences identical;
+    // fold them into one MB row with Nos after support deductions are known.
+    const finalRows = new Map<string, MemberRow>();
+    for (const row of consolidated) {
+      const key = `${row.member}|${round3(row.length)}|${round3(row.breadth)}|${round3(row.height)}|${(row.supportWidths || []).join(',')}`;
+      const prior = finalRows.get(key);
+      if (prior) prior.nos += row.nos;
+      else finalRows.set(key, { ...row });
+    }
+    return [...finalRows.values()].sort((a, b) => compareBeamLabels(a.member, b.member));
   }
 
   let n = 1;
@@ -464,7 +492,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
  * continuous beam through multiple RCC supports, not separate beam marks. */
 function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
   const groups = new Map<string, MemberRow[]>();
-  const lanes = new Map<string, { horizontal: boolean; perpendicular: number }[]>();
+  const lanes = new Map<string, { horizontal: boolean; perpendicular: number; breadth: number; height: number }[]>();
   // Repeated marks on the same physical centreline are spans of one beam,
   // even when a nearby unrelated size note was associated differently.
   // A mark is split only when its geometry lies on a genuinely separate line.
@@ -475,9 +503,13 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
       const horizontal = Math.abs(dx) >= Math.abs(dy);
       const perpendicular = horizontal ? ((row.cadY0 as number) + (row.cadY1 as number)) / 2 : ((row.cadX0 as number) + (row.cadX1 as number)) / 2;
       const memberLanes = lanes.get(row.member) || [];
-      const match = memberLanes.findIndex((candidate) => candidate.horizontal === horizontal && Math.abs(candidate.perpendicular - perpendicular) <= 250);
+      const match = memberLanes.findIndex((candidate) => {
+        if (candidate.horizontal !== horizontal) return false;
+        const offset = Math.abs(candidate.perpendicular - perpendicular);
+        return offset <= 250 || (offset <= 700 && candidate.breadth === row.breadth && candidate.height === row.height);
+      });
       lane = match >= 0 ? match : memberLanes.length;
-      if (match < 0) { memberLanes.push({ horizontal, perpendicular }); lanes.set(row.member, memberLanes); }
+      if (match < 0) { memberLanes.push({ horizontal, perpendicular, breadth: row.breadth, height: row.height }); lanes.set(row.member, memberLanes); }
     }
     const key = `${row.member}|lane:${lane}`;
     groups.set(key, [...(groups.get(key) || []), row]);

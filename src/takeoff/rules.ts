@@ -23,6 +23,7 @@ export interface MemberRow {
   slabCodeSide2?: string;
   sideLength: number; // m (beam side run; defaults to length)
   bottomJointDeduction: number; // m² (beam support)
+  supportWidths?: number[]; // m, auditable RCC overlaps along beam length
   sideJointDeduction: number; // m²
   columnCapDeduction: number; // m³ (beam concrete, caps excluded)
   dia: number; // mm (steel)

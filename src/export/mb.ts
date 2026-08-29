@@ -20,7 +20,9 @@ export const MB_COLUMNS: { key: keyof MBRow; header: string }[] = [
 export function membersToRows(members: MemberRow[], quantityKey: string, capMode: CapMode): MBRow[] {
   const rule = RULES[quantityKey];
   return members.map((m) => ({
-    member: m.member || m.id,
+    member: quantityKey.startsWith('beam_') && m.breadth > 0 && m.height > 0
+      ? `${m.member || m.id} ${Math.round(m.breadth * 1000)}x${Math.round(m.height * 1000)}`
+      : m.member || m.id,
     floor: m.floor,
     length: round(m.length), breadth: round(m.breadth), height: round(m.height),
     dia: m.dia, spacing: m.spacing, nos: m.nos, openings: round(m.openings),

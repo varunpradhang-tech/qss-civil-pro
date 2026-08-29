@@ -41,9 +41,10 @@ function buildBeamShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
     const side2Thickness = Math.min(Math.max(m.slabThicknessSide2 ?? (m.innerSideCount >= 2 ? m.slabThickness : 0), 0), depth);
     const remarks = m.needsReview ? `need review${m.reviewReason ? ` (${m.reviewReason})` : ''}` : '';
     const nos = Math.max(m.nos || 0, 0);
-    const bottom = ws.addRow({ serial: index + 1, member: m.member || m.id, floor: m.floor, item: 'Beam bottom', length, nos, width, unit: 'm²', remarks: remarks || null });
+    const member = `${m.member || m.id} ${Math.round(width * 1000)}x${Math.round(depth * 1000)}`;
+    const bottom = ws.addRow({ serial: index + 1, member, floor: m.floor, item: 'Beam bottom', length, nos, width, unit: 'm²', remarks: remarks || null });
     bottom.getCell('quantity').value = { formula: `E${bottom.number}*F${bottom.number}*G${bottom.number}`, result: length * nos * width };
-    const sides = ws.addRow({ serial: index + 1, member: m.member || m.id, floor: m.floor, item: 'Beam sides', length, nos, depth, side1Code: m.slabCodeSide1 ?? null, side1Thickness, side2Code: m.slabCodeSide2 ?? null, side2Thickness, unit: 'm²', remarks: remarks || null });
+    const sides = ws.addRow({ serial: index + 1, member, floor: m.floor, item: 'Beam sides', length, nos, depth, side1Code: m.slabCodeSide1 ?? null, side1Thickness, side2Code: m.slabCodeSide2 ?? null, side2Thickness, unit: 'm²', remarks: remarks || null });
     sides.getCell('quantity').value = { formula: `E${sides.number}*F${sides.number}*(2*H${sides.number}-J${sides.number}-L${sides.number})`, result: length * nos * (2 * depth - side1Thickness - side2Thickness) };
     if (remarks) for (const row of [bottom, sides]) row.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF1F2' } }));
   }
@@ -78,7 +79,13 @@ function genericQuantityFormula(quantityKey: string, row: number, member: Member
   const C = `C${row}`, D = `D${row}`, E = `E${row}`, F = `F${row}`, G = `G${row}`, H = `H${row}`, I = `I${row}`;
   switch (quantityKey) {
     case 'column_concrete': return `${C}*${D}*${E}*${I}`;
-    case 'beam_concrete': return `MAX((${C}*${D}*${E}-${capMode === 'excluded' ? Math.max(member.columnCapDeduction || 0, 0) : 0})*${I},0)`;
+    case 'beam_concrete': {
+      const widths = capMode === 'excluded' ? member.supportWidths || [] : [];
+      const counts = new Map<number, number>();
+      for (const width of widths) counts.set(width, (counts.get(width) || 0) + 1);
+      const deduction = [...counts].map(([width, count]) => count > 1 ? `${width}*${count}` : `${width}`).join('+') || '0';
+      return `MAX((${C}-(${deduction}))*${D}*${E}*${I},0)`;
+    }
     case 'column_steel': case 'beam_steel': case 'steel_bbs': return `${C}*${I}*(${G}^2/162)`;
     case 'slab_concrete': return member.netArea != null
       ? `${Math.max(member.netArea, 0)}*${E}*${I}`

@@ -258,7 +258,9 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       const side1 = adjacent(1), side2 = adjacent(-1);
       const midpoint = nearest ? { x: (nearest.a.x + nearest.b.x) / 2, y: (nearest.a.y + nearest.b.y) / 2 } : text.pos;
       const inlineSize = parseBeamSize(nearestText(midpoint, sizeTexts, 6000) ?? '');
-      const size = schedule.get(label) ?? inlineSize ?? sizeByLabel.get(label);
+      // A size printed beside the actual framing-plan beam is the strongest
+      // evidence. Use uploaded detail/schedule drawings only as fallback.
+      const size = inlineSize ?? schedule.get(label) ?? sizeByLabel.get(label);
       const r = emptyRow(nextId(), floor);
       r.member = label;
       r.length = round3(lengthMm / 1000);
@@ -316,7 +318,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         .filter((dimension) => dimension.dir === (horizontal ? 'H' : 'V')
           // A written dimension may extend a fragmented face run, but it must
           // not shorten an already complete first-to-last support run.
-          && dimension.measurement >= Math.max(row.length * 1000 - 100, 600)
+          && dimension.measurement >= Math.max(row.length * 1000 - (marks.length === 1 ? 2000 : 100), 600)
           && dimension.measurement <= row.length * 1000 + 2000)
         .filter((dimension) => marks.every((mark) => horizontal
           ? mark.x >= Math.min(dimension.p1.x, dimension.p2.x) - 500 && mark.x <= Math.max(dimension.p1.x, dimension.p2.x) + 500
@@ -326,7 +328,11 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         .filter((candidate) => candidate.perpendicular <= 5000)
         .sort((a, b) => Math.abs(a.dimension.measurement - row.length * 1000) - Math.abs(b.dimension.measurement - row.length * 1000)
           || a.perpendicular - b.perpendicular)[0];
-      if (marked) {
+      // With one mark the nearest beam-face geometry is the direct span
+      // evidence. Do not replace it with an adjacent bay dimension (B3 in
+      // the validation plan is 3.550 m, while a nearby slab dimension is
+      // 4.850 m). Repeated marks may legitimately use one overall dimension.
+      if (marked && marks.length > 1) {
         row.length = round3(marked.dimension.measurement / 1000);
         row.sideLength = row.length;
         row.measurementSource = 'marked dimension';
@@ -426,6 +432,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         else merged.push([...interval]);
       }
       const supportLength = merged.reduce((sum, interval) => sum + interval[1] - interval[0], 0) / 1000;
+      row.supportWidths = merged.map((interval) => round3((interval[1] - interval[0]) / 1000)).filter((width) => width > 0);
       row.columnCapDeduction = round3(supportLength * row.breadth * row.height);
       row.bottomJointDeduction = round3(supportLength * row.breadth);
       row.sideLength = round3(Math.max(row.length - supportLength, 0));
@@ -457,7 +464,12 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
  * continuous beam through multiple RCC supports, not separate beam marks. */
 function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
   const groups = new Map<string, MemberRow[]>();
-  for (const row of rows) groups.set(row.member, [...(groups.get(row.member) || []), row]);
+  // The same mark can legitimately identify separate beams of different
+  // sizes. Never merge those into a single artificial member.
+  for (const row of rows) {
+    const key = `${row.member}|${round3(row.breadth)}|${round3(row.height)}`;
+    groups.set(key, [...(groups.get(key) || []), row]);
+  }
   return [...groups.values()].map((spans) => {
     if (spans.length === 1) return spans[0];
     const sizeCounts = new Map<string, number>();

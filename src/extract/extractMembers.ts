@@ -346,6 +346,38 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         row.needsReview = false; row.reviewReason = undefined;
       }
     }
+    // A single continuous beam-face run covering every repeated label is
+    // stronger evidence than the shorter fragments around RCC supports. Apply
+    // that run before consolidation (for example B10 = 13.300 m). Without a
+    // continuous run, real slab-bay gaps remain separate components (B47).
+    const rowsByMember = new Map<string, MemberRow[]>();
+    for (const row of rows) rowsByMember.set(row.member, [...(rowsByMember.get(row.member) || []), row]);
+    for (const [member, memberRows] of rowsByMember) {
+      const marks = labelled.filter((item) => item.label === member).map((item) => item.text.pos);
+      if (marks.length < 2) continue;
+      const horizontal = memberRows.filter((row) => Math.abs((row.cadX1 || 0) - (row.cadX0 || 0)) >= Math.abs((row.cadY1 || 0) - (row.cadY0 || 0))).length >= memberRows.length / 2;
+      const overall = runs
+        .filter((run) => run.horizontal === horizontal)
+        .map((run) => ({ run, segment: { layer: 'BEAM-RUN', a: run.a, b: run.b } as Segment }))
+        .map((candidate) => ({ ...candidate, covered: marks.filter((mark) => pointSegmentDistance(mark, candidate.segment) <= 1200).length }))
+        .filter((candidate) => candidate.covered === marks.length)
+        .filter((candidate) => {
+          const markLo = Math.min(...marks.map((mark) => horizontal ? mark.x : mark.y));
+          const markHi = Math.max(...marks.map((mark) => horizontal ? mark.x : mark.y));
+          const runLength = Math.hypot(candidate.run.b.x - candidate.run.a.x, candidate.run.b.y - candidate.run.a.y);
+          return runLength <= markHi - markLo + 4000;
+        })
+        .sort((a, b) => Math.hypot(b.run.b.x - b.run.a.x, b.run.b.y - b.run.a.y) - Math.hypot(a.run.b.x - a.run.a.x, a.run.b.y - a.run.a.y))[0]?.run;
+      if (!overall) continue;
+      const overallLength = Math.hypot(overall.b.x - overall.a.x, overall.b.y - overall.a.y);
+      for (const row of memberRows) {
+        row.length = round3(overallLength / 1000);
+        row.sideLength = row.length;
+        row.cadX0 = overall.a.x; row.cadY0 = overall.a.y;
+        row.cadX1 = overall.b.x; row.cadY1 = overall.b.y;
+        row.measurementSource = 'drawing geometry';
+      }
+    }
     let consolidated = consolidateBeamRows(rows);
     const coverage = (row: MemberRow) => {
       if ([row.cadX0, row.cadY0, row.cadX1, row.cadY1].some((value) => value == null)) return 0;
@@ -595,7 +627,32 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
     const key = `${row.member}|lane:${lane}`;
     groups.set(key, [...(groups.get(key) || []), row]);
   }
-  const consolidated = [...groups.values()].map((spans) => {
+  // A repeated mark may continue through columns/walls, but it must not jump
+  // across a slab bay or another genuine break in the beam faces. Split every
+  // lane into longitudinally connected components before consolidating it.
+  const connectedGroups = [...groups.values()].flatMap((spans) => {
+    const located = spans.map((span) => {
+      if ([span.cadX0, span.cadY0, span.cadX1, span.cadY1].some((value) => value == null)) return null;
+      const horizontal = Math.abs((span.cadX1 as number) - (span.cadX0 as number)) >= Math.abs((span.cadY1 as number) - (span.cadY0 as number));
+      return {
+        span,
+        lo: horizontal ? Math.min(span.cadX0 as number, span.cadX1 as number) : Math.min(span.cadY0 as number, span.cadY1 as number),
+        hi: horizontal ? Math.max(span.cadX0 as number, span.cadX1 as number) : Math.max(span.cadY0 as number, span.cadY1 as number),
+      };
+    }).filter((item): item is { span: MemberRow; lo: number; hi: number } => !!item)
+      .sort((a, b) => a.lo - b.lo);
+    if (located.length !== spans.length) return [spans];
+    const components: { spans: MemberRow[]; hi: number }[] = [];
+    for (const item of located) {
+      const current = components[components.length - 1];
+      if (current && item.lo <= current.hi + 1400) {
+        current.spans.push(item.span);
+        current.hi = Math.max(current.hi, item.hi);
+      } else components.push({ spans: [item.span], hi: item.hi });
+    }
+    return components.map((component) => component.spans);
+  });
+  const consolidated = connectedGroups.map((spans) => {
     if (spans.length === 1) return spans[0];
     const sizeCounts = new Map<string, number>();
     for (const span of spans) {

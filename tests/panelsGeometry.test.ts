@@ -17,6 +17,23 @@ const drawing = (): NormalizedDwg => ({
 });
 
 describe('unmarked slab geometry', () => {
+  it('does not turn a broad unmarked three-sided exterior void into a slab', () => {
+    const exteriorVoid = drawing();
+    exteriorVoid.texts = [
+      { layer: 'SLABS', text: 'S1', pos: { x: -2000, y: 2000 } },
+      { layer: 'SLABS', text: 'S1', pos: { x: 13550, y: 2000 } },
+    ];
+    exteriorVoid.segments = [
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 0, y: 0 }, b: { x: 11550, y: 0 } },
+      { layer: 'BEAM', lineType: 'CONTINUOUS', a: { x: 0, y: 0 }, b: { x: 0, y: 19245 } },
+      { layer: 'BEAM', lineType: 'CONTINUOUS', a: { x: 11550, y: 0 }, b: { x: 11550, y: 19245 } },
+      { layer: 'A-PLNT', lineType: 'CONTINUOUS', a: { x: 0, y: 19245 }, b: { x: 11550, y: 19245 } },
+    ];
+    const panels = autoProposePanels(exteriorVoid);
+    expect(panels.some((panel) => panel.box.x0 === 0 && panel.box.y0 === 0
+      && panel.box.x1 === 11550 && panel.box.y1 === 19245)).toBe(false);
+  });
+
   it('measures an unlabelled closed panel bounded on every side by dotted beam faces', () => {
     const dotted = drawing();
     dotted.texts = [];

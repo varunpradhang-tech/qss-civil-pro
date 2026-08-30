@@ -520,6 +520,15 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       && !labelledPanels.some((measured) => label.pos.x >= measured.box.x0 - ALIGN_TOL
         && label.pos.x <= measured.box.x1 + ALIGN_TOL && label.pos.y >= measured.box.y0 - ALIGN_TOL
         && label.pos.y <= measured.box.y1 + ALIGN_TOL));
+    // A remote plan/grid line can accidentally close a broad three-sided
+    // exterior void. Without a local slab or C mark, a geometry-only
+    // cantilever must look like a strip: one long supported edge opposite one
+    // long free edge. Fully closed dotted RCC faces are accepted earlier and
+    // do not pass through this gate.
+    const longSide = Math.max(panel.lengthMm, panel.breadthMm);
+    const shortSide = Math.min(panel.lengthMm, panel.breadthMm);
+    const stripLike = shortSide > 0 && longSide / shortSide >= 2;
+    if (!localCMark && !unresolvedSlabMark && !stripLike) return false;
     if (unresolvedSlabMark) panel.label = unresolvedSlabMark.text;
     if (excludedDetailPoint(centre)) return false;
     // A short 1–3 m rectangle immediately outside one beam face is normally

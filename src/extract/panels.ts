@@ -263,10 +263,16 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const inferredSlabCode = [...slabCodeCounts].sort((a, b) => b[1] - a[1])[0]?.[0] || 'S1';
   const dottedBeamSegments = allSegs.filter((segment) => /beam/i.test(segment.layer)
     && /dash|hidden/i.test(segment.lineType || '') && !/center/i.test(segment.lineType || ''));
-  // Beam faces commonly terminate on opposite sides of a small column/node;
-  // a 300 mm CAD snap joins those intended corners without bridging a normal
-  // slab bay or beam spacing.
-  const dottedFaces = polygoniseCadFaces(dottedBeamSegments, 300);
+  // Beam faces commonly terminate on opposite sides of a small column/node.
+  // Real consultant files also split each side at dimensions and slab bays,
+  // so polygonising raw HIDDEN pieces alone misses complete four-sided rooms.
+  // Add a second pass after joining only collinear dotted BEAM fragments.
+  const mergedDottedBeamSegments = mergeAxisBeamSegments(dottedBeamSegments)
+    .filter((segment) => /hidden/i.test(segment.lineType || ''));
+  const dottedFaces = [
+    ...polygoniseCadFaces(dottedBeamSegments, 300),
+    ...polygoniseCadFaces(mergedDottedBeamSegments, 300),
+  ];
   for (const face of dottedFaces) {
     const shape = simplifyCollinearPolygon(face.polygon);
     const width = face.box.x1 - face.box.x0, height = face.box.y1 - face.box.y0;

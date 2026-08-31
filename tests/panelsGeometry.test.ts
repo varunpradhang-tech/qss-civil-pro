@@ -48,6 +48,24 @@ describe('unmarked slab geometry', () => {
     }]);
   });
 
+  it('joins fragmented dotted beam faces before finding an unlabelled rectangular slab', () => {
+    const dotted = drawing();
+    dotted.texts = [];
+    dotted.segments = [
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 0, y: 0 }, b: { x: 1700, y: 0 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 2200, y: 0 }, b: { x: 4000, y: 0 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 0, y: 3000 }, b: { x: 1700, y: 3000 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 2200, y: 3000 }, b: { x: 4000, y: 3000 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 0, y: 0 }, b: { x: 0, y: 1200 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 0, y: 1700 }, b: { x: 0, y: 3000 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 4000, y: 0 }, b: { x: 4000, y: 1200 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 4000, y: 1700 }, b: { x: 4000, y: 3000 } },
+    ];
+    expect(autoProposePanels(dotted)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'S1', lengthMm: 4000, breadthMm: 3000, dottedBoundary: true }),
+    ]));
+  });
+
   it('measures an S-labelled closed dotted right triangle as length times breadth divided by two', () => {
     const triangle = drawing();
     triangle.texts = [{ layer: 'SLABS NO', text: 'S1', pos: { x: 2800, y: 1800 } }];

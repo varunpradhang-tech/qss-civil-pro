@@ -22,7 +22,13 @@ function getWorker(): Worker {
   return worker;
 }
 
-export function parseInWorker(bytes: ArrayBuffer, fileName: string, wasmPath = '/wasm'): Promise<NormalizedDwg> {
+/** Resolve public assets against Vite's deployment base. This is `/wasm` on
+ * Netlify/local and `/qss-civil-pro/wasm` on GitHub Pages staging. */
+function deployedWasmPath(): string {
+  return `${import.meta.env.BASE_URL}wasm`;
+}
+
+export function parseInWorker(bytes: ArrayBuffer, fileName: string, wasmPath = deployedWasmPath()): Promise<NormalizedDwg> {
   const w = getWorker();
   const id = `p${++seq}`;
   // Transfer a copy. Transferring `bytes` itself detaches the caller's buffer,
@@ -58,7 +64,7 @@ export async function parseDrawingsWithFallback(files: File[], options: {
   const drawings: NormalizedDwg[] = [];
   for (const file of files) {
     onStatus?.(`Parsing ${file.name} locally…`);
-    drawings.push(await parseInWorker(await file.arrayBuffer(), file.name, '/wasm'));
+    drawings.push(await parseInWorker(await file.arrayBuffer(), file.name));
   }
   return { drawings, mode: 'local' };
 }

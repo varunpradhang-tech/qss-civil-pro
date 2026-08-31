@@ -1,0 +1,44 @@
+name: QSS quality gate
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Run regression tests
+        run: npm test
+
+      - name: Build production application
+        run: npm run build
+
+      - name: Preserve verified web build
+        uses: actions/upload-artifact@v4
+        with:
+          name: qss-web-${{ github.sha }}
+          path: dist
+          retention-days: 14
+

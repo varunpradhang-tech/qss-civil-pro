@@ -3,8 +3,18 @@
   publish = "dist"
   functions = "netlify/functions"
 
+# Local parsing remains the online staging baseline until the external
+# processor passes the same regression suite. No secret belongs in this file.
+[context.production.environment]
+  VITE_QSS_REMOTE_PROCESSING = "false"
+
+[context.deploy-preview.environment]
+  VITE_QSS_REMOTE_PROCESSING = "false"
+
+[context.staging.environment]
+  VITE_QSS_REMOTE_PROCESSING = "false"
+
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
-

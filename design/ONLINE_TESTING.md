@@ -35,6 +35,17 @@ The staging URL normally follows Netlify's branch-deploy form, for example
 7. Merge into `staging` only after review.
 8. Promote `staging` to `main` only when the full verified drawing corpus passes.
 
+## Temporary staging while Netlify deploy credits are paused
+
+The `staging` branch can be published by GitHub Pages at:
+
+`https://varunpradhang-tech.github.io/qss-civil-pro/`
+
+This temporary host runs the existing browser CAD parser and quantity engine.
+Netlify Functions are not available there, so CloudConvert-based PDF/DWG reference
+exports are not part of this temporary staging test. Quantity extraction and the
+client-side Excel workflow remain the intended test scope.
+
 ## Required drawing regression record
 
 Every accepted drawing must eventually have a manifest containing:
@@ -61,4 +72,3 @@ The web/mobile client may use the external processor only after:
 5. Conflicts and low confidence are shown as review items.
 6. A staging-only Netlify environment value enables remote processing.
 7. Production remains disabled until staging is formally accepted.
-

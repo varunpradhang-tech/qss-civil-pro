@@ -393,6 +393,23 @@ describe('unmarked slab geometry', () => {
     expect(autoProposePanels(plan)[0].openingM2).toBeCloseTo(0.58, 3);
   });
 
+  it('associates an explicit CUT-layer X void across a narrow beam-width gap', () => {
+    const plan = drawing();
+    plan.segments.push(
+      { layer: 'CUT', a: { x: 4300, y: 500 }, b: { x: 6300, y: 2500 } },
+      { layer: 'CUT', a: { x: 4300, y: 2500 }, b: { x: 6300, y: 500 } },
+    );
+    const panel = autoProposePanels(plan).find((candidate) => candidate.label === 'S1A');
+    expect(panel?.openingM2).toBeCloseTo(4, 3);
+
+    const decorative = drawing();
+    decorative.segments.push(
+      { layer: '0', a: { x: 4300, y: 500 }, b: { x: 6300, y: 2500 } },
+      { layer: '0', a: { x: 4300, y: 2500 }, b: { x: 6300, y: 500 } },
+    );
+    expect(autoProposePanels(decorative)[0].openingM2).toBe(0);
+  });
+
   it('ignores grid lines and cutout outlines when finding gross panel boundaries', () => {
     const plan = drawing();
     plan.texts = [{ layer: 'SLAB NO', text: 'S1', pos: { x: 2410, y: 2000 } }];

@@ -719,9 +719,24 @@ function assignCutouts(panels: PanelProposalBox[], cutouts: Cutout[]): void {
       // but also occurs in bracing, expansion joints and drawing details. Treat
       // it as an opening only when the complete X-box is contained by one
       // retained, explicitly S-coded slab panel.
-      overlaps = overlaps.filter(({ p, ov }) => /^S\d+[A-Z]?$/i.test(p.label || '')
-        && ov / c.areaM2 >= 0.9);
-      if (!overlaps.length) continue;
+      overlaps = overlaps.filter(({ p }) => /^S\d+[A-Z]?$/i.test(p.label || ''));
+      const coveredBySlabs = overlaps.reduce((sum, { ov }) => sum + ov, 0);
+      // A shaft can cross the boundary between two adjacent slab proposals;
+      // containment therefore applies to their union, not to one panel alone.
+      if (coveredBySlabs / c.areaM2 < 0.9) continue;
+    }
+    if (!overlaps.length && c.explicitX) {
+      // In many framing plans the X is drawn inside a shaft bounded by beam or
+      // wall faces, leaving a narrow 200–300 mm gap to every extracted slab
+      // proposal. Associate that explicit CUT-layer void with the closest
+      // S-coded slab only when it is within one beam-width (500 mm). This is
+      // deliberately unavailable to generic/unlabelled crosses.
+      const nearby = panels
+        .filter((p) => /^S\d+[A-Z]?$/i.test(p.label || ''))
+        .map((p) => ({ p, gap: rectGap(c.box, p.box), capacity: capOf(p) - p.openingM2 }))
+        .filter(({ gap, capacity }) => gap <= 500 && capacity >= c.areaM2)
+        .sort((a, b) => a.gap - b.gap || b.capacity - a.capacity);
+      if (nearby.length) overlaps = [{ p: nearby[0].p, ov: c.areaM2 }];
     }
     const totalOv = overlaps.reduce((s, o) => s + o.ov, 0);
     if (totalOv > 0) {
@@ -736,6 +751,11 @@ function rectOverlap(a: { x0: number; y0: number; x1: number; y1: number }, b: {
   const ox = Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0));
   const oy = Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
   return (ox * oy) / 1e6;
+}
+function rectGap(a: { x0: number; y0: number; x1: number; y1: number }, b: { x0: number; y0: number; x1: number; y1: number }): number {
+  const dx = Math.max(0, Math.max(a.x0 - b.x1, b.x0 - a.x1));
+  const dy = Math.max(0, Math.max(a.y0 - b.y1, b.y0 - a.y1));
+  return Math.hypot(dx, dy);
 }
 
 // --- overlap gate: if two panels overlap materially, keep the smaller (true bay), flag the larger ---
@@ -839,6 +859,7 @@ interface Cutout {
   areaM2: number;
   box: { x0: number; y0: number; x1: number; y1: number };
   inferredX?: boolean;
+  explicitX?: boolean;
 }
 function extractCutouts(dwg: NormalizedDwg): Cutout[] {
   const out: Cutout[] = [];
@@ -889,9 +910,11 @@ function extractCutouts(dwg: NormalizedDwg): Cutout[] {
     // when fully contained in an explicit S-coded slab panel.
     const inferredX = !explicitVoidLayer && !labelledVoid;
     const aspect = w / h;
-    if (inferredX && (areaM2 < 1 || aspect < 0.25 || aspect > 4)) continue;
+    if (inferredX && (areaM2 < 0.4 || aspect < 0.25 || aspect > 4)) continue;
     const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
-    if (!out.some((o) => Math.hypot(o.cx - cx, o.cy - cy) < 1500)) out.push({ cx, cy, areaM2, box: b, inferredX });
+    if (!out.some((o) => Math.hypot(o.cx - cx, o.cy - cy) < 1500)) out.push({
+      cx, cy, areaM2, box: b, inferredX, explicitX: explicitVoidLayer || labelledVoid,
+    });
   }
   return out;
 }

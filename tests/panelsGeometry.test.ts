@@ -311,6 +311,18 @@ describe('unmarked slab geometry', () => {
     expect(autoProposePanels(small)[0].openingM2).toBe(0);
   });
 
+  it('deducts a large unlabelled X-void only when fully contained in an S-coded slab bay', () => {
+    const plan = drawing();
+    plan.segments.push(
+      { layer: '0', a: { x: 1000, y: 500 }, b: { x: 3000, y: 2500 } },
+      { layer: '0', a: { x: 1000, y: 2500 }, b: { x: 3000, y: 500 } },
+      // A similar cross outside the slab must not become a deduction.
+      { layer: '0', a: { x: 5000, y: 500 }, b: { x: 7000, y: 2500 } },
+      { layer: '0', a: { x: 5000, y: 2500 }, b: { x: 7000, y: 500 } },
+    );
+    expect(autoProposePanels(plan)[0].openingM2).toBeCloseTo(4, 3);
+  });
+
   it('recognises an unmarked hatch when the same hatch is confirmed by an S-marked panel', () => {
     const hatched = drawing();
     hatched.extents.max.x = 41000;

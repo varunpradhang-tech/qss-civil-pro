@@ -711,9 +711,18 @@ function assignCutouts(panels: PanelProposalBox[], cutouts: Cutout[]): void {
     // Keep them out of the extracted opening column as well, so the browser,
     // Excel formula and total quantity all apply the same rule.
     if (c.areaM2 < 0.4) continue;
-    const overlaps = panels
+    let overlaps = panels
       .map((p) => ({ p, ov: p.polygon ? polygonRectIntersectionArea(p.polygon, c.box) / 1e6 : rectOverlap(c.box, p.box) }))
       .filter((o) => o.ov > 0);
+    if (c.inferredX) {
+      // An unlabelled pair of crossing diagonals is common in lift/stair voids,
+      // but also occurs in bracing, expansion joints and drawing details. Treat
+      // it as an opening only when the complete X-box is contained by one
+      // retained, explicitly S-coded slab panel.
+      overlaps = overlaps.filter(({ p, ov }) => /^S\d+[A-Z]?$/i.test(p.label || '')
+        && ov / c.areaM2 >= 0.9);
+      if (!overlaps.length) continue;
+    }
     const totalOv = overlaps.reduce((s, o) => s + o.ov, 0);
     if (totalOv > 0) {
       for (const { p, ov } of overlaps) {
@@ -824,7 +833,13 @@ function overlapFrac(a: PanelProposalBox['box'], b: PanelProposalBox['box']): nu
 }
 
 // --- cutouts: cutout-layer polylines + X-crossed diagonal pairs ---
-interface Cutout { cx: number; cy: number; areaM2: number; box: { x0: number; y0: number; x1: number; y1: number }; }
+interface Cutout {
+  cx: number;
+  cy: number;
+  areaM2: number;
+  box: { x0: number; y0: number; x1: number; y1: number };
+  inferredX?: boolean;
+}
 function extractCutouts(dwg: NormalizedDwg): Cutout[] {
   const out: Cutout[] = [];
   const voidNotes = dwg.texts.filter((t) => /\b(?:OPENING|VOID|LIFT|STAIR|SHAFT|DUCT|OTS)\b/i.test(t.text));
@@ -868,12 +883,15 @@ function extractCutouts(dwg: NormalizedDwg): Cutout[] {
     const explicitVoidLayer = CUTOUT_LAYERS.test(s1.layer) || CUTOUT_LAYERS.test(s2.layer);
     const labelledVoid = voidNotes.some((note) => note.pos.x >= b.x0 - 1500 && note.pos.x <= b.x1 + 1500
       && note.pos.y >= b.y0 - 1500 && note.pos.y <= b.y1 + 1500);
-    // Cross bracing, expansion-joint symbols and detail-table cells also form
-    // an X. They are not openings without explicit CAD evidence.
-    if (!explicitVoidLayer && !labelledVoid) continue;
     const areaM2 = (w * h) / 1e6;
+    // Small X symbols are normally bracing/detail graphics. Large unlabelled
+    // candidates are retained provisionally and accepted by assignCutouts only
+    // when fully contained in an explicit S-coded slab panel.
+    const inferredX = !explicitVoidLayer && !labelledVoid;
+    const aspect = w / h;
+    if (inferredX && (areaM2 < 1 || aspect < 0.25 || aspect > 4)) continue;
     const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
-    if (!out.some((o) => Math.hypot(o.cx - cx, o.cy - cy) < 1500)) out.push({ cx, cy, areaM2, box: b });
+    if (!out.some((o) => Math.hypot(o.cx - cx, o.cy - cy) < 1500)) out.push({ cx, cy, areaM2, box: b, inferredX });
   }
   return out;
 }

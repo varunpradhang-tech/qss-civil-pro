@@ -95,7 +95,14 @@ function slabSchedule(dwgs: NormalizedDwg[]): Map<string, number> {
       if (!inScheduleRegion) continue;
       const thickness = dwg.texts
         .filter((t) => Math.abs(t.pos.y - label.pos.y) <= 200 && t.pos.x > label.pos.x + 100 && t.pos.x < label.pos.x + 10000 && /^\d{2,4}$/.test(t.text.trim()))
-        .sort((a, b) => a.pos.x - b.pos.x)
+        // A schedule can have closely spaced rows (for example S1A at y=500
+        // and S6 at y=300). Prefer a value on the label's own row before
+        // considering its horizontal position, otherwise the preceding row's
+        // thickness can win merely because both values share the same x.
+        .sort((a, b) => {
+          const rowDistance = Math.abs(a.pos.y - label.pos.y) - Math.abs(b.pos.y - label.pos.y);
+          return rowDistance || a.pos.x - b.pos.x;
+        })
         .map((t) => Number(t.text.trim()))
         .find((n) => n >= 75 && n <= 500);
       if (thickness) schedule.set(code, thickness);

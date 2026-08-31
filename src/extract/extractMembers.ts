@@ -5,9 +5,9 @@ import { autoProposePanels } from './panels.js';
 import { emptyRow, type MemberRow } from '../takeoff/rules.js';
 import { round3 } from '../lib/num.js';
 
-// Parse "300X650" / "300x900" beam size text → { widthMm, depthMm }.
+// Parse common CAD beam-size notation: 300X650 / 300x900 / 300×600.
 function parseBeamSize(text: string): { widthMm: number; depthMm: number } | null {
-  const m = text.replace(/\s/g, '').match(/(\d{2,4})[xX](\d{2,4})/);
+  const m = text.replace(/\s/g, '').match(/(\d{2,4})[xX×](\d{2,4})/);
   return m ? { widthMm: +m[1], depthMm: +m[2] } : null;
 }
 
@@ -19,7 +19,7 @@ export function extractMembers(input: NormalizedDwg | NormalizedDwg[], workGroup
   const dwgs = Array.isArray(input) ? input : [input];
   const dwg = selectGeometrySheet(dwgs, workGroup);
   if (workGroup === 'slab') return slabMembers(dwg, floor, slabSchedule(dwgs), slabUnoThickness(dwgs));
-  if (workGroup === 'beam') return beamMembers(dwg, floor, beamSchedule(dwgs), slabSchedule(dwgs));
+  if (workGroup === 'beam') return beamMembers(dwg, floor, beamSchedule(dwgs), slabSchedule(dwgs), beamUnoSize(dwgs));
   return []; // column/raft/wall/floor: start empty, user adds (auto-extraction not reliable on this data)
 }
 
@@ -120,6 +120,29 @@ function slabUnoThickness(dwgs: NormalizedDwg[]): number | undefined {
   return undefined;
 }
 
+/** Read the drawing-wide default from a note such as
+ * "ALL BEAM SIZE SHALL BE 300X500 (U.N.O.)". */
+function beamUnoSize(dwgs: NormalizedDwg[]): { widthMm: number; depthMm: number } | undefined {
+  const parse = (text: string) => {
+    const normalized = text.replace(/\\P|\r?\n/g, ' ').replace(/\s+/g, ' ');
+    if (!/ALL\s+BEAM\s+SIZE/i.test(normalized) || !/U\s*\.?\s*N\s*\.?\s*O/i.test(normalized)) return undefined;
+    const match = normalized.match(/ALL\s+BEAM\s+SIZE[\s\S]{0,100}?(\d{2,4})\s*[xX×]\s*(\d{2,4})/i);
+    if (!match) return undefined;
+    const widthMm = Number(match[1]), depthMm = Number(match[2]);
+    return widthMm >= 150 && widthMm <= 1500 && depthMm >= 250 && depthMm <= 3000 ? { widthMm, depthMm } : undefined;
+  };
+  for (const dwg of dwgs) {
+    for (const note of dwg.texts) {
+      const size = parse(note.text);
+      if (size) return size;
+    }
+    // Some exports split a general note across multiple TEXT entities.
+    const size = parse(dwg.texts.map((t) => t.text).join(' '));
+    if (size) return size;
+  }
+  return undefined;
+}
+
 // --- slab: reuse the label-anchored panel proposer ---
 function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, number>, unoThickness?: number): MemberRow[] {
   const panels = autoProposePanels(dwg);
@@ -167,10 +190,14 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
 }
 
 // --- beam: group BEAM face segments into collinear runs (bridging support gaps), size from BEAM SIZE text ---
-function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { widthMm: number; depthMm: number }>, slabThicknesses: Map<string, number>): MemberRow[] {
+function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { widthMm: number; depthMm: number }>, slabThicknesses: Map<string, number>, unoSize?: { widthMm: number; depthMm: number }): MemberRow[] {
   const beams: Segment[] = dwg.segments.filter((s) => isBeamGeometryLayer(s.layer));
-  const sizeTexts = dwg.texts.filter((t) => /beam size/i.test(t.layer));
-  const noTexts = dwg.texts.filter((t) => isBeamNumberLayer(t.layer));
+  // Many consultants place sizes on generic TEXT layers. Accept only text that
+  // itself parses as a size; geometric proximity below still controls association.
+  const sizeTexts = dwg.texts.filter((t) => !!parseBeamSize(t.text));
+  // Beam marks are frequently placed on generic TEXT layers. The strict label
+  // grammar prevents notes and reinforcement text from becoming members.
+  const noTexts = dwg.texts.filter((t) => isBeamNumberLayer(t.layer) || !!beamLabel(t.text));
   const slabLabels = dwg.texts
     .filter((t) => /slab no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
     .map((t) => ({ ...t, code: t.text.replace(/\s/g, '').toUpperCase() }));
@@ -310,7 +337,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       const inlineSize = sizeForBeam(text.pos, beamDirection, beamCoord);
       // A size printed beside the actual framing-plan beam is the strongest
       // evidence. Use uploaded detail/schedule drawings only as fallback.
-      const size = inlineSize ?? schedule.get(label) ?? sizeByLabel.get(label);
+      const size = inlineSize ?? schedule.get(label) ?? sizeByLabel.get(label) ?? unoSize;
       const r = emptyRow(nextId(), floor);
       r.member = label;
       r.length = round3(lengthMm / 1000);
@@ -584,7 +611,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
   let n = 1;
   return runs.map((run) => {
     const mid: Pt = { x: (run.a.x + run.b.x) / 2, y: (run.a.y + run.b.y) / 2 };
-    const size = parseBeamSize(nearestText(mid, sizeTexts, 6000) ?? '');
+    const size = parseBeamSize(nearestText(mid, sizeTexts, 6000) ?? '') ?? unoSize;
     const label = nearestText(mid, noTexts, 4000);
     const r = emptyRow(nextId(), floor);
     r.member = label ?? `QB${n++}`;

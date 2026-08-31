@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import type { NormalizedDwg } from '../domain/types.js';
 import { MENU, RULES, emptyRow, type CapMode, type DrawingType, type MemberRow } from '../takeoff/rules.js';
-import { extractMembers } from '../extract/extractMembers.js';
+import { extractMembers, selectGeometrySheet } from '../extract/extractMembers.js';
+import { autoProposePanels } from '../extract/panels.js';
 import { deleteProject, getProject, listProjects, projectFromJson, projectToJson, saveProject, type StoredProject } from './persistence.js';
 
 export interface Sheet { id: string; name: string; dwg: NormalizedDwg; slabDimCount: number; sourceBytes?: ArrayBuffer; }
@@ -121,11 +122,19 @@ export const useStore = create<AppState>((set, get) => ({
     const sourceSummary = workGroup === 'beam'
       ? ` · marked dimensions: ${members.filter((m) => m.measurementSource === 'marked dimension').length} · drawing geometry: ${members.filter((m) => m.measurementSource === 'drawing geometry').length}`
       : '';
+    const diagnostic = members.length === 0 && workGroup === 'slab'
+      ? (() => {
+          const drawings = get().sheets.map((sheet) => sheet.dwg);
+          const selected = selectGeometrySheet(drawings, workGroup);
+          const proposals = autoProposePanels(selected);
+          return ` Selected ${selected.fileName}: ${selected.texts.length} texts, ${selected.segments.length} segments, ${selected.dimensions.length} dimensions, ${selected.polylines.length} polylines, ${selected.hatches.length} hatches, ${proposals.length} panel proposals.`;
+        })()
+      : '';
     set({
       members,
       status: members.length
         ? `Extracted ${members.length} ${workGroup} members for ${RULES[quantityKey].label}${sourceSummary}${flagged ? ` · ${flagged} need review` : ''}.`
-        : `No ${workGroup} members auto-extracted — add rows manually.`,
+        : `No ${workGroup} members auto-extracted — add rows manually.${diagnostic}`,
     });
     autosave(get);
   },

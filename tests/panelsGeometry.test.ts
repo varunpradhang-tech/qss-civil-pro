@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { autoProposePanels, detectClosedCantileverStrips, detectLongDottedSlabStrips, markDuplicates } from '../src/extract/panels.js';
-import { extractMembers } from '../src/extract/extractMembers.js';
+import { extractMembers, selectGeometrySheet } from '../src/extract/extractMembers.js';
 import type { NormalizedDwg } from '../src/domain/types.js';
 
 const drawing = (): NormalizedDwg => ({
@@ -94,6 +94,14 @@ describe('unmarked slab geometry', () => {
   it('selects the sheet with slab labels and RCC geometry instead of a dimension-heavy schedule', () => {
     const schedule = { ...drawing(), fileName: 'schedule.dwg', segments: [], texts: [], dimensions: Array.from({ length: 20 }, (_, i) => ({ layer: 'TABLE', measurement: 1000, dir: 'H' as const, mid: { x: i, y: 0 }, p1: { x: 0, y: 0 }, p2: { x: 1000, y: 0 } })) };
     expect(extractMembers([schedule, drawing()], 'slab')).toHaveLength(1);
+  });
+
+  it('prefers verified panel geometry over misleading plan wording on a detail sheet', () => {
+    const detail = { ...drawing(), fileName: 'slab-plan-detail.dwg', segments: [], polylines: [], hatches: [], texts: [
+      { layer: 'TITLE', text: 'SLAB STRUCTURAL PLAN DETAIL', pos: { x: 0, y: 0 } },
+    ] };
+    const framing = { ...drawing(), fileName: 'framing-sheet.dwg' };
+    expect(selectGeometrySheet([detail, framing], 'slab').fileName).toBe(framing.fileName);
   });
 
   it('reads slab thickness by slab mark from a separately drawn schedule', () => {

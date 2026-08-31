@@ -49,10 +49,14 @@ export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): N
       const boundaries = d.segments.filter((s) => /beam|wall|col|pardi|rcc/i.test(s.layer)).length
         + d.polylines.filter((p) => /beam|wall|col|pardi|rcc/i.test(p.layer)).length
         + d.hatches.filter((h) => /beam|wall|col|pardi|rcc/i.test(h.layer)).length;
+      // Prefer a sheet that actually yields bounded slab panels. Drawing titles
+      // vary between consultants, while schedules/details can still contain
+      // misleading words such as "slab" or "plan".
+      const proposals = autoProposePanels(d).length;
       // A schedule may contain hundreds of S1/S2 cells and table borders. It is
       // reference data, never the geometry source when a framing plan is present.
-      const roleScore = isPlan ? 10_000_000 : isScheduleOrDetail ? -10_000_000 : 0;
-      return roleScore + labels * 1000 + boundaries;
+      const roleScore = isScheduleOrDetail ? -10_000_000 : isPlan ? 1_000_000 : 0;
+      return proposals * 10_000_000 + roleScore + labels * 1000 + boundaries;
     };
     return score(b) - score(a);
   })[0];

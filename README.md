@@ -1,5 +1,7 @@
 # QSS Pro — rule-based quantity takeoff (web)
 
+Shared web/mobile processing architecture: [design/REMOTE_PROCESSING.md](design/REMOTE_PROCESSING.md). Remote processing is disabled by default and the existing local extraction engine remains the fallback.
+
 A browser reimplementation of the QSS Pro civil quantity-surveying app (reference:
 `varunpradhang-tech/qss-pro`), rebuilt on a modern web stack. Upload structural drawings, auto-extract
 members, and get IS-1200 quantities across the full member × rule matrix — as a deployable static app.

@@ -5,7 +5,7 @@ import {
   ArrowRight, Layers, Hash, ShieldCheck, Loader2, X, CheckCircle2,
 } from 'lucide-react';
 import { useStore, type Sheet } from '../state/store.js';
-import { parseInWorker } from '../workers/parseClient.js';
+import { parseDrawingsWithFallback } from '../workers/parseClient.js';
 import { MENU, RULES, RULE_FIELDS, FIELD_LABEL, type MemberRow } from '../takeoff/rules.js';
 import { downloadBlob } from '../export/download.js';
 import { membersToCsv } from '../export/mb.js';
@@ -85,12 +85,22 @@ export function ExtractPage() {
     s.setParsing(true);
     const out: Sheet[] = [];
     try {
-      for (const f of files) {
-        s.setStatus(`Parsing ${f.name}…`);
-        const sourceBytes = await f.arrayBuffer();
-        const dwg = await parseInWorker(sourceBytes, f.name, '/wasm');
-        out.push({ id: f.name, name: f.name, dwg, sourceBytes, slabDimCount: dwg.dimensions.filter((d) => /slabs no/i.test(d.layer)).length });
+      // Keep untouched source bytes for reference exports regardless of which
+      // parser is selected. Remote processing is disabled by default and
+      // automatically falls back to the existing local Web Worker.
+      const parsed = await parseDrawingsWithFallback(files, {
+        drawingType: s.drawingType, workGroup: s.workGroup, floor: s.defaultFloor,
+      }, s.setStatus);
+      const sources = new Map<string, ArrayBuffer>();
+      for (const file of files) sources.set(file.name, await file.arrayBuffer());
+      for (const dwg of parsed.drawings) {
+        const source = sources.get(dwg.fileName);
+        out.push({ id: dwg.fileName, name: dwg.fileName, dwg, sourceBytes: source,
+          slabDimCount: dwg.dimensions.filter((d) => /slabs no/i.test(d.layer)).length });
       }
+      s.setStatus(parsed.mode === 'remote'
+        ? `Processed ${out.length} drawing${out.length === 1 ? '' : 's'} with the QSS processing service.${parsed.warning ? ` ${parsed.warning}` : ''}`
+        : `Parsed ${out.length} drawing${out.length === 1 ? '' : 's'} with the verified local engine.`);
       s.setSheets(out);
     } catch (err) { s.setStatus(`Parse failed: ${(err as Error).message}`); } finally { s.setParsing(false); }
   }

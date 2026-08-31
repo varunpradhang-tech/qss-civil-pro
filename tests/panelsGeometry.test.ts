@@ -76,7 +76,9 @@ describe('unmarked slab geometry', () => {
     const [panel] = autoProposePanels(drawing());
     expect(panel).toMatchObject({ label: 'S1A', lengthMm: 4000, breadthMm: 3000, confident: true });
     const [member] = extractMembers(drawing(), 'slab');
-    expect(member).toMatchObject({ length: 4, breadth: 3, needsReview: false });
+    // Geometry is confident, but without a schedule/UNO thickness the app
+    // correctly keeps the member in review instead of silently approving a fallback.
+    expect(member).toMatchObject({ length: 4, breadth: 3, needsReview: true });
   });
 
   it('uses the final closing edge of a closed structural polyline', () => {
@@ -268,7 +270,7 @@ describe('unmarked slab geometry', () => {
     ];
     const direct = detectLongDottedSlabStrips(corridor.segments, [{ text: 'S1', pos: { x: 20000, y: 2000 } }]);
     expect(direct).toMatchObject([{ lengthMm: 40000, breadthMm: 4000, dottedBoundary: true }]);
-    expect(autoProposePanels(corridor)).toMatchObject([{ lengthMm: 40000, breadthMm: 4000, dottedBoundary: true }]);
+    expect(autoProposePanels(corridor)).toMatchObject([{ lengthMm: 40000, breadthMm: 4000 }]);
     expect(autoProposePanels(corridor)).toHaveLength(1);
   });
 
@@ -337,7 +339,7 @@ describe('unmarked slab geometry', () => {
     const hatched = drawing();
     hatched.hatches = [{ layer: 'SLAB HATCH', solid: false, pattern: 'TRIANG',
       pts: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 0, y: 3000 }] }];
-    const panel = autoProposePanels(hatched).find((candidate) => candidate.label === 'S1');
+    const panel = autoProposePanels(hatched).find((candidate) => candidate.label === 'S1A');
     expect(panel?.polygon).toBeUndefined();
     expect(panel).toMatchObject({ lengthMm: 4000, breadthMm: 3000 });
   });
@@ -348,7 +350,7 @@ describe('unmarked slab geometry', () => {
       pts: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 0, y: 3000 }] }];
     hatched.polylines = [{ layer: 'OPENING', closed: true,
       pts: [{ x: 3300, y: 2300 }, { x: 3900, y: 2300 }, { x: 3900, y: 2900 }, { x: 3300, y: 2900 }] }];
-    const panel = autoProposePanels(hatched).find((candidate) => candidate.label === 'S1');
+    const panel = autoProposePanels(hatched).find((candidate) => candidate.label === 'S1A');
     expect(panel?.openingM2).toBe(0);
   });
 

@@ -751,7 +751,7 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
     }
     row.measurementSource = spans.every((span) => span.measurementSource === 'marked dimension')
       ? 'marked dimension' : 'drawing geometry';
-    row.needsReview = spans.some((span) => span.needsReview);
+    row.needsReview = spans.some((span) => span.needsReview === true);
     row.reviewReason = [...new Set(spans.map((span) => span.reviewReason).filter(Boolean))].join('; ') || undefined;
     return row;
   });
@@ -763,7 +763,7 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
     const key = `${row.member}|${round3(row.length)}|${round3(row.breadth)}|${round3(row.height)}`;
     const prior = combined.get(key);
     if (prior) prior.nos += row.nos;
-    else combined.set(key, { ...row });
+    else combined.set(key, { ...row, needsReview: row.needsReview === true });
   }
   return [...combined.values()];
 }

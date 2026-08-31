@@ -39,14 +39,20 @@ function compareBeamLabels(a: string, b: string): number {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 }
 
-function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): NormalizedDwg {
+export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): NormalizedDwg {
   if (workGroup === 'slab') return [...dwgs].sort((a, b) => {
     const score = (d: NormalizedDwg) => {
+      const drawingText = `${d.fileName} ${d.texts.map((t) => t.text).join(' ')}`;
+      const isPlan = /(?:FRAMING|FORMWORK|STRUCTURAL|SLAB)\s+(?:LAYOUT|PLAN)|(?:LAYOUT|PLAN)\s+(?:AT|OF)?\s*\w*\s*(?:FLOOR|LEVEL)|FLOOR\s+(?:FRAMING|PLAN)/i.test(drawingText);
+      const isScheduleOrDetail = /SLAB\s+(?:REINFORCEMENT\s+)?SCHEDULE|BEAM\s+(?:DETAIL|SCHEDULE)|BAR\s+BENDING\s+SCHEDULE/i.test(drawingText);
       const labels = d.texts.filter((t) => /slabs?\s*no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, ''))).length;
       const boundaries = d.segments.filter((s) => /beam|wall|col|pardi|rcc/i.test(s.layer)).length
         + d.polylines.filter((p) => /beam|wall|col|pardi|rcc/i.test(p.layer)).length
         + d.hatches.filter((h) => /beam|wall|col|pardi|rcc/i.test(h.layer)).length;
-      return labels * 1000 + boundaries;
+      // A schedule may contain hundreds of S1/S2 cells and table borders. It is
+      // reference data, never the geometry source when a framing plan is present.
+      const roleScore = isPlan ? 10_000_000 : isScheduleOrDetail ? -10_000_000 : 0;
+      return roleScore + labels * 1000 + boundaries;
     };
     return score(b) - score(a);
   })[0];

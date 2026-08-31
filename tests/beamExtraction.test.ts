@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractMembers } from '../src/extract/extractMembers.js';
+import { extractMembers, selectGeometrySheet } from '../src/extract/extractMembers.js';
 import type { NormalizedDwg } from '../src/domain/types.js';
 
 const base = (fileName: string): NormalizedDwg => ({
@@ -8,6 +8,21 @@ const base = (fileName: string): NormalizedDwg => ({
 });
 
 describe('cross-sheet beam extraction', () => {
+  it('uses a framing plan for slab geometry and keeps a slab schedule as reference only', () => {
+    const plan = base('FIFTH FLOOR FRAMING PLAN.dwg');
+    plan.texts = [{ layer: 'TITLE', text: 'FRAMING PLAN AT FIFTH FLOOR LEVEL', pos: { x: 0, y: 0 } }];
+    const schedule = base('slab schedule.dwg');
+    schedule.texts = Array.from({ length: 50 }, (_, i) => ({
+      layer: 'SLABS NO', text: `S${i + 1}`, pos: { x: i * 100, y: 0 },
+    }));
+    schedule.texts.push({ layer: 'TITLE', text: 'SLAB REINFORCEMENT SCHEDULE', pos: { x: 0, y: 1000 } });
+    schedule.segments = Array.from({ length: 200 }, (_, i) => ({
+      layer: 'BEAM-TABLE', a: { x: i, y: 0 }, b: { x: i, y: 1000 },
+    }));
+
+    expect(selectGeometrySheet([schedule, plan], 'slab').fileName).toBe(plan.fileName);
+  });
+
   it('keeps every beam label and reads its size from a separate schedule drawing', () => {
     const plan = base('framing.dwg');
     plan.segments = [

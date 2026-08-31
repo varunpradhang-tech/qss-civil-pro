@@ -72,11 +72,19 @@ export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): N
 function beamSchedule(dwgs: NormalizedDwg[]): Map<string, { widthMm: number; depthMm: number }> {
   const schedule = new Map<string, { widthMm: number; depthMm: number }>();
   for (const dwg of dwgs) {
+    const titles = dwg.texts.filter((t) => /BEAM\s+(?:DETAILS?|SCHEDULE)/i.test(t.text));
     for (const labelText of dwg.texts) {
       const label = beamLabel(labelText.text);
-      if (!label || !/table|schedule/i.test(labelText.layer)) continue;
-      const numbers = dwg.texts
-        .filter((t) => t.layer === labelText.layer && Math.abs(t.pos.y - labelText.pos.y) <= 120 && t.pos.x > labelText.pos.x + 300 && t.pos.x < labelText.pos.x + 5000 && /^\d{2,4}$/.test(t.text.trim()))
+      const inScheduleRegion = /table|schedule/i.test(labelText.layer) || titles.some((title) =>
+        Math.abs(labelText.pos.x - title.pos.x) <= 60_000 && Math.abs(labelText.pos.y - title.pos.y) <= 30_000);
+      if (!label || !inScheduleRegion) continue;
+      const sameRow = dwg.texts
+        .filter((t) => Math.abs(t.pos.y - labelText.pos.y) <= 160
+          && Math.abs(t.pos.x - labelText.pos.x) <= 12_000 && t !== labelText);
+      const inline = sameRow.map((t) => parseBeamSize(t.text)).find(Boolean);
+      if (inline) { schedule.set(label, inline); continue; }
+      const numbers = sameRow
+        .filter((t) => /^\d{2,4}$/.test(t.text.trim()))
         .sort((a, b) => a.pos.x - b.pos.x)
         .map((t) => Number(t.text.trim()));
       const widthMm = numbers[0], depthMm = numbers[1];
@@ -94,11 +102,12 @@ function slabSchedule(dwgs: NormalizedDwg[]): Map<string, number> {
       const code = label.text.replace(/\s/g, '').toUpperCase();
       if (!/^S\d+[A-Z]?$/.test(code)) continue;
       const inScheduleRegion = /table|schedule/i.test(label.layer) || titles.some((title) =>
-        label.pos.x >= title.pos.x - 5000 && label.pos.x <= title.pos.x + 60000
-        && label.pos.y <= title.pos.y + 3000 && label.pos.y >= title.pos.y - 25000);
+        Math.abs(label.pos.x - title.pos.x) <= 60_000 && Math.abs(label.pos.y - title.pos.y) <= 30_000);
       if (!inScheduleRegion) continue;
       const thickness = dwg.texts
-        .filter((t) => Math.abs(t.pos.y - label.pos.y) <= 200 && t.pos.x > label.pos.x + 100 && t.pos.x < label.pos.x + 10000 && /^\d{2,4}$/.test(t.text.trim()))
+        .filter((t) => Math.abs(t.pos.y - label.pos.y) <= 200
+          && Math.abs(t.pos.x - label.pos.x) > 100 && Math.abs(t.pos.x - label.pos.x) < 15000
+          && /^\d{2,4}$/.test(t.text.trim()))
         // A schedule can have closely spaced rows (for example S1A at y=500
         // and S6 at y=300). Prefer a value on the label's own row before
         // considering its horizontal position, otherwise the preceding row's
@@ -173,6 +182,11 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     else rows.push({ y: cy, panels: [panel] });
   }
   const ordered = rows.sort((a, b) => b.y - a.y).flatMap((row) => row.panels.sort((a, b) => (a.box.x0 + a.box.x1) - (b.box.x0 + b.box.x1)));
+  // When the framing region contains no panel marks, S1 is the conventional
+  // drawing default if it is explicitly defined by the slab schedule. The
+  // schedule supplies classification/thickness only; it never supplies panel
+  // geometry, so table cells cannot become quantities.
+  const scheduleDefaultCode = schedule.has('S1') ? 'S1' : schedule.size === 1 ? schedule.keys().next().value as string : undefined;
   return ordered.map((p, i) => {
     const r = emptyRow(nextId(), floor);
     r.member = `P${i + 1}${p.label ? ` (${p.label})` : ''}`;
@@ -184,7 +198,9 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     r.cadY1 = p.box.y1;
     r.length = round3(p.lengthMm / 1000);
     r.breadth = round3(p.breadthMm / 1000);
-    const slabCode = (p.inferredSlabCode || p.label)?.replace(/\s/g, '').toUpperCase();
+    const explicitCode = (p.inferredSlabCode || p.label)?.replace(/\s/g, '').toUpperCase();
+    const slabCode = explicitCode && /^S\d+[A-Z]?$/.test(explicitCode) ? explicitCode : scheduleDefaultCode;
+    if (!p.label && slabCode) r.member = `P${i + 1} (${slabCode})`;
     const thicknessMm = p.thicknessMm || (slabCode ? schedule.get(slabCode) : undefined) || unoThickness || 175;
     const missingThickness = !p.thicknessMm && !(slabCode && schedule.has(slabCode)) && !unoThickness;
     r.height = round3(thicknessMm / 1000); // slab thickness → concrete depth

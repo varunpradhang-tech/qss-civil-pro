@@ -8,6 +8,35 @@ const base = (fileName: string): NormalizedDwg => ({
 });
 
 describe('cross-sheet beam extraction', () => {
+  it('uses schedules embedded in the same drawing without treating their rows as framing geometry', () => {
+    const combined = base('combined-framing-and-schedules.dwg');
+    combined.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 4000, y: 0 } },
+      { layer: 'BEAM', a: { x: 0, y: 3000 }, b: { x: 4000, y: 3000 } },
+      { layer: 'RCC WALL', a: { x: 0, y: 0 }, b: { x: 0, y: 3000 } },
+      { layer: 'RCC WALL', a: { x: 4000, y: 0 }, b: { x: 4000, y: 3000 } },
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 4000, y: 0 } },
+      { layer: 'BEAM', a: { x: 0, y: 300 }, b: { x: 4000, y: 300 } },
+    ];
+    combined.texts = [
+      { layer: 'TITLE', text: 'FRAMING PLAN AT FIFTH FLOOR LEVEL', pos: { x: 0, y: 5000 } },
+      { layer: 'TEXT', text: 'SLAB REINFORCEMENT SCHEDULE', pos: { x: 20000, y: 20000 } },
+      { layer: 'TEXT', text: 'S1', pos: { x: 20000, y: 18000 } },
+      { layer: 'TEXT', text: '150', pos: { x: 21500, y: 18000 } },
+      { layer: 'TEXT', text: 'BEAM SCHEDULE', pos: { x: 40000, y: 20000 } },
+      { layer: 'BEAM NO', text: 'B1', pos: { x: 2000, y: 150 } },
+      { layer: 'TEXT', text: 'B1', pos: { x: 40000, y: 18000 } },
+      { layer: 'TEXT', text: '300X600', pos: { x: 42000, y: 18000 } },
+    ];
+
+    expect(extractMembers(combined, 'slab')).toMatchObject([
+      { member: 'P1 (S1)', length: 4, breadth: 3, height: 0.15, needsReview: false },
+    ]);
+    expect(extractMembers(combined, 'beam')).toContainEqual(expect.objectContaining({
+      member: 'B1', breadth: 0.3, height: 0.6,
+    }));
+  });
+
   it('uses a framing plan for slab geometry and keeps a slab schedule as reference only', () => {
     const plan = base('FIFTH FLOOR FRAMING PLAN.dwg');
     plan.texts = [{ layer: 'TITLE', text: 'FRAMING PLAN AT FIFTH FLOOR LEVEL', pos: { x: 0, y: 0 } }];

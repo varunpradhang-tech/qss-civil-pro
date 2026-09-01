@@ -51,6 +51,9 @@ export interface ProcessingJobResult {
   extractionVersion: number;
 }
 
+// AI may be added behind the processing service using the review-only contract
+// in src/ai/contracts.ts. It must not return authoritative quantities.
+
 export interface ProcessingJobResponse {
   apiVersion: typeof PROCESSING_API_VERSION;
   jobId: string;
@@ -64,4 +67,3 @@ export interface ProcessingJobResponse {
 export function isCompletedProcessingJob(value: ProcessingJobResponse): value is ProcessingJobResponse & { status: 'completed'; result: ProcessingJobResult } {
   return value.apiVersion === PROCESSING_API_VERSION && value.status === 'completed' && !!value.result;
 }
-

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Upload, Plus, Copy, Trash2, Ruler, FileSpreadsheet, Info, Download,
   ArrowRight, Layers, Hash, ShieldCheck, Loader2, X, CheckCircle2,
+  BrainCircuit, AlertTriangle,
 } from 'lucide-react';
 import { useStore, type Sheet } from '../state/store.js';
 import { parseDrawingsWithFallback } from '../workers/parseClient.js';
@@ -350,6 +351,34 @@ export function ExtractPage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {!s.parsing && s.workGroup === 'slab' && s.aiReviewQueue.length > 0 && (
+        <section className="ai-review-panel" aria-labelledby="ai-review-title">
+          <div className="ai-review-heading">
+            <div>
+              <h3 id="ai-review-title"><BrainCircuit size={18} /> AI-assisted review queue</h3>
+              <p>Review-only safety mode. These items remain calculated by the deterministic rule engine; the buttons record review decisions and do not change quantity.</p>
+            </div>
+            <span>{s.aiReviewQueue.filter((record) => record.decision === 'pending').length} pending</span>
+          </div>
+          <div className="ai-review-list">
+            {s.aiReviewQueue.map((record) => (
+              <article key={record.proposal.id} className={`ai-review-item decision-${record.decision}`}>
+                <div>
+                  <strong>{s.members.find((member) => member.id === record.proposal.memberId)?.member || record.proposal.id}</strong>
+                  <span>Confidence {Math.round(record.proposal.confidence * 100)}% · {record.proposal.shape}{record.deterministicAreaM2 != null ? ` · ${record.deterministicAreaM2.toFixed(3)} m² verified geometry` : ''}</span>
+                  {record.proposal.evidence.map((evidence, index) => <small key={`${record.proposal.id}-${index}`}>{evidence.description} — {evidence.sourceFile}</small>)}
+                  {record.validationErrors.map((error) => <small className="ai-validation-error" key={error}><AlertTriangle size={12} /> {error}</small>)}
+                </div>
+                <div className="ai-review-actions">
+                  <button type="button" onClick={() => s.setAiReviewDecision(record.proposal.id, 'accepted')} disabled={record.validationErrors.length > 0}>Accept review</button>
+                  <button type="button" onClick={() => s.setAiReviewDecision(record.proposal.id, 'rejected')}>Reject review</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
       )}
 
       {!s.parsing && canDetail && s.outputType === 'floor' && (

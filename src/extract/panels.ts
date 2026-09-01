@@ -189,6 +189,44 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const box = { x0: left.x, y0: below.y, x1: right.x, y1: above.y };
     out.push({ label: L.text, box, lengthMm: sL.v, breadthMm: sB.v, openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: sL.ok && sB.ok && !expandedFromBeamFace, duplicate: false });
   }
+
+  // Some framing plans omit S1/S2 marks entirely and use ordinary (solid)
+  // beam/wall faces rather than HIDDEN lines. Recover only unequivocal closed
+  // mixed-RCC bays here. This fallback is deliberately disabled whenever a
+  // usable plan slab mark exists; the labelled and dotted-boundary passes stay
+  // authoritative for normal drawings.
+  if (!out.length && !labels.length && dwg.texts.some((text) => /\bFRAMING\s+PLAN\b/i.test(text.text))) {
+    const coversX = (h: typeof H[number], x0: number, x1: number) => h.x1 <= x0 + ALIGN_TOL && h.x2 >= x1 - ALIGN_TOL;
+    const coversY = (v: typeof V[number], y0: number, y1: number) => v.y1 <= y0 + ALIGN_TOL && v.y2 >= y1 - ALIGN_TOL;
+    const candidates: Array<{ box: { x0: number; y0: number; x1: number; y1: number }; area: number }> = [];
+    for (let li = 0; li < V.length; li++) for (let ri = li + 1; ri < V.length; ri++) {
+      const x0 = Math.min(V[li].x, V[ri].x), x1 = Math.max(V[li].x, V[ri].x);
+      if (x1 - x0 < 600) continue;
+      for (let bi = 0; bi < H.length; bi++) for (let ti = bi + 1; ti < H.length; ti++) {
+        const y0 = Math.min(H[bi].y, H[ti].y), y1 = Math.max(H[bi].y, H[ti].y);
+        if (y1 - y0 < 600 || !coversX(H[bi], x0, x1) || !coversX(H[ti], x0, x1)
+          || !coversY(V[li], y0, y1) || !coversY(V[ri], y0, y1)) continue;
+        const area = (x1 - x0) * (y1 - y0);
+        if (area / 1e6 <= 400) candidates.push({ box: { x0, y0, x1, y1 }, area });
+      }
+    }
+    const accepted: typeof candidates = [];
+    for (const candidate of candidates.sort((a, b) => b.area - a.area)) {
+      if (accepted.some((larger) => candidate.box.x0 >= larger.box.x0 - ALIGN_TOL
+        && candidate.box.y0 >= larger.box.y0 - ALIGN_TOL
+        && candidate.box.x1 <= larger.box.x1 + ALIGN_TOL
+        && candidate.box.y1 <= larger.box.y1 + ALIGN_TOL)) continue;
+      accepted.push(candidate);
+    }
+    accepted.forEach((candidate, index) => {
+      const centre = { x: (candidate.box.x0 + candidate.box.x1) / 2, y: (candidate.box.y0 + candidate.box.y1) / 2 };
+      if (excludedDetailPoint(centre)) return;
+      out.push({ label: `S${index + 1}`, box: candidate.box,
+        lengthMm: candidate.box.x1 - candidate.box.x0, breadthMm: candidate.box.y1 - candidate.box.y0,
+        openingM2: 0, thicknessMm: panelThickness(candidate.box, centre, thicknesses),
+        confident: true, duplicate: false });
+    });
+  }
   // Closed CAD faces are used only for additive exterior/cantilever evidence.
   // Never replace an already bounded S-labelled slab with a smaller face:
   // opening frames, bracing diagonals and detail lines can form closed
@@ -287,8 +325,12 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // Group nearby faces first, then retain the groups spatially associated
   // with a FRAMING PLAN title instead of applying project-specific limits.
   const framingTitles = dwg.texts.filter((text) => /\bFRAMING\s+PLAN\b/i.test(text.text));
+  // Match actual drawing headings only. Notes inside a plan such as
+  // "R/F SPACING AS PER SCHEDULE" must not classify that plan bay as a
+  // schedule/detail region.
   const detailTitles = dwg.texts.filter((text) => !/\bFRAMING\s+PLAN\b/i.test(text.text)
-    && /\b(?:SECTION|PROJECTION|ELEVATION|DETAIL|SCHEDULE)\b/i.test(text.text));
+    && (/^\s*(?:SECTION|SEC\.|PROJECTION|ELEVATION|DETAIL)\b/i.test(text.text)
+      || /^\s*(?:SLAB\s+|BEAM\s+)?(?:REINFORCEMENT\s+)?SCHEDULE\s*$/i.test(text.text)));
   const faceGroups: typeof allDottedFaces[] = [];
   type FaceBox = { x0: number; y0: number; x1: number; y1: number };
   const boxGap = (a: FaceBox, b: FaceBox) => Math.hypot(

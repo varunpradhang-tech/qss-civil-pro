@@ -66,6 +66,26 @@ describe('unmarked slab geometry', () => {
     ]));
   });
 
+  it('keeps unlabelled dotted plan bays but rejects closed section-detail loops', () => {
+    const sheet = drawing();
+    sheet.texts = [
+      { layer: 'TITLE', text: 'FRAMING PLAN AT THIRD FLOOR LVL.', pos: { x: 2000, y: -2000 } },
+      { layer: 'NOTE', text: 'R/F SPACING AS PER SCHEDULE', pos: { x: 2000, y: 1500 } },
+      { layer: 'TITLE', text: 'SECTION A-A', pos: { x: 2000, y: 20_000 } },
+      { layer: 'SLABS', text: 'S1', pos: { x: 2000, y: 21_500 } },
+    ];
+    const rectangle = (y: number) => [
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 0, y }, b: { x: 4000, y } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 4000, y }, b: { x: 4000, y: y + 3000 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 4000, y: y + 3000 }, b: { x: 0, y: y + 3000 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 0, y: y + 3000 }, b: { x: 0, y } },
+    ];
+    sheet.segments = [...rectangle(0), ...rectangle(20_000)];
+    const panels = autoProposePanels(sheet).filter((panel) => panel.dottedBoundary);
+    expect(panels).toHaveLength(1);
+    expect(panels[0]).toMatchObject({ box: { x0: 0, y0: 0, x1: 4000, y1: 3000 } });
+  });
+
   it('measures an S-labelled closed dotted right triangle as length times breadth divided by two', () => {
     const triangle = drawing();
     triangle.texts = [{ layer: 'SLABS NO', text: 'S1', pos: { x: 2800, y: 1800 } }];

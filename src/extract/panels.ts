@@ -105,9 +105,17 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const dims = dwg.dimensions.filter((d) => /slabs?\s*no/i.test(d.layer));
   const Hdims = dims.filter((d) => d.dir === 'H').map((d) => d.measurement);
   const Vdims = dims.filter((d) => d.dir === 'V').map((d) => d.measurement);
-  const sectionNotes = dwg.texts.filter((t) => /\b(?:SECTION|SEC\.)\s*[:\-–]*\s*\d+\s*[-–]\s*\d+/i.test(t.text));
-  const scheduleNotes = dwg.texts.filter((t) => /\b(?:SLAB\s+)?(?:REINFORCEMENT\s+)?SCHEDULE\b/i.test(t.text));
-  const excludedDetailPoint = (p: Pt) => sectionNotes.some((note) => Math.abs(note.pos.x - p.x) <= 30_000 && p.y >= note.pos.y - 2500 && p.y <= note.pos.y + 15_000)
+  const sectionNotes = dwg.texts.filter((t) => /^\s*(?:SECTION|SEC\.)\b/i.test(t.text));
+  // Only schedule headings define an excluded sheet region. Notes such as
+  // "spacing as per schedule" occur inside the framing plan and must not
+  // suppress the surrounding slab bays.
+  const scheduleNotes = dwg.texts.filter((t) => /^\s*(?:SLAB\s+)?(?:REINFORCEMENT\s+)?SCHEDULE\s*$/i.test(t.text));
+  const excludedDetailPoint = (p: Pt) => sectionNotes.some((note) =>
+    // Section views are normally arranged as full sheet rows. A candidate in
+    // the same narrow Y band is a detail even when it is far from the title
+    // horizontally; the wider local window also covers stacked sections.
+    Math.abs(note.pos.y - p.y) <= 8_000
+    || (Math.abs(note.pos.x - p.x) <= 70_000 && Math.abs(note.pos.y - p.y) <= 20_000))
     || scheduleNotes.some((note) => Math.abs(note.pos.x - p.x) <= 60_000 && p.y >= note.pos.y - 25_000 && p.y <= note.pos.y + 3000);
   const labels = dwg.texts
     .filter((t) => /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
@@ -269,10 +277,48 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // Add a second pass after joining only collinear dotted BEAM fragments.
   const mergedDottedBeamSegments = mergeAxisBeamSegments(dottedBeamSegments)
     .filter((segment) => /hidden/i.test(segment.lineType || ''));
-  const dottedFaces = [
+  const allDottedFaces = [
     ...polygoniseCadFaces(dottedBeamSegments, 300),
     ...polygoniseCadFaces(mergedDottedBeamSegments, 300),
   ];
+  // A sheet can contain the framing plan, beam/slab schedules and several
+  // sections. Closed HIDDEN loops are meaningful only in the framing-plan
+  // region; the same line type is also used in projection/section details.
+  // Group nearby faces first, then retain the groups spatially associated
+  // with a FRAMING PLAN title instead of applying project-specific limits.
+  const framingTitles = dwg.texts.filter((text) => /\bFRAMING\s+PLAN\b/i.test(text.text));
+  const detailTitles = dwg.texts.filter((text) => !/\bFRAMING\s+PLAN\b/i.test(text.text)
+    && /\b(?:SECTION|PROJECTION|ELEVATION|DETAIL|SCHEDULE)\b/i.test(text.text));
+  const faceGroups: typeof allDottedFaces[] = [];
+  type FaceBox = { x0: number; y0: number; x1: number; y1: number };
+  const boxGap = (a: FaceBox, b: FaceBox) => Math.hypot(
+    Math.max(0, a.x0 - b.x1, b.x0 - a.x1),
+    Math.max(0, a.y0 - b.y1, b.y0 - a.y1));
+  for (const face of allDottedFaces) {
+    const touching = faceGroups.filter((group) => group.some((other) => boxGap(face.box, other.box) <= 15_000));
+    if (!touching.length) faceGroups.push([face]);
+    else {
+      const target = touching[0]; target.push(face);
+      for (const extra of touching.slice(1)) {
+        target.push(...extra); faceGroups.splice(faceGroups.indexOf(extra), 1);
+      }
+    }
+  }
+  const pointBoxDistance = (point: Pt, box: FaceBox) => Math.hypot(
+    Math.max(0, box.x0 - point.x, point.x - box.x1),
+    Math.max(0, box.y0 - point.y, point.y - box.y1));
+  const dottedFaces = !framingTitles.length ? allDottedFaces : faceGroups
+    .filter((group) => {
+      const box = group.reduce((acc, face) => ({
+        x0: Math.min(acc.x0, face.box.x0), y0: Math.min(acc.y0, face.box.y0),
+        x1: Math.max(acc.x1, face.box.x1), y1: Math.max(acc.y1, face.box.y1),
+      }), { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+      const planDistance = Math.min(...framingTitles.map((title) => pointBoxDistance(title.pos, box)));
+      const detailDistance = detailTitles.length
+        ? Math.min(...detailTitles.map((title) => pointBoxDistance(title.pos, box))) : Infinity;
+      return planDistance <= detailDistance;
+    })
+    .flat();
   for (const face of dottedFaces) {
     const shape = simplifyCollinearPolygon(face.polygon);
     const width = face.box.x1 - face.box.x0, height = face.box.y1 - face.box.y0;
@@ -281,6 +327,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     if (holdNotes.some((note) => pointInPolygon(note.pos, face.polygon))) continue;
     if (markEnvelope && (centre.x < markEnvelope.minX - 3000 || centre.x > markEnvelope.maxX + 3000
       || centre.y < markEnvelope.minY - 3000 || centre.y > markEnvelope.maxY + 3000)) continue;
+    // Apply sheet-region exclusion before consulting raw S marks. Section and
+    // schedule details often repeat S1/S2 text inside perfectly closed loops;
+    // that text describes the detail and must not turn it into a plan panel.
+    if (excludedDetailPoint(centre)) continue;
     const containedLabel = labels.find((label) => pointInPolygon(label.pos, shape))
       || rawSlabMarks.find((label) => pointInPolygon(label.pos, shape));
     if (containedLabel) {
@@ -303,7 +353,6 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       }
       continue;
     }
-    if (excludedDetailPoint(centre)) continue;
     // The face must occupy previously unmeasured space. Boundary contact is
     // harmless, but material overlap would create a second panel.
     if (out.some((panel) => polygonRectIntersectionArea(face.polygon, panel.box) / 1e6 > face.areaM2 * 0.1)) continue;
@@ -669,6 +718,13 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // outside the current measurable scope. Exclude it before deductions,
   // numbering, Excel export, totals, and reference-file marking.
   const measurable = out.filter((panel) => {
+    const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+    // Final sheet-level safeguard: later recovery passes (hatches, mixed
+    // cantilever faces and closed-strip detection) must not re-introduce a
+    // section, projection or schedule cell that the primary plan pass
+    // correctly rejected. This is intentionally independent of S1/S2 text;
+    // detail drawings often repeat those marks.
+    if (excludedDetailPoint(centre)) return false;
     const grossM2 = (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
     const verifiedLongSlab = /^S\d+[A-Z]?$|^CANTILEVER$|^SLAB STRIP$|^HATCH-SLAB$/i.test(panel.label || '');
     const maxSpan = verifiedLongSlab ? Infinity : 30_000;

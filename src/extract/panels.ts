@@ -111,12 +111,12 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // suppress the surrounding slab bays.
   const scheduleNotes = dwg.texts.filter((t) => /^\s*(?:SLAB\s+)?(?:REINFORCEMENT\s+)?SCHEDULE\s*$/i.test(t.text));
   const excludedDetailPoint = (p: Pt) => sectionNotes.some((note) =>
-    // Section views are normally arranged as full sheet rows. A candidate in
-    // the same narrow Y band is a detail even when it is far from the title
-    // horizontally; the wider local window also covers stacked sections.
-    Math.abs(note.pos.y - p.y) <= 8_000
-    || (Math.abs(note.pos.x - p.x) <= 70_000 && Math.abs(note.pos.y - p.y) <= 20_000))
-    || scheduleNotes.some((note) => Math.abs(note.pos.x - p.x) <= 60_000 && p.y >= note.pos.y - 25_000 && p.y <= note.pos.y + 3000);
+    // A title excludes only its local detail block. Treating an entire sheet
+    // row (or a 60 m schedule window) as non-plan geometry can suppress a
+    // genuine framing bay positioned elsewhere on the same combined sheet.
+    Math.abs(note.pos.x - p.x) <= 12_000 && Math.abs(note.pos.y - p.y) <= 8_000)
+    || scheduleNotes.some((note) => Math.abs(note.pos.x - p.x) <= 15_000
+      && p.y >= note.pos.y - 15_000 && p.y <= note.pos.y + 3_000);
   const labels = dwg.texts
     .filter((t) => /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
     .filter((t) => !excludedDetailPoint(t.pos))

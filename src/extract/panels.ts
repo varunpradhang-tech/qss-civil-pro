@@ -116,7 +116,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const dims = dwg.dimensions.filter((d) => /slabs?\s*no/i.test(d.layer));
   const Hdims = dims.filter((d) => d.dir === 'H').map((d) => d.measurement);
   const Vdims = dims.filter((d) => d.dir === 'V').map((d) => d.measurement);
-  const sectionNotes = dwg.texts.filter((t) => /^\s*(?:SECTION|SEC\.)\b/i.test(t.text));
+  const sectionNotes = dwg.texts.filter((t) => /^\s*(?:SECTION|SEC\.|PROJECTION|ELEVATION|DETAIL)\b/i.test(t.text));
   // Only schedule headings define an excluded sheet region. Notes such as
   // "spacing as per schedule" occur inside the framing plan and must not
   // suppress the surrounding slab bays.
@@ -421,6 +421,11 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     if (out.some((panel) => polygonRectIntersectionArea(face.polygon, panel.box) / 1e6 > face.areaM2 * 0.1)) continue;
     const bboxArea = boxArea(face.box) / 1e6;
     const irregular = face.areaM2 < bboxArea * 0.985;
+    // Four hidden beam faces enclosing a room make a rectangular bay. A
+    // narrow H/U-shaped closed loop instead follows the beam *material*
+    // around several bays (rather than the slab inside one bay). Without an
+    // actual slab mark, never promote that irregular loop to a quantity.
+    if (irregular) continue;
     out.push({ label: inferredSlabCode, box: face.box,
       polygon: irregular ? shape : undefined,
       netAreaM2: irregular ? face.areaM2 : undefined,

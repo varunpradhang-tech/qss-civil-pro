@@ -78,6 +78,33 @@ describe('unmarked slab geometry', () => {
     ]));
   });
 
+  it('does not measure an unlabelled H-shaped beam-face loop as a slab', () => {
+    const plan = drawing();
+    plan.texts = [{ layer: 'TITLE', text: 'THIRD FLOOR FRAMING PLAN', pos: { x: 0, y: -2000 } }];
+    const polygon = [
+      [0, 0], [8250, 0], [8250, 450], [4275, 450],
+      [4275, 5550], [3975, 5550], [3975, 450], [0, 450],
+    ];
+    plan.segments = polygon.map(([x, y], index) => {
+      const [nx, ny] = polygon[(index + 1) % polygon.length];
+      return { layer: 'BEAM', lineType: 'HIDDEN', a: { x, y }, b: { x: nx, y: ny } };
+    });
+    expect(autoProposePanels(plan)).toHaveLength(0);
+  });
+
+  it('prefers a sparse framing plan over a detail sheet with many closed loops', () => {
+    const plan = drawing();
+    plan.texts.push({ layer: 'TITLE', text: 'THIRD FLOOR FRAMING PLAN', pos: { x: 0, y: -2000 } });
+    const detail = drawing();
+    detail.fileName = 'slab-schedule.dwg';
+    detail.texts = [{ layer: 'TITLE', text: 'SLAB REINFORCEMENT SCHEDULE', pos: { x: 0, y: 5000 } }];
+    detail.segments = Array.from({ length: 15 }, (_, index) => drawing().segments.map((segment) => ({
+      ...segment, a: { x: segment.a.x + index * 5000, y: segment.a.y },
+      b: { x: segment.b.x + index * 5000, y: segment.b.y },
+    }))).flat();
+    expect(selectGeometrySheet([detail, plan], 'slab').fileName).toBe(plan.fileName);
+  });
+
   it('recovers a long unmarked exterior slab strip only beside measured bays', () => {
     const plan = drawing();
     plan.texts = Array.from({ length: 5 }, (_, i) => ({
@@ -119,6 +146,24 @@ describe('unmarked slab geometry', () => {
     const panels = autoProposePanels(sheet).filter((panel) => panel.dottedBoundary);
     expect(panels).toHaveLength(1);
     expect(panels[0]).toMatchObject({ box: { x0: 0, y0: 0, x1: 4000, y1: 3000 } });
+  });
+
+  it('keeps a framing bay but rejects a projection detail on the same drawing', () => {
+    const sheet = drawing();
+    sheet.texts = [
+      { layer: 'TITLE', text: 'THIRD FLOOR FRAMING PLAN', pos: { x: 2000, y: -2000 } },
+      { layer: 'TITLE', text: 'PROJECTION DETAIL', pos: { x: 2000, y: 20000 } },
+    ];
+    const rectangle = (y: number) => [
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 0, y }, b: { x: 4000, y } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 4000, y }, b: { x: 4000, y: y + 3000 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 4000, y: y + 3000 }, b: { x: 0, y: y + 3000 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 0, y: y + 3000 }, b: { x: 0, y } },
+    ];
+    sheet.segments = [...rectangle(0), ...rectangle(20000)];
+    expect(autoProposePanels(sheet).filter((panel) => panel.dottedBoundary)).toMatchObject([
+      { box: { x0: 0, y0: 0, x1: 4000, y1: 3000 } },
+    ]);
   });
 
   it('measures an S-labelled closed dotted right triangle as length times breadth divided by two', () => {

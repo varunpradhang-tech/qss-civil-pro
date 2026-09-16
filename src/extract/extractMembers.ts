@@ -55,8 +55,11 @@ export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): N
       const proposals = autoProposePanels(d).length;
       // A schedule may contain hundreds of S1/S2 cells and table borders. It is
       // reference data, never the geometry source when a framing plan is present.
-      const roleScore = isScheduleOrDetail ? -10_000_000 : isPlan ? 1_000_000 : 0;
-      return proposals * 10_000_000 + roleScore + labels * 1000 + boundaries;
+      // Sheet role must outrank the number of closed loops: a dense schedule
+      // or section can otherwise beat a sparse but genuine framing plan.
+      // A combined plan/schedule sheet remains a plan geometry source.
+      const roleScore = isPlan ? 1_000_000_000 : isScheduleOrDetail ? -1_000_000_000 : 0;
+      return roleScore + Math.min(proposals, 1000) * 100_000 + labels * 1000 + boundaries;
     };
     return score(b) - score(a);
   })[0];

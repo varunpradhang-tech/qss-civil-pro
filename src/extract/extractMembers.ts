@@ -42,9 +42,15 @@ function compareBeamLabels(a: string, b: string): number {
 export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): NormalizedDwg {
   if (workGroup === 'slab') return [...dwgs].sort((a, b) => {
     const score = (d: NormalizedDwg) => {
-      const drawingText = `${d.fileName} ${d.texts.map((t) => t.text).join(' ')}`;
-      const isPlan = /(?:FRAMING|FORMWORK|STRUCTURAL|SLAB)\s+(?:LAYOUT|PLAN)|(?:LAYOUT|PLAN)\s+(?:AT|OF)?\s*\w*\s*(?:FLOOR|LEVEL)|FLOOR\s+(?:FRAMING|PLAN)/i.test(drawingText);
-      const isScheduleOrDetail = /SLAB\s+(?:REINFORCEMENT\s+)?SCHEDULE|BEAM\s+(?:DETAIL|SCHEDULE)|BAR\s+BENDING\s+SCHEDULE/i.test(drawingText);
+      const planWording = /(?:FRAMING|FORMWORK|STRUCTURAL|SLAB)\s+(?:LAYOUT|PLAN)|(?:LAYOUT|PLAN)\s+(?:AT|OF)?\s*\w*\s*(?:FLOOR|LEVEL)|FLOOR\s+(?:FRAMING|PLAN)/i;
+      const detailWording = /\b(?:DETAILS?|SECTIONS?|PROJECTION|ELEVATION|SCHEDULE)\b/i;
+      // Read drawing headings separately from the filename. A filename or
+      // detail heading such as "slab-plan-detail" must not outrank a sheet
+      // with actual bounded framing geometry.
+      const planTitle = d.texts.some((t) => planWording.test(t.text) && !detailWording.test(t.text));
+      const filenamePlan = planWording.test(d.fileName) && !detailWording.test(d.fileName);
+      const isScheduleOrDetail = detailWording.test(d.fileName)
+        || d.texts.some((t) => detailWording.test(t.text));
       const labels = d.texts.filter((t) => /slabs?\s*no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, ''))).length;
       const boundaries = d.segments.filter((s) => /beam|wall|col|pardi|rcc/i.test(s.layer)).length
         + d.polylines.filter((p) => /beam|wall|col|pardi|rcc/i.test(p.layer)).length
@@ -58,7 +64,8 @@ export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): N
       // Sheet role must outrank the number of closed loops: a dense schedule
       // or section can otherwise beat a sparse but genuine framing plan.
       // A combined plan/schedule sheet remains a plan geometry source.
-      const roleScore = isPlan ? 1_000_000_000 : isScheduleOrDetail ? -1_000_000_000 : 0;
+      const roleScore = planTitle ? 1_000_000_000 : isScheduleOrDetail ? -1_000_000_000
+        : filenamePlan ? 500_000_000 : 0;
       return roleScore + Math.min(proposals, 1000) * 100_000 + labels * 1000 + boundaries;
     };
     return score(b) - score(a);

@@ -222,6 +222,19 @@ describe('unmarked slab geometry', () => {
     expect(selectGeometrySheet([detail, framing], 'slab').fileName).toBe(framing.fileName);
   });
 
+  it('uses a real plan heading on a combined plan and schedule sheet', () => {
+    const combined = drawing();
+    combined.fileName = 'third-floor-combined-detail.dwg';
+    combined.texts.push(
+      { layer: 'TITLE', text: 'THIRD FLOOR FRAMING PLAN', pos: { x: 0, y: -2000 } },
+      { layer: 'TITLE', text: 'SLAB REINFORCEMENT SCHEDULE', pos: { x: 50000, y: 5000 } },
+    );
+    const schedule = { ...drawing(), fileName: 'slab-schedule.dwg', segments: [], texts: [
+      { layer: 'TITLE', text: 'SLAB REINFORCEMENT SCHEDULE', pos: { x: 0, y: 5000 } },
+    ] };
+    expect(selectGeometrySheet([schedule, combined], 'slab').fileName).toBe(combined.fileName);
+  });
+
   it('reads slab thickness by slab mark from a separately drawn schedule', () => {
     const schedule = { ...drawing(), fileName: 'schedule.dwg', segments: [], dimensions: [], texts: [
       { layer: 'TEXT', text: 'SLAB REINFORCEMENT SCHEDULE', pos: { x: 0, y: 5000 } },

@@ -196,16 +196,26 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // usable plan slab mark exists; the labelled and dotted-boundary passes stay
   // authoritative for normal drawings.
   if (!out.length && !labels.length && dwg.texts.some((text) => /\bFRAMING\s+PLAN\b/i.test(text.text))) {
+    // Dotted beam faces have their own topology-based pass below. Taking them
+    // here would create an unflagged panel and suppress that pass as overlap.
+    const solidH = segs.filter((segment) => !/dash|hidden/i.test(segment.lineType || '')
+      && Math.abs(segment.a.y - segment.b.y) < ALIGN_TOL)
+      .map((segment) => ({ y: (segment.a.y + segment.b.y) / 2,
+        x1: Math.min(segment.a.x, segment.b.x), x2: Math.max(segment.a.x, segment.b.x) }));
+    const solidV = segs.filter((segment) => !/dash|hidden/i.test(segment.lineType || '')
+      && Math.abs(segment.a.x - segment.b.x) < ALIGN_TOL)
+      .map((segment) => ({ x: (segment.a.x + segment.b.x) / 2,
+        y1: Math.min(segment.a.y, segment.b.y), y2: Math.max(segment.a.y, segment.b.y) }));
     const coversX = (h: typeof H[number], x0: number, x1: number) => h.x1 <= x0 + ALIGN_TOL && h.x2 >= x1 - ALIGN_TOL;
     const coversY = (v: typeof V[number], y0: number, y1: number) => v.y1 <= y0 + ALIGN_TOL && v.y2 >= y1 - ALIGN_TOL;
     const candidates: Array<{ box: { x0: number; y0: number; x1: number; y1: number }; area: number }> = [];
-    for (let li = 0; li < V.length; li++) for (let ri = li + 1; ri < V.length; ri++) {
-      const x0 = Math.min(V[li].x, V[ri].x), x1 = Math.max(V[li].x, V[ri].x);
+    for (let li = 0; li < solidV.length; li++) for (let ri = li + 1; ri < solidV.length; ri++) {
+      const x0 = Math.min(solidV[li].x, solidV[ri].x), x1 = Math.max(solidV[li].x, solidV[ri].x);
       if (x1 - x0 < 600) continue;
-      for (let bi = 0; bi < H.length; bi++) for (let ti = bi + 1; ti < H.length; ti++) {
-        const y0 = Math.min(H[bi].y, H[ti].y), y1 = Math.max(H[bi].y, H[ti].y);
-        if (y1 - y0 < 600 || !coversX(H[bi], x0, x1) || !coversX(H[ti], x0, x1)
-          || !coversY(V[li], y0, y1) || !coversY(V[ri], y0, y1)) continue;
+      for (let bi = 0; bi < solidH.length; bi++) for (let ti = bi + 1; ti < solidH.length; ti++) {
+        const y0 = Math.min(solidH[bi].y, solidH[ti].y), y1 = Math.max(solidH[bi].y, solidH[ti].y);
+        if (y1 - y0 < 600 || !coversX(solidH[bi], x0, x1) || !coversX(solidH[ti], x0, x1)
+          || !coversY(solidV[li], y0, y1) || !coversY(solidV[ri], y0, y1)) continue;
         const area = (x1 - x0) * (y1 - y0);
         if (area / 1e6 <= 400) candidates.push({ box: { x0, y0, x1, y1 }, area });
       }

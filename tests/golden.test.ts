@@ -69,11 +69,12 @@ describe('member extraction → rule engine (app path)', () => {
     expect(total).toBeLessThan(TRUE_TOTAL_M2 * 1.005);
   }, 30000);
 
-  it('beam members auto-extract and compute both shuttering and concrete', async () => {
+  it('beam members without a size remain review-only instead of inventing quantities', async () => {
     const dwg = await parseDwg(new Uint8Array(readFileSync(FILE)), 'ST-300', { wasmPath: WASM });
     const members = extractMembers(dwg, 'beam');
     expect(members.length).toBeGreaterThan(10);
-    expect(members.reduce((a, m) => a + RULES.beam_shuttering.calculate(m, 'excluded'), 0)).toBeGreaterThan(0);
-    expect(members.reduce((a, m) => a + RULES.beam_concrete.calculate(m, 'excluded'), 0)).toBeGreaterThan(0);
+    expect(members.every((m) => m.needsReview && m.breadth === 0 && m.height === 0)).toBe(true);
+    expect(members.reduce((a, m) => a + RULES.beam_shuttering.calculate(m, 'excluded'), 0)).toBe(0);
+    expect(members.reduce((a, m) => a + RULES.beam_concrete.calculate(m, 'excluded'), 0)).toBe(0);
   }, 30000);
 });

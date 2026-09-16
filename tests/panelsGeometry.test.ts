@@ -34,6 +34,18 @@ describe('unmarked slab geometry', () => {
       && panel.box.x1 === 11550 && panel.box.y1 === 19245)).toBe(false);
   });
 
+  it('does not use a sheet-wide column grid line to close a blank exterior bay', () => {
+    const blank = drawing();
+    blank.texts = [{ layer: 'SLAB MARK1', text: 'S10', pos: { x: 4500, y: 15000 } }];
+    blank.segments = [
+      { layer: 'COL-1', a: { x: -100000, y: 0 }, b: { x: 100000, y: 0 } },
+      { layer: 'BEAM', a: { x: 0, y: 19245 }, b: { x: 11550, y: 19245 } },
+      { layer: 'BEAM', a: { x: 0, y: 10000 }, b: { x: 0, y: 19245 } },
+      { layer: 'BEAM', a: { x: 11550, y: 10000 }, b: { x: 11550, y: 19245 } },
+    ];
+    expect(autoProposePanels(blank)).toHaveLength(0);
+  });
+
   it('measures an unlabelled closed panel bounded on every side by dotted beam faces', () => {
     const dotted = drawing();
     dotted.texts = [];
@@ -64,6 +76,29 @@ describe('unmarked slab geometry', () => {
     expect(autoProposePanels(dotted)).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: 'S1', lengthMm: 4000, breadthMm: 3000, dottedBoundary: true }),
     ]));
+  });
+
+  it('recovers a long unmarked exterior slab strip only beside measured bays', () => {
+    const plan = drawing();
+    plan.texts = Array.from({ length: 5 }, (_, i) => ({
+      layer: 'SLABS NO', text: 'S1', pos: { x: 8000 + i * 16000, y: -2800 },
+    }));
+    plan.segments = [
+      { layer: 'BEAM', lineType: 'CONTINUOUS', a: { x: 0, y: 1500 }, b: { x: 80000, y: 1500 } },
+      { layer: 'BEAM', lineType: 'CONTINUOUS', a: { x: 0, y: 0 }, b: { x: 0, y: 1500 } },
+      { layer: 'BEAM', lineType: 'CONTINUOUS', a: { x: 80000, y: 0 }, b: { x: 80000, y: 1500 } },
+      ...Array.from({ length: 5 }, (_, i) => ({ layer: 'BEAM', lineType: 'HIDDEN',
+        a: { x: i * 16000, y: 0 }, b: { x: i === 4 ? 80000 : i * 16000 + 15500, y: 0 } })),
+      ...Array.from({ length: 5 }, (_, i) => [
+        { layer: 'BEAM', a: { x: i * 16000, y: -450 }, b: { x: (i + 1) * 16000, y: -450 } },
+        { layer: 'BEAM', a: { x: i * 16000, y: -5000 }, b: { x: (i + 1) * 16000, y: -5000 } },
+        { layer: 'BEAM', a: { x: i * 16000, y: -5000 }, b: { x: i * 16000, y: -450 } },
+        { layer: 'BEAM', a: { x: (i + 1) * 16000, y: -5000 }, b: { x: (i + 1) * 16000, y: -450 } },
+      ]).flat(),
+    ];
+    expect(autoProposePanels(plan)).toContainEqual(expect.objectContaining({
+      label: 'SLAB STRIP', lengthMm: 80000, breadthMm: 1500, confident: false,
+    }));
   });
 
   it('keeps unlabelled dotted plan bays but rejects closed section-detail loops', () => {

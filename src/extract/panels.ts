@@ -81,6 +81,11 @@ const CUTOUT_LAYERS = /cut|open|void|shaft|lift|duct|ots/i;
 const NON_STRUCTURAL_BOUNDARY_LAYERS = /grid|axis|centre|center|dim|dimension|annot|text|title|schedule|section|cut|open|void|shaft|lift|duct|ots/i;
 const isStructuralBoundaryLayer = (layer: string) => BOUND_LAYERS.test(layer)
   && !NON_STRUCTURAL_BOUNDARY_LAYERS.test(layer);
+// Some CAD sheets draw a column grid on a layer such as COL-1 without naming
+// it GRID. A line spanning most of the sheet is not a local column/slab face.
+const isStructuralBoundarySegment = (segment: Segment) => isStructuralBoundaryLayer(segment.layer)
+  && !(/col/i.test(segment.layer)
+    && Math.hypot(segment.b.x - segment.a.x, segment.b.y - segment.a.y) > 50_000);
 const ALIGN_TOL = 200;
 
 export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
@@ -89,10 +94,16 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     for (let i = 0; i < pl.pts.length - 1; i++) allSegs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer, lineType: pl.lineType });
     if (pl.closed && pl.pts.length > 2) allSegs.push({ a: pl.pts[pl.pts.length - 1], b: pl.pts[0], layer: pl.layer, lineType: pl.lineType });
   }
-  const segs: Segment[] = [...dwg.segments.filter((s) => isStructuralBoundaryLayer(s.layer))];
+  const segs: Segment[] = [...dwg.segments.filter(isStructuralBoundarySegment)];
   for (const pl of dwg.polylines.filter((p) => isStructuralBoundaryLayer(p.layer))) {
-    for (let i = 0; i < pl.pts.length - 1; i++) segs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer, lineType: pl.lineType });
-    if (pl.closed && pl.pts.length > 2) segs.push({ a: pl.pts[pl.pts.length - 1], b: pl.pts[0], layer: pl.layer, lineType: pl.lineType });
+    for (let i = 0; i < pl.pts.length - 1; i++) {
+      const segment = { a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer, lineType: pl.lineType };
+      if (isStructuralBoundarySegment(segment)) segs.push(segment);
+    }
+    if (pl.closed && pl.pts.length > 2) {
+      const segment = { a: pl.pts[pl.pts.length - 1], b: pl.pts[0], layer: pl.layer, lineType: pl.lineType };
+      if (isStructuralBoundarySegment(segment)) segs.push(segment);
+    }
   }
   for (const hatch of dwg.hatches.filter((h) => isStructuralBoundaryLayer(h.layer)))
     for (let i = 0; i < hatch.pts.length; i++) segs.push({ a: hatch.pts[i], b: hatch.pts[(i + 1) % hatch.pts.length], layer: hatch.layer });
@@ -241,7 +252,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // Never replace an already bounded S-labelled slab with a smaller face:
   // opening frames, bracing diagonals and detail lines can form closed
   // quadrilaterals inside an otherwise complete rectangular slab panel.
-  const topologySegments = allSegs.filter((segment) => isStructuralBoundaryLayer(segment.layer)
+  const topologySegments = allSegs.filter((segment) => isStructuralBoundarySegment(segment)
     || /slab|chajja|edge/i.test(segment.layer) || /^A-PLNT$/i.test(segment.layer));
   const topologyFaces = polygoniseCadFaces(topologySegments);
   // Some consultants place the outer structural/free edge on A-STRS or layer
@@ -635,6 +646,19 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const longSide = Math.max(panel.lengthMm, panel.breadthMm);
     const shortSide = Math.min(panel.lengthMm, panel.breadthMm);
     const stripLike = shortSide > 0 && longSide / shortSide >= 2;
+    // A continuous exterior beam and a fragmented hidden beam can enclose a
+    // long unmarked slab band. Require several independently measured bays
+    // immediately along its inner face; a remote sheet/grid line has no such
+    // local support and must not become a slab.
+    const horizontalStrip = panel.lengthMm >= panel.breadthMm;
+    const adjacentMeasuredBays = labelledPanels.filter((measured) => horizontalStrip
+      ? Math.min(Math.abs(measured.box.y1 - panel.box.y0), Math.abs(measured.box.y0 - panel.box.y1)) <= 1000
+        && Math.min(measured.box.x1, panel.box.x1) - Math.max(measured.box.x0, panel.box.x0) >= 1000
+      : Math.min(Math.abs(measured.box.x1 - panel.box.x0), Math.abs(measured.box.x0 - panel.box.x1)) <= 1000
+        && Math.min(measured.box.y1, panel.box.y1) - Math.max(measured.box.y0, panel.box.y0) >= 1000).length;
+    const verifiedLongSlabStrip = !panel.polygon && panel.cantileverBoundary
+      && longSide >= 60_000 && shortSide >= 800 && shortSide <= 3000
+      && adjacentMeasuredBays >= 4;
     if (!localCMark && !unresolvedSlabMark && !stripLike) return false;
     if (unresolvedSlabMark) panel.label = unresolvedSlabMark.text;
     if (excludedDetailPoint(centre)) return false;
@@ -656,7 +680,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       const verifiedExteriorStrip = panel.cantileverBoundary && crossesSideEnvelope
         && Math.max(panel.lengthMm, panel.breadthMm) >= 3000;
       const verifiedCornerPolygon = panel.polygon && edgeDistance <= 3000;
-      if (!verifiedExteriorStrip && !verifiedCornerPolygon && !unresolvedSlabMark) return false;
+      if (!verifiedExteriorStrip && !verifiedCornerPolygon && !unresolvedSlabMark
+        && !verifiedLongSlabStrip) return false;
     }
     if (labelEnvelope) {
       const dx = Math.max(labelEnvelope.minX - centre.x, 0, centre.x - labelEnvelope.maxX);
@@ -676,6 +701,11 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       // inside an adjacent panel's rectangular proxy, so rectangle overlap is
       // not a valid rejection test here. The structural-line and exterior-edge
       // gates above are the authoritative checks.
+      return true;
+    }
+    if (verifiedLongSlabStrip) {
+      panel.label = 'SLAB STRIP';
+      panel.confident = false; // no local S mark: retain a review flag
       return true;
     }
     // A full-width exterior strip legitimately touches/overlaps the adjacent
@@ -1284,7 +1314,7 @@ export function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[
     if (width < 800 || width > 8000) continue;
     const lo = Math.max(horizontal ? Math.min(dash.a.x, dash.b.x) : Math.min(dash.a.y, dash.b.y), horizontal ? Math.min(solid.a.x, solid.b.x) : Math.min(solid.a.y, solid.b.y));
     const hi = Math.min(horizontal ? Math.max(dash.a.x, dash.b.x) : Math.max(dash.a.y, dash.b.y), horizontal ? Math.max(solid.a.x, solid.b.x) : Math.max(solid.a.y, solid.b.y));
-    if (hi - lo < 600 || hi - lo > 60_000 || !closes(lo, Math.min(dc, sc), Math.max(dc, sc), horizontal) || !closes(hi, Math.min(dc, sc), Math.max(dc, sc), horizontal)) continue;
+    if (hi - lo < 600 || hi - lo > 100_000 || !closes(lo, Math.min(dc, sc), Math.max(dc, sc), horizontal) || !closes(hi, Math.min(dc, sc), Math.max(dc, sc), horizontal)) continue;
     const box = horizontal ? { x0: lo, y0: Math.min(dc, sc), x1: hi, y1: Math.max(dc, sc) } : { x0: Math.min(dc, sc), y0: lo, x1: Math.max(dc, sc), y1: hi };
     const c = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
     if (out.some((p) => Math.hypot((p.box.x0 + p.box.x1) / 2 - c.x, (p.box.y0 + p.box.y1) / 2 - c.y) < 500)) continue;

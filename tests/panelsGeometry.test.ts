@@ -93,6 +93,30 @@ describe('unmarked slab geometry', () => {
     }));
   });
 
+  it('does not turn a section-dominated sheet title into slab geometry', () => {
+    const sheet = drawing();
+    sheet.texts = [
+      { layer: 'TITLE', text: 'TYPICAL FLOOR FRAMING PLAN', pos: { x: 2000, y: -2000 } },
+      ...Array.from({ length: 12 }, (_, i) => ({ layer: 'TITLE',
+        text: `SECTION ${i + 1}-${i + 1}`, pos: { x: i * 5000, y: 30000 } })),
+    ];
+    expect(autoProposePanels(sheet)).toHaveLength(0);
+  });
+
+  it('retains a real group of unmarked plan bays on a combined section sheet', () => {
+    const sheet = drawing();
+    sheet.texts = [
+      { layer: 'TITLE', text: 'TYPICAL FLOOR FRAMING PLAN', pos: { x: 8000, y: -2000 } },
+      ...Array.from({ length: 12 }, (_, i) => ({ layer: 'TITLE',
+        text: `SECTION ${i + 1}-${i + 1}`, pos: { x: i * 5000, y: 30000 } })),
+    ];
+    sheet.segments = Array.from({ length: 4 }, (_, i) => drawing().segments.map((segment) => ({
+      ...segment, a: { x: segment.a.x + i * 5000, y: segment.a.y },
+      b: { x: segment.b.x + i * 5000, y: segment.b.y },
+    }))).flat();
+    expect(autoProposePanels(sheet)).toHaveLength(4);
+  });
+
   it('does not measure an unlabelled H-shaped beam-face loop as a slab', () => {
     const plan = drawing();
     plan.texts = [{ layer: 'TITLE', text: 'THIRD FLOOR FRAMING PLAN', pos: { x: 0, y: -2000 } }];

@@ -28,7 +28,7 @@ describe('project JSON', () => {
   it('re-extracts old saved members after the slab geometry rules change', () => {
     vi.useFakeTimers();
     try {
-      useStore.getState().loadStoredProject({ ...project, extractionVersion: 10 });
+      useStore.getState().loadStoredProject({ ...project, extractionVersion: 11 });
       expect(useStore.getState().members).toHaveLength(0);
     } finally {
       vi.clearAllTimers();

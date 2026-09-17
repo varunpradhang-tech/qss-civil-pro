@@ -822,6 +822,25 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // faces are collinear. The ordinary S/hatch proposals above retain every
   // transverse beam as a separate panel boundary.
 
+  // A consultant may put "FRAMING PLAN" in the title block of a sheet that
+  // actually consists of repeated beam sections/details. A title alone is
+  // not evidence of a measurable plan. On a section-dominated, unmarked
+  // sheet require several sizeable bounded bays in the region nearer a plan
+  // heading than any detail heading; otherwise all closed beam loops are
+  // detail geometry, including apparent cantilevers.
+  if (!labels.length && framingTitles.length && sectionNotes.length >= 12
+    && sectionNotes.length >= framingTitles.length * 6) {
+    const distanceTo = (point: Pt, note: typeof dwg.texts[number]) =>
+      Math.hypot(point.x - note.pos.x, point.y - note.pos.y);
+    const planBays = out.filter((panel) => {
+      if (panel.cantileverBoundary || Math.min(panel.lengthMm, panel.breadthMm) < 1500) return false;
+      const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+      return Math.min(...framingTitles.map((note) => distanceTo(centre, note)))
+        < Math.min(...sectionNotes.map((note) => distanceTo(centre, note)));
+    });
+    if (planBays.length < 4) return [];
+  }
+
   // HOLD / HOLD AREA is an explicit instruction that the containing bay is
   // outside the current measurable scope. Exclude it before deductions,
   // numbering, Excel export, totals, and reference-file marking.

@@ -31,6 +31,8 @@ describe('unmarked slab geometry', () => {
       );
       plan.texts.push({ layer: 'S-slab thk.', text: '150', pos: { x: x0 + 2000, y: 1500 } });
     }
+    // A section callout in the plan must not erase the marked slab bays.
+    plan.texts.push({ layer: 'SHEET-TEXT', text: 'SECTION 1-1', pos: { x: 2000, y: 5000 } });
     const panels = autoProposePanels(plan);
     expect(panels).toHaveLength(4);
     expect(panels.every((panel) => panel.label === 'UNMARKED SLAB'

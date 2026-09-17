@@ -23,6 +23,7 @@ export interface PanelProposalBox {
   mixedBoundary?: boolean; // exact C-marked dotted-inner/continuous-outer closed face
   closedStructuralBoundary?: boolean; // missing S mark recovered from its actual closed CAD face
   dimensionBounded?: boolean; // rectangular cantilever recovered from associated CAD dimension endpoints
+  thicknessMarkedBoundary?: boolean; // numeric slab-depth mark enclosed by four structural faces
 }
 
 interface ThkText { pos: Pt; mm: number; }
@@ -214,7 +215,9 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       && Number(text.text) >= 75 && Number(text.text) <= 350);
     for (const seed of seeds) {
       const c = seed.pos;
-      if (excludedDetailPoint(c)) continue;
+      // SECTION 3-3 / 7-7 leaders can be printed *inside* the main framing
+      // plan. A dedicated slab-thickness mark plus four beam faces is stronger
+      // local evidence than proximity to such a callout.
       const above = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y > c.y)
         .sort((a, b) => a.y - b.y)[0];
       const below = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y < c.y)
@@ -234,7 +237,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         && Math.abs(panel.box.y1 - box.y1) < ALIGN_TOL)) continue;
       thicknessSeededPanels.push({ label: 'UNMARKED SLAB', box,
         lengthMm: width, breadthMm: height, openingM2: 0,
-        thicknessMm: Number(seed.text), confident: false, duplicate: false });
+        thicknessMm: Number(seed.text), confident: false, duplicate: false,
+        thicknessMarkedBoundary: true });
     }
     if (thicknessSeededPanels.length >= 4) out.push(...thicknessSeededPanels);
     else thicknessSeededPanels.length = 0;
@@ -912,8 +916,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // cantilever faces and closed-strip detection) must not re-introduce a
     // section, projection or schedule cell that the primary plan pass
     // correctly rejected. This is intentionally independent of S1/S2 text;
-    // detail drawings often repeat those marks.
-    if (excludedDetailPoint(centre)) return false;
+    // detail drawings often repeat those marks. A dedicated slab-thickness
+    // mark enclosed by four structural faces is an exception: section leaders
+    // can cross the plan itself without turning its bays into detail cells.
+    if (excludedDetailPoint(centre) && !panel.thicknessMarkedBoundary) return false;
     const explicitlyMarked = rawSlabMarks.some((mark) => mark.pos.x >= panel.box.x0
       && mark.pos.x <= panel.box.x1 && mark.pos.y >= panel.box.y0 && mark.pos.y <= panel.box.y1);
     // The raster pass also catches X strokes split into multiple CAD entities.

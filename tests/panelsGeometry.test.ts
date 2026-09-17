@@ -77,6 +77,12 @@ describe('unmarked slab geometry', () => {
   it('does not reject a slab for a smaller X symbol inside its beam bay', () => {
     const plan = drawing();
     plan.texts = [];
+    // An unmarked bay needs the same dotted beam-face evidence as the
+    // full-bay-X case above. The generic fixture has solid outer edges and
+    // is not a valid unmarked slab even before an X is added.
+    plan.segments = plan.segments.map((segment) => ({
+      ...segment, layer: '1-BEAM', lineType: 'HIDDEN',
+    }));
     plan.segments.push(
       { layer: '0', a: { x: 1000, y: 500 }, b: { x: 3000, y: 2500 } },
       { layer: '0', a: { x: 1000, y: 2500 }, b: { x: 3000, y: 500 } },

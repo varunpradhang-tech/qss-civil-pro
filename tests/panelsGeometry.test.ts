@@ -102,6 +102,37 @@ describe('unmarked slab geometry', () => {
     expect(autoProposePanels(plan).some((panel) => panel.visualBoundary)).toBe(false);
   });
 
+  it('keeps a notched dotted-beam plan bay despite a nearby section heading', () => {
+    const plan = drawing();
+    plan.texts = [{ layer: 'TITLE', text: 'FRAMING PLAN', pos: { x: 10000, y: -5000 } },
+      { layer: 'TITLE', text: 'SECTION 3-3', pos: { x: 21000, y: 9000 } }];
+    plan.segments = [];
+    for (let i = 0; i < 4; i++) {
+      const x0 = i * 5000, x1 = x0 + 4000;
+      plan.segments.push(
+        { layer: 'BEAM', a: { x: x0, y: 0 }, b: { x: x1, y: 0 } },
+        { layer: 'BEAM', a: { x: x0, y: 3000 }, b: { x: x1, y: 3000 } },
+        { layer: 'BEAM', a: { x: x0, y: 0 }, b: { x: x0, y: 3000 } },
+        { layer: 'BEAM', a: { x: x1, y: 0 }, b: { x: x1, y: 3000 } },
+      );
+      plan.texts.push({ layer: 'S-slab thk.', text: '150', pos: { x: x0 + 2000, y: 1500 } });
+    }
+    const outline = [{ x: 19500, y: 0 }, { x: 22000, y: 0 }, { x: 22000, y: 500 },
+      { x: 24000, y: 500 }, { x: 24000, y: 3000 }, { x: 19500, y: 3000 }];
+    for (let i = 0; i < outline.length; i++) plan.segments.push({ layer: 'BEAM', lineType: 'HIDDEN',
+      a: outline[i], b: outline[(i + 1) % outline.length] });
+    plan.texts.push(
+      { layer: 'BEAM NO', text: 'B1', pos: { x: 20500, y: 2700 } },
+      { layer: 'BEAM NO', text: 'B2', pos: { x: 20500, y: 300 } },
+      { layer: 'BEAM NO', text: 'B30', pos: { x: 19700, y: 1500 } },
+      { layer: 'BEAM NO', text: 'B34', pos: { x: 23800, y: 1500 } },
+    );
+    expect(autoProposePanels(plan)).toContainEqual(expect.objectContaining({
+      label: 'UNMARKED SLAB', box: { x0: 19500, y0: 0, x1: 24000, y1: 3000 },
+      visualBoundary: true, confident: false, netAreaM2: 12.5,
+    }));
+  });
+
   it('follows a thickness-confirmed slab hatch past a beam label into its connected lower loop', () => {
     const plan = drawing();
     plan.texts = [{ layer: 'TITLE', text: 'FRAMING PLAN', pos: { x: 10000, y: -5000 } }];

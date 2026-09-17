@@ -435,6 +435,18 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const pointBoxDistance = (point: Pt, box: FaceBox) => Math.hypot(
     Math.max(0, box.x0 - point.x, point.x - box.x1),
     Math.max(0, box.y0 - point.y, point.y - box.y1));
+  const planDottedFace = (face: typeof allDottedFaces[number]) => {
+    if (thicknessSeededPanels.length < 4 || face.areaM2 < 2
+      || !thicknessSeededPanels.some((panel) => boxGap(face.box, panel.box) <= 3000)
+      || bayImageShowsFullX(allSegs, face.box)) return false;
+    // Beam numbers along multiple sides corroborate that this is a bay in the
+    // framing plan, not a similarly shaped section near a SECTION leader.
+    const nearbyBeamNumbers = dwg.texts.filter((text) => /^B\d+[A-Z]?$/i.test(text.text.trim())
+      && /beam\s*no/i.test(text.layer)
+      && text.pos.x >= face.box.x0 - 600 && text.pos.x <= face.box.x1 + 600
+      && text.pos.y >= face.box.y0 - 600 && text.pos.y <= face.box.y1 + 600);
+    return nearbyBeamNumbers.length >= 2;
+  };
   const dottedFaces = !framingTitles.length ? allDottedFaces : faceGroups
     .filter((group) => {
       const box = group.reduce((acc, face) => ({
@@ -447,7 +459,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       return planDistance <= detailDistance;
     })
     .flat();
-  for (const face of dottedFaces) {
+  for (const face of new Set([...dottedFaces, ...allDottedFaces.filter(planDottedFace)])) {
     const shape = simplifyCollinearPolygon(face.polygon);
     const width = face.box.x1 - face.box.x0, height = face.box.y1 - face.box.y0;
     const centre = { x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 };
@@ -458,7 +470,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // Apply sheet-region exclusion before consulting raw S marks. Section and
     // schedule details often repeat S1/S2 text inside perfectly closed loops;
     // that text describes the detail and must not turn it into a plan panel.
-    if (excludedDetailPoint(centre)) continue;
+    if (excludedDetailPoint(centre) && !planDottedFace(face)) continue;
     const containedLabel = labels.find((label) => pointInPolygon(label.pos, shape))
       || rawSlabMarks.find((label) => pointInPolygon(label.pos, shape));
     if (containedLabel) {
@@ -490,13 +502,14 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // narrow H/U-shaped closed loop instead follows the beam *material*
     // around several bays (rather than the slab inside one bay). Without an
     // actual slab mark, never promote that irregular loop to a quantity.
-    if (irregular) continue;
-    out.push({ label: inferredSlabCode, box: face.box,
+    if (irregular && !planDottedFace(face)) continue;
+    out.push({ label: planDottedFace(face) ? 'UNMARKED SLAB' : inferredSlabCode, box: face.box,
       polygon: irregular ? shape : undefined,
       netAreaM2: irregular ? face.areaM2 : undefined,
       lengthMm: width, breadthMm: height, openingM2: 0,
       thicknessMm: panelThickness(face.box, centre, thicknesses),
-      confident: true, duplicate: false, dottedBoundary: true });
+      confident: !planDottedFace(face), duplicate: false, dottedBoundary: true,
+      visualBoundary: planDottedFace(face) });
   }
   // Some corner bays close against a column/wall or a continuous beam return,
   // so their loop is not made exclusively from dotted entities. Recover only

@@ -60,6 +60,32 @@ describe('unmarked slab geometry', () => {
     }]);
   });
 
+  it('rejects an unmarked dotted beam bay crossed corner to corner as a void', () => {
+    const voidBay = drawing();
+    voidBay.texts = [];
+    voidBay.segments = [
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 0, y: 0 }, b: { x: 4000, y: 0 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 4000, y: 0 }, b: { x: 4000, y: 3000 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 4000, y: 3000 }, b: { x: 0, y: 3000 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 0, y: 3000 }, b: { x: 0, y: 0 } },
+      { layer: '0', a: { x: 0, y: 0 }, b: { x: 4000, y: 3000 } },
+      { layer: '0', a: { x: 0, y: 3000 }, b: { x: 4000, y: 0 } },
+    ];
+    expect(autoProposePanels(voidBay)).toHaveLength(0);
+  });
+
+  it('does not reject a slab for a smaller X symbol inside its beam bay', () => {
+    const plan = drawing();
+    plan.texts = [];
+    plan.segments.push(
+      { layer: '0', a: { x: 1000, y: 500 }, b: { x: 3000, y: 2500 } },
+      { layer: '0', a: { x: 1000, y: 2500 }, b: { x: 3000, y: 500 } },
+    );
+    expect(autoProposePanels(plan)).toContainEqual(expect.objectContaining({
+      box: { x0: 0, y0: 0, x1: 4000, y1: 3000 },
+    }));
+  });
+
   it('joins fragmented dotted beam faces before finding an unlabelled rectangular slab', () => {
     const dotted = drawing();
     dotted.texts = [];

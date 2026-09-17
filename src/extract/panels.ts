@@ -3,6 +3,7 @@
 // Best-effort; low-confidence/duplicate proposals are flagged for review. Pure/headless.
 import type { NormalizedDwg, Pt, Segment } from '../domain/types.js';
 import { polygoniseCadFaces } from './topology.js';
+import { bayImageShowsFullX } from '../vision/bayImage.js';
 
 export interface PanelProposalBox {
   label?: string;
@@ -841,6 +842,24 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     if (planBays.length < 4) return [];
   }
 
+  // A full corner-to-corner X across an otherwise beam-enclosed, unmarked
+  // bay denotes a void. Check the four actual corners: merely crossing
+  // diagonals inside a larger S-marked slab are openings, not evidence that
+  // its entire enclosing panel is absent.
+  const diagonalSegments = allSegs.filter((segment) =>
+    Math.abs(segment.a.x - segment.b.x) > 300 && Math.abs(segment.a.y - segment.b.y) > 300);
+  const hasFullBayX = (box: PanelProposalBox['box']): boolean => {
+    const width = box.x1 - box.x0, height = box.y1 - box.y0;
+    const tol = Math.min(250, Math.max(40, Math.min(width, height) * 0.04));
+    const near = (point: Pt, x: number, y: number) =>
+      Math.abs(point.x - x) <= tol && Math.abs(point.y - y) <= tol;
+    const crossesCorners = (x0: number, y0: number, x1: number, y1: number) =>
+      diagonalSegments.some((segment) =>
+        (near(segment.a, x0, y0) && near(segment.b, x1, y1))
+        || (near(segment.b, x0, y0) && near(segment.a, x1, y1)));
+    return crossesCorners(box.x0, box.y0, box.x1, box.y1)
+      && crossesCorners(box.x0, box.y1, box.x1, box.y0);
+  };
   // HOLD / HOLD AREA is an explicit instruction that the containing bay is
   // outside the current measurable scope. Exclude it before deductions,
   // numbering, Excel export, totals, and reference-file marking.
@@ -852,6 +871,12 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // correctly rejected. This is intentionally independent of S1/S2 text;
     // detail drawings often repeat those marks.
     if (excludedDetailPoint(centre)) return false;
+    const explicitlyMarked = rawSlabMarks.some((mark) => mark.pos.x >= panel.box.x0
+      && mark.pos.x <= panel.box.x1 && mark.pos.y >= panel.box.y0 && mark.pos.y <= panel.box.y1);
+    // The raster pass also catches X strokes split into multiple CAD entities.
+    // It does not create a slab or override an explicit S mark.
+    if (!explicitlyMarked && (hasFullBayX(panel.box)
+      || bayImageShowsFullX(allSegs, panel.box))) return false;
     const grossM2 = (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
     const verifiedLongSlab = /^S\d+[A-Z]?$|^CANTILEVER$|^SLAB STRIP$|^HATCH-SLAB$/i.test(panel.label || '');
     const maxSpan = verifiedLongSlab ? Infinity : 30_000;

@@ -78,6 +78,21 @@ describe('unmarked slab geometry', () => {
     ]));
   });
 
+  it('uses bounded faces instead of exhaustive line pairs on a large unmarked plan', () => {
+    const plan = drawing();
+    plan.texts = [{ layer: 'TITLE', text: 'FRAMING PLAN', pos: { x: 2000, y: -2000 } }];
+    plan.segments.push(
+      ...Array.from({ length: 205 }, (_, i) => ({ layer: 'BEAM',
+        a: { x: 100000, y: 100000 + i * 1000 }, b: { x: 104000, y: 100000 + i * 1000 } })),
+      ...Array.from({ length: 205 }, (_, i) => ({ layer: 'BEAM',
+        a: { x: 200000 + i * 1000, y: 200000 }, b: { x: 200000 + i * 1000, y: 204000 } })),
+    );
+    expect(autoProposePanels(plan)).toContainEqual(expect.objectContaining({
+      label: 'UNMARKED SLAB', box: { x0: 0, y0: 0, x1: 4000, y1: 3000 },
+      confident: false,
+    }));
+  });
+
   it('does not measure an unlabelled H-shaped beam-face loop as a slab', () => {
     const plan = drawing();
     plan.texts = [{ layer: 'TITLE', text: 'THIRD FLOOR FRAMING PLAN', pos: { x: 0, y: -2000 } }];

@@ -154,6 +154,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   };
 
   const out: PanelProposalBox[] = [];
+  let deferredSolidFallback = false;
   for (const L of labels) {
     const c: Pt = L.pos;
     const aboveOptions = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y > c.y).sort((a, b) => a.y - b.y);
@@ -220,6 +221,11 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const coversX = (h: typeof H[number], x0: number, x1: number) => h.x1 <= x0 + ALIGN_TOL && h.x2 >= x1 - ALIGN_TOL;
     const coversY = (v: typeof V[number], y0: number, y1: number) => v.y1 <= y0 + ALIGN_TOL && v.y2 >= y1 - ALIGN_TOL;
     const candidates: Array<{ box: { x0: number; y0: number; x1: number; y1: number }; area: number }> = [];
+    // The pair-of-pairs search grows as H²×V². A consultant plan with
+    // thousands of beam faces can otherwise lock the browser for hours.
+    // Large plans use the bounded CAD-face pass below instead.
+    deferredSolidFallback = solidH.length * solidV.length > 2_500;
+    if (!deferredSolidFallback)
     for (let li = 0; li < solidV.length; li++) for (let ri = li + 1; ri < solidV.length; ri++) {
       const x0 = Math.min(solidV[li].x, solidV[ri].x), x1 = Math.max(solidV[li].x, solidV[ri].x);
       if (x1 - x0 < 600) continue;
@@ -255,6 +261,21 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const topologySegments = allSegs.filter((segment) => isStructuralBoundarySegment(segment)
     || /slab|chajja|edge/i.test(segment.layer) || /^A-PLNT$/i.test(segment.layer));
   const topologyFaces = polygoniseCadFaces(topologySegments);
+  if (deferredSolidFallback && !out.length && !labels.length) {
+    // On a large unmarked plan, accept only actual rectangular structural
+    // faces. They remain review items because no S mark corroborates them.
+    for (const face of topologyFaces) {
+      const shape = simplifyCollinearPolygon(face.polygon);
+      const centre = { x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 };
+      if (shape.length !== 4 || face.areaM2 < 0.2 || face.areaM2 > 400
+        || face.areaM2 < boxArea(face.box) / 1e6 * 0.985
+        || excludedDetailPoint(centre)) continue;
+      out.push({ label: 'UNMARKED SLAB', box: face.box,
+        lengthMm: face.box.x1 - face.box.x0, breadthMm: face.box.y1 - face.box.y0,
+        openingM2: 0, thicknessMm: panelThickness(face.box, centre, thicknesses),
+        confident: false, duplicate: false, closedStructuralBoundary: true });
+    }
+  }
   // Some consultants place the outer structural/free edge on A-STRS or layer
   // 0. Include those entities only in the unresolved-S recovery graph; they
   // are not allowed to reshape any normally measured panel.

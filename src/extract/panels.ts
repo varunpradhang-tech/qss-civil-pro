@@ -155,6 +155,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   };
 
   const out: PanelProposalBox[] = [];
+  const thicknessSeededPanels: PanelProposalBox[] = [];
   let deferredSolidFallback = false;
   for (const L of labels) {
     const c: Pt = L.pos;
@@ -201,6 +202,42 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const sL = snap(right.x - left.x, Hdims), sB = snap(above.y - below.y, Vdims);
     const box = { x0: left.x, y0: below.y, x1: right.x, y1: above.y };
     out.push({ label: L.text, box, lengthMm: sL.v, breadthMm: sB.v, openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: sL.ok && sB.ok && !expandedFromBeamFace, duplicate: false });
+  }
+
+  // An unmarked framing plan may use a number on its dedicated slab-thickness
+  // layer instead of an S code in every bay. Treat that number as a *seed*,
+  // never as a dimension: all four nearby structural faces must still enclose
+  // a plausible bay, and the result remains review-only.
+  if (!labels.length && dwg.texts.some((text) => /\bFRAMING\s+PLAN\b/i.test(text.text))) {
+    const seeds = dwg.texts.filter((text) => /slab[\s.-]*thk/i.test(text.layer)
+      && /^\d{2,3}$/.test(text.text.trim())
+      && Number(text.text) >= 75 && Number(text.text) <= 350);
+    for (const seed of seeds) {
+      const c = seed.pos;
+      if (excludedDetailPoint(c)) continue;
+      const above = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y > c.y)
+        .sort((a, b) => a.y - b.y)[0];
+      const below = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y < c.y)
+        .sort((a, b) => b.y - a.y)[0];
+      const right = V.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x > c.x)
+        .sort((a, b) => a.x - b.x)[0];
+      const left = V.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x < c.x)
+        .sort((a, b) => b.x - a.x)[0];
+      if (!above || !below || !right || !left) continue;
+      const box = { x0: left.x, y0: below.y, x1: right.x, y1: above.y };
+      const width = box.x1 - box.x0, height = box.y1 - box.y0;
+      if (width < 600 || height < 600 || width > 15_000 || height > 15_000
+        || width * height > 200e6 || bayImageShowsFullX(allSegs, box)) continue;
+      if (thicknessSeededPanels.some((panel) => Math.abs(panel.box.x0 - box.x0) < ALIGN_TOL
+        && Math.abs(panel.box.y0 - box.y0) < ALIGN_TOL
+        && Math.abs(panel.box.x1 - box.x1) < ALIGN_TOL
+        && Math.abs(panel.box.y1 - box.y1) < ALIGN_TOL)) continue;
+      thicknessSeededPanels.push({ label: 'UNMARKED SLAB', box,
+        lengthMm: width, breadthMm: height, openingM2: 0,
+        thicknessMm: Number(seed.text), confident: false, duplicate: false });
+    }
+    if (thicknessSeededPanels.length >= 4) out.push(...thicknessSeededPanels);
+    else thicknessSeededPanels.length = 0;
   }
 
   // Some framing plans omit S1/S2 marks entirely and use ordinary (solid)
@@ -829,6 +866,12 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // sheet require several sizeable bounded bays in the region nearer a plan
   // heading than any detail heading; otherwise all closed beam loops are
   // detail geometry, including apparent cantilevers.
+  if (thicknessSeededPanels.length >= 4 && !labels.length) {
+    // On a mixed plan-and-details sheet, the other geometry-only fallbacks
+    // also find closed beam sections. Keep only bays anchored by an explicit
+    // slab-thickness mark and four beam/wall sides.
+    out.splice(0, out.length, ...thicknessSeededPanels);
+  }
   if (!labels.length && framingTitles.length && sectionNotes.length >= 12
     && sectionNotes.length >= framingTitles.length * 6) {
     const distanceTo = (point: Pt, note: typeof dwg.texts[number]) =>
@@ -839,7 +882,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       return Math.min(...framingTitles.map((note) => distanceTo(centre, note)))
         < Math.min(...sectionNotes.map((note) => distanceTo(centre, note)));
     });
-    if (planBays.length < 4) return [];
+    if (planBays.length < 4 && thicknessSeededPanels.length < 4) return [];
   }
 
   // A full corner-to-corner X across an otherwise beam-enclosed, unmarked

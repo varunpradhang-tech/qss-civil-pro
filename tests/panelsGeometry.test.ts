@@ -17,6 +17,26 @@ const drawing = (): NormalizedDwg => ({
 });
 
 describe('unmarked slab geometry', () => {
+  it('uses numeric slab-thickness marks as review-only seeds on a framing plan', () => {
+    const plan = drawing();
+    plan.texts = [{ layer: 'SHEET-TEXT', text: 'TYPICAL FLOOR FRAMING PLAN', pos: { x: 10000, y: -5000 } }];
+    plan.segments = [];
+    for (let i = 0; i < 4; i++) {
+      const x0 = i * 5000, x1 = x0 + 4000;
+      plan.segments.push(
+        { layer: 'S-BEAM', a: { x: x0, y: 0 }, b: { x: x1, y: 0 } },
+        { layer: 'S-BEAM', a: { x: x0, y: 3000 }, b: { x: x1, y: 3000 } },
+        { layer: 'S-BEAM', a: { x: x0, y: 0 }, b: { x: x0, y: 3000 } },
+        { layer: 'S-BEAM', a: { x: x1, y: 0 }, b: { x: x1, y: 3000 } },
+      );
+      plan.texts.push({ layer: 'S-slab thk.', text: '150', pos: { x: x0 + 2000, y: 1500 } });
+    }
+    const panels = autoProposePanels(plan);
+    expect(panels).toHaveLength(4);
+    expect(panels.every((panel) => panel.label === 'UNMARKED SLAB'
+      && panel.thicknessMm === 150 && !panel.confident)).toBe(true);
+  });
+
   it('does not turn a broad unmarked three-sided exterior void into a slab', () => {
     const exteriorVoid = drawing();
     exteriorVoid.texts = [

@@ -25,6 +25,7 @@ export interface PanelProposalBox {
   dimensionBounded?: boolean; // rectangular cantilever recovered from associated CAD dimension endpoints
   thicknessMarkedBoundary?: boolean; // numeric slab-depth mark enclosed by four structural faces
   hatchConnectedBoundary?: boolean; // same-pattern slab hatch connected to a numeric depth mark
+  visualBoundary?: boolean; // dotted beam face completed by beam/wall/column faces
 }
 
 interface ThkText { pos: Pt; mm: number; }
@@ -926,13 +927,59 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // heading than any detail heading; otherwise all closed beam loops are
   // detail geometry, including apparent cantilevers.
   if (thicknessSeededPanels.length >= 4 && !labels.length) {
-    // Keep actual dotted-beam faces in the marked plan footprint too. Other
-    // geometry-only fallbacks can be beam sections elsewhere on a mixed sheet.
+    // First-pass bay reading: a dotted beam face is slab-side evidence, not a
+    // demand that every other side be dotted too. Close it with neighbouring
+    // structural beam, wall or column faces in the marked framing-plan region.
+    // Keep only actual closed CAD faces; no rectangle is invented across an
+    // open edge. Thickness marks/hatches remain corroborating evidence below.
     const footprint = thicknessSeededPanels.reduce((box, panel) => ({
       x0: Math.min(box.x0, panel.box.x0), y0: Math.min(box.y0, panel.box.y0),
       x1: Math.max(box.x1, panel.box.x1), y1: Math.max(box.y1, panel.box.y1),
     }), { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
-    const dotted = out.filter((panel) => panel.hatchConnectedBoundary || (panel.dottedBoundary
+    const inPlan = (segment: Segment) => Math.max(segment.a.x, segment.b.x) >= footprint.x0 - 3000
+      && Math.min(segment.a.x, segment.b.x) <= footprint.x1 + 3000
+      && Math.max(segment.a.y, segment.b.y) >= footprint.y0 - 3000
+      && Math.min(segment.a.y, segment.b.y) <= footprint.y1 + 3000;
+    const localDotted = mergedDottedBeamSegments.filter(inPlan);
+    const mixedFaces = polygoniseCadFaces([
+      ...segs.filter(inPlan), ...localDotted,
+    ], 300);
+    const dottedSide = (box: PanelProposalBox['box']) => localDotted.some((segment) => {
+      const horizontal = Math.abs(segment.a.y - segment.b.y) < ALIGN_TOL;
+      const vertical = Math.abs(segment.a.x - segment.b.x) < ALIGN_TOL;
+      if (horizontal) {
+        const y = (segment.a.y + segment.b.y) / 2;
+        const overlap = Math.max(0, Math.min(box.x1, Math.max(segment.a.x, segment.b.x))
+          - Math.max(box.x0, Math.min(segment.a.x, segment.b.x)));
+        return (Math.abs(y - box.y0) <= 300 || Math.abs(y - box.y1) <= 300)
+          && overlap >= Math.max(600, (box.x1 - box.x0) * 0.4);
+      }
+      if (vertical) {
+        const x = (segment.a.x + segment.b.x) / 2;
+        const overlap = Math.max(0, Math.min(box.y1, Math.max(segment.a.y, segment.b.y))
+          - Math.max(box.y0, Math.min(segment.a.y, segment.b.y)));
+        return (Math.abs(x - box.x0) <= 300 || Math.abs(x - box.x1) <= 300)
+          && overlap >= Math.max(600, (box.y1 - box.y0) * 0.4);
+      }
+      return false;
+    });
+    const visualBays = mixedFaces.filter((face) => {
+      const box = face.box, w = box.x1 - box.x0, h = box.y1 - box.y0;
+      return w >= 1500 && h >= 1500 && face.areaM2 >= 2 && face.areaM2 <= 150
+        && face.areaM2 >= boxArea(box) / 1e6 * 0.985
+        && dottedSide(box) && !bayImageShowsFullX(allSegs, box)
+        && !out.some((panel) => polygonRectIntersectionArea(face.polygon, panel.box) / 1e6 > face.areaM2 * 0.1);
+    });
+    for (const face of visualBays) {
+      const box = face.box, centre = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
+      out.push({ label: 'UNMARKED SLAB', box, lengthMm: box.x1 - box.x0,
+        breadthMm: box.y1 - box.y0, openingM2: 0,
+        thicknessMm: panelThickness(box, centre, thicknesses), confident: false,
+        duplicate: false, visualBoundary: true });
+    }
+    // Keep actual dotted-beam faces in the marked plan footprint too. Other
+    // geometry-only fallbacks can be beam sections elsewhere on a mixed sheet.
+    const dotted = out.filter((panel) => panel.hatchConnectedBoundary || panel.visualBoundary || (panel.dottedBoundary
       && panel.box.x0 >= footprint.x0 - 3000 && panel.box.x1 <= footprint.x1 + 3000
       && panel.box.y0 >= footprint.y0 - 3000 && panel.box.y1 <= footprint.y1 + 3000));
     out.splice(0, out.length, ...thicknessSeededPanels, ...dotted);
@@ -980,7 +1027,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // detail drawings often repeat those marks. A dedicated slab-thickness
     // mark enclosed by four structural faces is an exception: section leaders
     // can cross the plan itself without turning its bays into detail cells.
-    if (excludedDetailPoint(centre) && !panel.thicknessMarkedBoundary && !panel.hatchConnectedBoundary) return false;
+    if (excludedDetailPoint(centre) && !panel.thicknessMarkedBoundary
+      && !panel.hatchConnectedBoundary && !panel.visualBoundary) return false;
     const explicitlyMarked = rawSlabMarks.some((mark) => mark.pos.x >= panel.box.x0
       && mark.pos.x <= panel.box.x1 && mark.pos.y >= panel.box.y0 && mark.pos.y <= panel.box.y1);
     // The raster pass also catches X strokes split into multiple CAD entities.

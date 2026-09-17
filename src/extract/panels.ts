@@ -24,6 +24,7 @@ export interface PanelProposalBox {
   closedStructuralBoundary?: boolean; // missing S mark recovered from its actual closed CAD face
   dimensionBounded?: boolean; // rectangular cantilever recovered from associated CAD dimension endpoints
   thicknessMarkedBoundary?: boolean; // numeric slab-depth mark enclosed by four structural faces
+  hatchConnectedBoundary?: boolean; // same-pattern slab hatch connected to a numeric depth mark
 }
 
 interface ThkText { pos: Pt; mm: number; }
@@ -667,6 +668,60 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0,
       openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: true, duplicate: false });
   }
+  // In some framing plans the numeric slab-depth circle, rather than an S
+  // code, confirms a patterned hatch. Follow only physically adjacent loops
+  // of that same dedicated slab/sunken-slab hatch; beam labels may divide the
+  // strip without ending the slab. Never infer this from generic sheet hatches.
+  if (thicknessSeededPanels.length >= 4 && !labels.length) {
+    const slabHatches = hatchCandidates.filter(({ hatch }) => /slab|sunk/i.test(hatch.layer));
+    const markedPlan = thicknessSeededPanels.reduce((box, panel) => ({
+      x0: Math.min(box.x0, panel.box.x0), y0: Math.min(box.y0, panel.box.y0),
+      x1: Math.max(box.x1, panel.box.x1), y1: Math.max(box.y1, panel.box.y1),
+    }), { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+    const boundaryNear = (a: Pt[], b: Pt[]): boolean => {
+      const pointToEdge = (p: Pt, start: Pt, end: Pt): number => {
+        const dx = end.x - start.x, dy = end.y - start.y;
+        const t = Math.max(0, Math.min(1, ((p.x - start.x) * dx + (p.y - start.y) * dy)
+          / Math.max(dx * dx + dy * dy, 1)));
+        return Math.hypot(p.x - start.x - t * dx, p.y - start.y - t * dy);
+      };
+      const close = (points: Pt[], edges: Pt[]) => points.some((point) => edges.some((start, i) =>
+        pointToEdge(point, start, edges[(i + 1) % edges.length]) <= 250));
+      return close(a, b) || close(b, a);
+    };
+    const depthMarks = dwg.texts.filter((text) => /slab[\s.-]*thk/i.test(text.layer)
+      && /^\d{2,3}$/.test(text.text.trim()) && Number(text.text) >= 75 && Number(text.text) <= 350);
+    const connected = new Map<number, number>();
+    const queue: number[] = [];
+    slabHatches.forEach((candidate, index) => {
+      const mark = depthMarks.find((text) => pointInPolygon(text.pos, candidate.polygon));
+      if (mark) { connected.set(index, Number(mark.text)); queue.push(index); }
+    });
+    for (let at = 0; at < queue.length; at++) {
+      const index = queue[at], source = slabHatches[index];
+      slabHatches.forEach((candidate, neighbour) => {
+        if (connected.has(neighbour) || hatchSignature(candidate.hatch) !== hatchSignature(source.hatch)
+          || rectGap(candidate.box, source.box) > 250
+          || !boundaryNear(candidate.polygon, source.polygon)) return;
+        connected.set(neighbour, connected.get(index)!); queue.push(neighbour);
+      });
+    }
+    for (const [index, thicknessMm] of connected) {
+      const { hatch, polygon, box, areaM2 } = slabHatches[index];
+      if (out.some((panel) => polygonRectIntersectionArea(polygon, panel.box) / 1e6 > areaM2 * 0.1)) continue;
+      // Exterior continuous hatch is a balcony/cantilever slab, even where
+      // B-number annotations and transverse beams cross it. The classification
+      // follows hatch continuity and the plan perimeter, never a particular
+      // consultant's B41A/B42 labels or thickness alone.
+      const exterior = box.x0 <= markedPlan.x0 + 500 || box.x1 >= markedPlan.x1 - 500
+        || box.y0 <= markedPlan.y0 - 500 || box.y1 >= markedPlan.y1 - 500;
+      const balcony = exterior && /sunk|balcony|cantilever/i.test(hatch.layer);
+      out.push({ label: balcony ? 'BALCONY CANTILEVER' : 'HATCH-SLAB', box, polygon, netAreaM2: areaM2,
+        lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0,
+        openingM2: 0, thicknessMm, confident: false, duplicate: false,
+        hatchConnectedBoundary: true });
+    }
+  }
   // Cantilevers are an additive detector only. They never alter the stable
   // S-label ray-casting above: dashed inner face + continuous outer face +
   // continuous closures at both ends.
@@ -871,10 +926,16 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // heading than any detail heading; otherwise all closed beam loops are
   // detail geometry, including apparent cantilevers.
   if (thicknessSeededPanels.length >= 4 && !labels.length) {
-    // On a mixed plan-and-details sheet, the other geometry-only fallbacks
-    // also find closed beam sections. Keep only bays anchored by an explicit
-    // slab-thickness mark and four beam/wall sides.
-    out.splice(0, out.length, ...thicknessSeededPanels);
+    // Keep actual dotted-beam faces in the marked plan footprint too. Other
+    // geometry-only fallbacks can be beam sections elsewhere on a mixed sheet.
+    const footprint = thicknessSeededPanels.reduce((box, panel) => ({
+      x0: Math.min(box.x0, panel.box.x0), y0: Math.min(box.y0, panel.box.y0),
+      x1: Math.max(box.x1, panel.box.x1), y1: Math.max(box.y1, panel.box.y1),
+    }), { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+    const dotted = out.filter((panel) => panel.hatchConnectedBoundary || (panel.dottedBoundary
+      && panel.box.x0 >= footprint.x0 - 3000 && panel.box.x1 <= footprint.x1 + 3000
+      && panel.box.y0 >= footprint.y0 - 3000 && panel.box.y1 <= footprint.y1 + 3000));
+    out.splice(0, out.length, ...thicknessSeededPanels, ...dotted);
   }
   if (!labels.length && framingTitles.length && sectionNotes.length >= 12
     && sectionNotes.length >= framingTitles.length * 6) {
@@ -919,7 +980,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // detail drawings often repeat those marks. A dedicated slab-thickness
     // mark enclosed by four structural faces is an exception: section leaders
     // can cross the plan itself without turning its bays into detail cells.
-    if (excludedDetailPoint(centre) && !panel.thicknessMarkedBoundary) return false;
+    if (excludedDetailPoint(centre) && !panel.thicknessMarkedBoundary && !panel.hatchConnectedBoundary) return false;
     const explicitlyMarked = rawSlabMarks.some((mark) => mark.pos.x >= panel.box.x0
       && mark.pos.x <= panel.box.x1 && mark.pos.y >= panel.box.y0 && mark.pos.y <= panel.box.y1);
     // The raster pass also catches X strokes split into multiple CAD entities.

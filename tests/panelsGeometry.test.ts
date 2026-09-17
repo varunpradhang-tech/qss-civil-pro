@@ -39,6 +39,66 @@ describe('unmarked slab geometry', () => {
       && panel.thicknessMm === 150 && !panel.confident)).toBe(true);
   });
 
+  it('keeps an adjacent unmarked dotted-beam slab alongside thickness-marked bays', () => {
+    const plan = drawing();
+    plan.texts = [{ layer: 'TITLE', text: 'FRAMING PLAN', pos: { x: 10000, y: -5000 } }];
+    plan.segments = [];
+    for (let i = 0; i < 4; i++) {
+      const x0 = i * 5000, x1 = x0 + 4000;
+      plan.segments.push(
+        { layer: 'BEAM', a: { x: x0, y: 0 }, b: { x: x1, y: 0 } },
+        { layer: 'BEAM', a: { x: x0, y: 3000 }, b: { x: x1, y: 3000 } },
+        { layer: 'BEAM', a: { x: x0, y: 0 }, b: { x: x0, y: 3000 } },
+        { layer: 'BEAM', a: { x: x1, y: 0 }, b: { x: x1, y: 3000 } },
+      );
+      plan.texts.push({ layer: 'S-slab thk.', text: '150', pos: { x: x0 + 2000, y: 1500 } });
+    }
+    const addDottedBay = (x0: number) => {
+      const x1 = x0 + 2000;
+      plan.segments.push(
+        { layer: 'BEAM', lineType: 'HIDDEN', a: { x: x0, y: 0 }, b: { x: x1, y: 0 } },
+        { layer: 'BEAM', lineType: 'HIDDEN', a: { x: x1, y: 0 }, b: { x: x1, y: 3000 } },
+        { layer: 'BEAM', lineType: 'HIDDEN', a: { x: x1, y: 3000 }, b: { x: x0, y: 3000 } },
+        { layer: 'BEAM', lineType: 'HIDDEN', a: { x: x0, y: 3000 }, b: { x: x0, y: 0 } },
+      );
+    };
+    addDottedBay(19500);
+    addDottedBay(50000); // separate detail must not become a plan slab
+    const panels = autoProposePanels(plan);
+    expect(panels).toHaveLength(5);
+    expect(panels).toContainEqual(expect.objectContaining({
+      box: { x0: 19500, y0: 0, x1: 21500, y1: 3000 }, dottedBoundary: true,
+    }));
+  });
+
+  it('follows a thickness-confirmed slab hatch past a beam label into its connected lower loop', () => {
+    const plan = drawing();
+    plan.texts = [{ layer: 'TITLE', text: 'FRAMING PLAN', pos: { x: 10000, y: -5000 } }];
+    plan.segments = [];
+    for (let i = 0; i < 4; i++) {
+      const x0 = i * 5000, x1 = x0 + 4000;
+      plan.segments.push(
+        { layer: 'BEAM', a: { x: x0, y: 0 }, b: { x: x1, y: 0 } },
+        { layer: 'BEAM', a: { x: x0, y: 3000 }, b: { x: x1, y: 3000 } },
+        { layer: 'BEAM', a: { x: x0, y: 0 }, b: { x: x0, y: 3000 } },
+        { layer: 'BEAM', a: { x: x1, y: 0 }, b: { x: x1, y: 3000 } },
+      );
+      plan.texts.push({ layer: 'S-slab thk.', text: i === 3 ? '225' : '150',
+        pos: { x: x0 + 2000, y: 1500 } });
+    }
+    const hatch = (y0: number, y1: number) => ({
+      layer: 'SUNK SLAB HATCH', solid: false, pattern: 'EARTH',
+      pts: [{ x: 16000, y: y0 }, { x: 18000, y: y0 },
+        { x: 18000, y: y1 }, { x: 16000, y: y1 }],
+    });
+    plan.hatches = [hatch(0, 3000), hatch(-3000, 0)];
+    const panels = autoProposePanels(plan);
+    expect(panels).toContainEqual(expect.objectContaining({
+      label: 'BALCONY CANTILEVER', box: { x0: 16000, y0: -3000, x1: 18000, y1: 0 },
+      thicknessMm: 225, hatchConnectedBoundary: true,
+    }));
+  });
+
   it('does not turn a broad unmarked three-sided exterior void into a slab', () => {
     const exteriorVoid = drawing();
     exteriorVoid.texts = [

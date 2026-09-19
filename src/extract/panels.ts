@@ -1458,7 +1458,7 @@ export function mergeAxisBeamSegments(segments: Segment[], bridge = 2000): Segme
 
 /** Drawing-wide visual preprocessing. Join only short gaps between collinear
  * beam/wall/column/RCC faces; a larger opening remains open. */
-export function joinBrokenStructuralSegments(segments: Segment[], bridge = 900): Segment[] {
+export function joinBrokenStructuralSegments(segments: Segment[], bridge = 80): Segment[] {
   return mergeAxisFragments(segments, bridge, isStructuralBoundarySegment, 'VISUALLY JOINED STRUCTURE');
 }
 

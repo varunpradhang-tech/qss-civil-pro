@@ -17,18 +17,21 @@ const drawing = (): NormalizedDwg => ({
 });
 
 describe('unmarked slab geometry', () => {
-  it('visually joins broken collinear structural boundaries but leaves a true opening open', () => {
+  it('joins drawing breaks up to 80 mm but preserves 100-150 mm expansion joints', () => {
     const fragments = [
       { layer: 'RCC WALL', a: { x: 0, y: 0 }, b: { x: 1500, y: 0 } },
-      { layer: 'RCC WALL', a: { x: 2100, y: 0 }, b: { x: 4000, y: 0 } },
-      { layer: 'RCC WALL', a: { x: 6000, y: 0 }, b: { x: 7500, y: 0 } },
-      { layer: 'RCC WALL', a: { x: 8700, y: 0 }, b: { x: 10000, y: 0 } },
+      { layer: 'RCC WALL', a: { x: 1580, y: 0 }, b: { x: 4000, y: 0 } },
+      { layer: 'RCC WALL', a: { x: 0, y: 500 }, b: { x: 1500, y: 500 } },
+      { layer: 'RCC WALL', a: { x: 1600, y: 500 }, b: { x: 4000, y: 500 } },
+      { layer: 'RCC WALL', a: { x: 0, y: 1000 }, b: { x: 1500, y: 1000 } },
+      { layer: 'RCC WALL', a: { x: 1650, y: 1000 }, b: { x: 4000, y: 1000 } },
     ];
     const joined = joinBrokenStructuralSegments(fragments);
     expect(joined).toContainEqual(expect.objectContaining({
       a: { x: 0, y: 0 }, b: { x: 4000, y: 0 },
     }));
-    expect(joined.some((segment) => segment.a.x === 6000 && segment.b.x === 10000)).toBe(false);
+    expect(joined.some((segment) => segment.a.y === 500 && segment.a.x === 0 && segment.b.x === 4000)).toBe(false);
+    expect(joined.some((segment) => segment.a.y === 1000 && segment.a.x === 0 && segment.b.x === 4000)).toBe(false);
   });
   it('uses numeric slab-thickness marks as review-only seeds on a framing plan', () => {
     const plan = drawing();

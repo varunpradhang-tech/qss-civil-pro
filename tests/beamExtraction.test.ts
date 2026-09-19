@@ -124,6 +124,20 @@ describe('cross-sheet beam extraction', () => {
     expect(member).toMatchObject({ member: 'B1', breadth: 0.3, height: 0.5, needsReview: false });
   });
 
+  it('reads the consultant note wording FOR BEAM SIZE SHALL BE 300X550 U.N.O.', () => {
+    const plan = base('uno-consultant-wording.dwg');
+    plan.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 4000, y: 0 } },
+      { layer: 'BEAM', a: { x: 0, y: 300 }, b: { x: 4000, y: 300 } },
+    ];
+    plan.texts = [
+      { layer: 'TEXT', text: 'B1', pos: { x: 2000, y: 100 } },
+      { layer: 'NOTES', text: '10. FOR BEAM SIZE SHALL BE (300X550) U.N.O.', pos: { x: 18000, y: 18000 } },
+    ];
+    const [member] = extractMembers(plan, 'beam');
+    expect(member).toMatchObject({ member: 'B1', breadth: 0.3, height: 0.55, needsReview: false });
+  });
+
   it('uses a clearly associated marked CAD dimension instead of a distant beam face', () => {
     const plan = base('framing.dwg');
     plan.segments = [{ layer: 'BEAM', a: { x: 5000, y: 0 }, b: { x: 7170, y: 0 } }];

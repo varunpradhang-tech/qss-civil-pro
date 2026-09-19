@@ -139,8 +139,13 @@ function slabSchedule(dwgs: NormalizedDwg[]): Map<string, number> {
 function slabUnoThickness(dwgs: NormalizedDwg[]): number | undefined {
   const parse = (text: string) => {
     const normalized = text.replace(/\\P|\r?\n/g, ' ').replace(/\s+/g, ' ');
-    if (!/ALL\s+SLAB\s+THICKNESS/i.test(normalized) || !/U\s*\.?\s*N\s*\.?\s*O/i.test(normalized)) return undefined;
-    const value = normalized.match(/ALL\s+SLAB\s+THICKNESS[\s\S]{0,100}?(\d{2,4})\s*(?:MM)?\s*(?:THK|THICK)/i)?.[1];
+    // Consultants commonly write either "ALL SLAB THICKNESS SHALL BE ..."
+    // or "FOR ALL SLAB SHALL BE ...".  Treat both as drawing-wide defaults,
+    // but only when U.N.O. is present so an unrelated note cannot override a
+    // locally marked S-code or numeric thickness.
+    const slabDefault = /(?:FOR\s+)?ALL\s+SLABS?(?:\s+THICKNESS)?\s+SHALL\s+BE/i;
+    if (!slabDefault.test(normalized) || !/U\s*\.?\s*N\s*\.?\s*O/i.test(normalized)) return undefined;
+    const value = normalized.match(/(?:FOR\s+)?ALL\s+SLABS?(?:\s+THICKNESS)?\s+SHALL\s+BE[\s\S]{0,100}?(\d{2,4})\s*(?:MM)?\s*(?:THK|THICK)/i)?.[1];
     const thickness = value ? Number(value) : 0;
     return thickness >= 75 && thickness <= 500 ? thickness : undefined;
   };
@@ -161,8 +166,11 @@ function slabUnoThickness(dwgs: NormalizedDwg[]): number | undefined {
 function beamUnoSize(dwgs: NormalizedDwg[]): { widthMm: number; depthMm: number } | undefined {
   const parse = (text: string) => {
     const normalized = text.replace(/\\P|\r?\n/g, ' ').replace(/\s+/g, ' ');
-    if (!/ALL\s+BEAM\s+SIZE/i.test(normalized) || !/U\s*\.?\s*N\s*\.?\s*O/i.test(normalized)) return undefined;
-    const match = normalized.match(/ALL\s+BEAM\s+SIZE[\s\S]{0,100}?(\d{2,4})\s*[xX×]\s*(\d{2,4})/i);
+    // Also accept note styles such as "FOR BEAM SIZE SHALL BE (300x550)
+    // U.N.O."; "ALL" is frequently omitted in consultant general notes.
+    const beamDefault = /(?:FOR\s+)?(?:ALL\s+)?BEAMS?\s+SIZE\s+SHALL\s+BE/i;
+    if (!beamDefault.test(normalized) || !/U\s*\.?\s*N\s*\.?\s*O/i.test(normalized)) return undefined;
+    const match = normalized.match(/(?:FOR\s+)?(?:ALL\s+)?BEAMS?\s+SIZE\s+SHALL\s+BE[\s\S]{0,100}?(\d{2,4})\s*[xX×]\s*(\d{2,4})/i);
     if (!match) return undefined;
     const widthMm = Number(match[1]), depthMm = Number(match[2]);
     return widthMm >= 150 && widthMm <= 1500 && depthMm >= 250 && depthMm <= 3000 ? { widthMm, depthMm } : undefined;

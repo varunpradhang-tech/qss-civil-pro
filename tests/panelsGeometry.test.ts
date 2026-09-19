@@ -496,6 +496,44 @@ describe('unmarked slab geometry', () => {
     expect(member).toMatchObject({ height: 0.16, slabThickness: 0.16, needsReview: false });
   });
 
+  it('reads the consultant note wording FOR ALL SLAB SHALL BE 140MM THK U.N.O.', () => {
+    const notes = { ...drawing(), fileName: 'general-notes.dwg', segments: [], texts: [
+      { layer: 'NOTES', text: '9. FOR ALL SLAB SHALL BE 140MM THK. U.N.O.', pos: { x: 0, y: 0 } },
+    ] };
+    const [member] = extractMembers([drawing(), notes], 'slab');
+    expect(member).toMatchObject({ height: 0.14, slabThickness: 0.14 });
+    expect(member.reviewReason).not.toContain('using 175 mm fallback');
+  });
+
+  it('uses a slab UNO note to recover a wall-enclosed visual bay without dotted beam faces', () => {
+    const plan = drawing();
+    plan.segments = [
+      { layer: 'WALL', a: { x: 2000, y: 0 }, b: { x: 2000, y: 3000 } },
+      { layer: 'COLUMN', a: { x: 4000, y: 0 }, b: { x: 4000, y: 3000 } },
+      { layer: 'BEAM', a: { x: 2000, y: 0 }, b: { x: 4000, y: 0 } },
+      { layer: 'BEAM', a: { x: 2000, y: 3000 }, b: { x: 4000, y: 3000 } },
+    ];
+    plan.texts = [
+      { layer: 'TITLE', text: 'TYPICAL FLOOR FRAMING PLAN', pos: { x: 9000, y: -3000 } },
+      { layer: 'NOTES', text: '9. FOR ALL SLAB SHALL BE 140MM THK. U.N.O.', pos: { x: 9000, y: 9000 } },
+    ];
+    // Seed neighbouring marked bays so this region is established as the
+    // framing-plan footprint; the candidate itself has no S-code/number.
+    for (let i = 0; i < 4; i++) {
+      const x0 = 5000 + i * 2500;
+      plan.texts.push({ layer: 'SLAB THK', text: '150', pos: { x: x0 + 1000, y: 1500 } });
+      plan.segments.push(
+        { layer: 'BEAM', a: { x: x0, y: 0 }, b: { x: x0, y: 3000 } },
+        { layer: 'BEAM', a: { x: x0 + 2000, y: 0 }, b: { x: x0 + 2000, y: 3000 } },
+        { layer: 'BEAM', a: { x: x0, y: 0 }, b: { x: x0 + 2000, y: 0 } },
+        { layer: 'BEAM', a: { x: x0, y: 3000 }, b: { x: x0 + 2000, y: 3000 } },
+      );
+    }
+    expect(autoProposePanels(plan)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ box: { x0: 2000, y0: 0, x1: 4000, y1: 3000 }, visualBoundary: true }),
+    ]));
+  });
+
   it('prefers a slab schedule row over the UNO general-note default', () => {
     const references = { ...drawing(), fileName: 'references.dwg', segments: [], texts: [
       { layer: 'TEXT', text: 'SLAB REINFORCEMENT SCHEDULE', pos: { x: 0, y: 5000 } },

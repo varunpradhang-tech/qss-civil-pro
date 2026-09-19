@@ -147,6 +147,15 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     .map((t) => ({ text: t.text.replace(/\s/g, '').toUpperCase(), pos: t.pos, trustedLayer: /slabs?\s*no/i.test(t.layer) }));
   const cutouts = extractCutouts(dwg);
   const thicknesses = extractThicknesses(dwg);
+  // A U.N.O. slab-thickness note is drawing-wide slab evidence. It does not
+  // create geometry by itself, but it permits the visual pass to close a bay
+  // with solid wall/column/outer-beam faces when dotted inner beam faces are
+  // absent. Full-bay X and overlap rejection still apply below.
+  const hasSlabUnoNote = dwg.texts.some((text) => {
+    const normalized = text.text.replace(/\\P|\r?\n/g, ' ').replace(/\s+/g, ' ');
+    return /(?:FOR\s+)?ALL\s+SLABS?(?:\s+THICKNESS)?\s+SHALL\s+BE/i.test(normalized)
+      && /U\s*\.?\s*N\s*\.?\s*O/i.test(normalized);
+  });
   const sectionCantileverThickness = cantileverSectionThickness(dwg);
   const holdNotes = dwg.texts.filter((t) => /HOLD/i.test(t.text.replace(/\s+/g, '')));
 
@@ -997,10 +1006,11 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const visibleRuns = mergeAxisBeamSegments(segs.filter(inPlan)
       .map((segment) => ({ ...segment, layer: 'BEAM', lineType: 'CONTINUOUS' })), 300);
     const visibleH = visibleRuns.filter((segment) => Math.abs(segment.a.y - segment.b.y) < ALIGN_TOL);
-    const dottedV = localDotted.filter((segment) => Math.abs(segment.a.x - segment.b.x) < ALIGN_TOL);
-    for (let leftIndex = 0; leftIndex < dottedV.length; leftIndex++) for (let rightIndex = leftIndex + 1;
-      rightIndex < dottedV.length; rightIndex++) {
-      const left = dottedV[leftIndex], right = dottedV[rightIndex];
+    const verticalSides = (hasSlabUnoNote ? visibleRuns : localDotted)
+      .filter((segment) => Math.abs(segment.a.x - segment.b.x) < ALIGN_TOL);
+    for (let leftIndex = 0; leftIndex < verticalSides.length; leftIndex++) for (let rightIndex = leftIndex + 1;
+      rightIndex < verticalSides.length; rightIndex++) {
+      const left = verticalSides[leftIndex], right = verticalSides[rightIndex];
       const x0 = Math.min(left.a.x, right.a.x), x1 = Math.max(left.a.x, right.a.x);
       const yMin = Math.max(Math.min(left.a.y, left.b.y), Math.min(right.a.y, right.b.y));
       const yMax = Math.min(Math.max(left.a.y, left.b.y), Math.max(right.a.y, right.b.y));
@@ -1016,7 +1026,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         const areaM2 = boxArea(box) / 1e6;
         if (y1 - y0 < 1500 || areaM2 < 2 || areaM2 > 150
           || bayImageShowsFullX(allSegs, box)
-          || out.some((panel) => overlapFrac(panel.box, box) > 0.6)) continue;
+          // Visual candidates represent separate physical bays. Even a modest
+          // overlap means a farther pair of structural faces has spanned an
+          // intervening wall/column; retain the nearer bay instead.
+          || out.some((panel) => overlapFrac(panel.box, box) > 0.1)) continue;
         const centre = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
         out.push({ label: 'UNMARKED SLAB', box, lengthMm: x1 - x0, breadthMm: y1 - y0,
           openingM2: 0, thicknessMm: panelThickness(box, centre, thicknesses),

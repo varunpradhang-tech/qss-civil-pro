@@ -112,6 +112,12 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   for (const hatch of dwg.hatches.filter((h) => isStructuralBoundaryLayer(h.layer)))
     for (let i = 0; i < hatch.pts.length; i++) segs.push({ a: hatch.pts[i], b: hatch.pts[(i + 1) % hatch.pts.length], layer: hatch.layer });
 
+  // First visual rule for every drawing: reconnect collinear structural
+  // fragments split by blocks, supports, joints or drafting breaks. These
+  // synthetic runs supplement (never replace) the original CAD entities, so
+  // every downstream slab rule sees the same visually continuous boundary.
+  segs.push(...joinBrokenStructuralSegments(segs));
+
   const H = segs.filter((s) => Math.abs(s.a.y - s.b.y) < ALIGN_TOL)
     .map((s) => ({ y: (s.a.y + s.b.y) / 2, x1: Math.min(s.a.x, s.b.x), x2: Math.max(s.a.x, s.b.x) }));
   const V = segs.filter((s) => Math.abs(s.a.x - s.b.x) < ALIGN_TOL)
@@ -1408,8 +1414,9 @@ function simplifyCollinearPolygon(polygon: Pt[]): Pt[] {
 
 /** Join collinear beam-face fragments across columns/supports. CAD framing
  * plans commonly split one 40 m dotted face into many 3–8 m entities. */
-export function mergeAxisBeamSegments(segments: Segment[], bridge = 2000): Segment[] {
-  const source = segments.filter((s) => /beam|slab|chajja|edge/i.test(s.layer));
+function mergeAxisFragments(segments: Segment[], bridge: number,
+  include: (segment: Segment) => boolean, outputLayer: string): Segment[] {
+  const source = segments.filter(include);
   const items = source.map((s) => {
     const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
     const horizontal = Math.abs(dx) >= Math.abs(dy) * 4;
@@ -1438,11 +1445,21 @@ export function mergeAxisBeamSegments(segments: Segment[], bridge = 2000): Segme
         else merged.push([...interval]);
       }
       for (const [lo, hi] of merged) if (hi - lo >= 600) out.push(horizontal
-        ? { layer: 'MERGED BEAM', lineType: dashed ? 'HIDDEN' : 'CONTINUOUS', a: { x: lo, y: line.coord }, b: { x: hi, y: line.coord } }
-        : { layer: 'MERGED BEAM', lineType: dashed ? 'HIDDEN' : 'CONTINUOUS', a: { x: line.coord, y: lo }, b: { x: line.coord, y: hi } });
+        ? { layer: outputLayer, lineType: dashed ? 'HIDDEN' : 'CONTINUOUS', a: { x: lo, y: line.coord }, b: { x: hi, y: line.coord } }
+        : { layer: outputLayer, lineType: dashed ? 'HIDDEN' : 'CONTINUOUS', a: { x: line.coord, y: lo }, b: { x: line.coord, y: hi } });
     }
   }
   return out;
+}
+
+export function mergeAxisBeamSegments(segments: Segment[], bridge = 2000): Segment[] {
+  return mergeAxisFragments(segments, bridge, (segment) => /beam|slab|chajja|edge/i.test(segment.layer), 'MERGED BEAM');
+}
+
+/** Drawing-wide visual preprocessing. Join only short gaps between collinear
+ * beam/wall/column/RCC faces; a larger opening remains open. */
+export function joinBrokenStructuralSegments(segments: Segment[], bridge = 900): Segment[] {
+  return mergeAxisFragments(segments, bridge, isStructuralBoundarySegment, 'VISUALLY JOINED STRUCTURE');
 }
 
 /** Long internal slab/corridor bounded by dotted beam faces. It is accepted

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoProposePanels, detectClosedCantileverStrips, detectLongDottedSlabStrips, markDuplicates } from '../src/extract/panels.js';
+import { autoProposePanels, detectClosedCantileverStrips, detectLongDottedSlabStrips, joinBrokenStructuralSegments, markDuplicates } from '../src/extract/panels.js';
 import { extractMembers, selectGeometrySheet } from '../src/extract/extractMembers.js';
 import type { NormalizedDwg } from '../src/domain/types.js';
 
@@ -17,6 +17,19 @@ const drawing = (): NormalizedDwg => ({
 });
 
 describe('unmarked slab geometry', () => {
+  it('visually joins broken collinear structural boundaries but leaves a true opening open', () => {
+    const fragments = [
+      { layer: 'RCC WALL', a: { x: 0, y: 0 }, b: { x: 1500, y: 0 } },
+      { layer: 'RCC WALL', a: { x: 2100, y: 0 }, b: { x: 4000, y: 0 } },
+      { layer: 'RCC WALL', a: { x: 6000, y: 0 }, b: { x: 7500, y: 0 } },
+      { layer: 'RCC WALL', a: { x: 8700, y: 0 }, b: { x: 10000, y: 0 } },
+    ];
+    const joined = joinBrokenStructuralSegments(fragments);
+    expect(joined).toContainEqual(expect.objectContaining({
+      a: { x: 0, y: 0 }, b: { x: 4000, y: 0 },
+    }));
+    expect(joined.some((segment) => segment.a.x === 6000 && segment.b.x === 10000)).toBe(false);
+  });
   it('uses numeric slab-thickness marks as review-only seeds on a framing plan', () => {
     const plan = drawing();
     plan.texts = [{ layer: 'SHEET-TEXT', text: 'TYPICAL FLOOR FRAMING PLAN', pos: { x: 10000, y: -5000 } }];

@@ -990,6 +990,39 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         thicknessMm: panelThickness(box, centre, thicknesses), confident: false,
         duplicate: false, visualBoundary: true });
     }
+    // Raster-style rectangular recovery does not depend on a successful CAD
+    // face walk. Build visible side runs from all structural strokes, then
+    // test the spaces between paired dotted beam faces. This handles mirrored
+    // bays where duplicated/split column entities make polygon topology fail.
+    const visibleRuns = mergeAxisBeamSegments(segs.filter(inPlan)
+      .map((segment) => ({ ...segment, layer: 'BEAM', lineType: 'CONTINUOUS' })), 300);
+    const visibleH = visibleRuns.filter((segment) => Math.abs(segment.a.y - segment.b.y) < ALIGN_TOL);
+    const dottedV = localDotted.filter((segment) => Math.abs(segment.a.x - segment.b.x) < ALIGN_TOL);
+    for (let leftIndex = 0; leftIndex < dottedV.length; leftIndex++) for (let rightIndex = leftIndex + 1;
+      rightIndex < dottedV.length; rightIndex++) {
+      const left = dottedV[leftIndex], right = dottedV[rightIndex];
+      const x0 = Math.min(left.a.x, right.a.x), x1 = Math.max(left.a.x, right.a.x);
+      const yMin = Math.max(Math.min(left.a.y, left.b.y), Math.min(right.a.y, right.b.y));
+      const yMax = Math.min(Math.max(left.a.y, left.b.y), Math.max(right.a.y, right.b.y));
+      if (x1 - x0 < 1500 || x1 - x0 > 15_000 || yMax - yMin < 1500) continue;
+      const crossings = visibleH.filter((line) => {
+        const lo = Math.min(line.a.x, line.b.x), hi = Math.max(line.a.x, line.b.x);
+        const y = (line.a.y + line.b.y) / 2;
+        return y >= yMin - 300 && y <= yMax + 300 && lo <= x0 + 300 && hi >= x1 - 300;
+      }).map((line) => (line.a.y + line.b.y) / 2).sort((a, b) => a - b);
+      for (let i = 0; i < crossings.length - 1; i++) {
+        const y0 = crossings[i], y1 = crossings[i + 1];
+        const box = { x0, y0, x1, y1 };
+        const areaM2 = boxArea(box) / 1e6;
+        if (y1 - y0 < 1500 || areaM2 < 2 || areaM2 > 150
+          || bayImageShowsFullX(allSegs, box)
+          || out.some((panel) => overlapFrac(panel.box, box) > 0.6)) continue;
+        const centre = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+        out.push({ label: 'UNMARKED SLAB', box, lengthMm: x1 - x0, breadthMm: y1 - y0,
+          openingM2: 0, thicknessMm: panelThickness(box, centre, thicknesses),
+          confident: false, duplicate: false, visualBoundary: true });
+      }
+    }
     // Keep actual dotted-beam faces in the marked plan footprint too. Other
     // geometry-only fallbacks can be beam sections elsewhere on a mixed sheet.
     const dotted = out.filter((panel) => panel.hatchConnectedBoundary || panel.visualBoundary || (panel.dottedBoundary

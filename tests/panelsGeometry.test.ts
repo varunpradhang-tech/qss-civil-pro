@@ -133,6 +133,34 @@ describe('unmarked slab geometry', () => {
     }));
   });
 
+  it('visually recovers a mirrored bay when split solid and dotted strokes break its CAD face', () => {
+    const plan = drawing();
+    plan.texts = [{ layer: 'TITLE', text: 'FRAMING PLAN', pos: { x: 10000, y: -5000 } }];
+    plan.segments = [];
+    for (let i = 0; i < 4; i++) {
+      const x0 = i * 5000, x1 = x0 + 4000;
+      plan.segments.push(
+        { layer: 'BEAM', a: { x: x0, y: 0 }, b: { x: x1, y: 0 } },
+        { layer: 'BEAM', a: { x: x0, y: 3000 }, b: { x: x1, y: 3000 } },
+        { layer: 'BEAM', a: { x: x0, y: 0 }, b: { x: x0, y: 3000 } },
+        { layer: 'BEAM', a: { x: x1, y: 0 }, b: { x: x1, y: 3000 } },
+      );
+      plan.texts.push({ layer: 'S-slab thk.', text: '150', pos: { x: x0 + 2000, y: 1500 } });
+    }
+    plan.segments.push(
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 19500, y: 0 }, b: { x: 19500, y: 3000 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 22500, y: 0 }, b: { x: 22500, y: 3000 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 19500, y: 3000 }, b: { x: 22500, y: 3000 } },
+      // The visible top is continuous to a human but split across entity types.
+      { layer: 'COLUMN', a: { x: 19500, y: 0 }, b: { x: 21200, y: 0 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 21200, y: 0 }, b: { x: 22500, y: 0 } },
+    );
+    expect(autoProposePanels(plan)).toContainEqual(expect.objectContaining({
+      label: 'UNMARKED SLAB', box: { x0: 19500, y0: 0, x1: 22500, y1: 3000 },
+      visualBoundary: true, confident: false,
+    }));
+  });
+
   it('follows a thickness-confirmed slab hatch past a beam label into its connected lower loop', () => {
     const plan = drawing();
     plan.texts = [{ layer: 'TITLE', text: 'FRAMING PLAN', pos: { x: 10000, y: -5000 } }];

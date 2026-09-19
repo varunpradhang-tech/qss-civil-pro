@@ -149,14 +149,14 @@ describe('unmarked slab geometry', () => {
     }
     plan.segments.push(
       { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 19500, y: 0 }, b: { x: 19500, y: 3000 } },
-      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 22500, y: 0 }, b: { x: 22500, y: 3000 } },
-      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 19500, y: 3000 }, b: { x: 22500, y: 3000 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 21500, y: 0 }, b: { x: 21500, y: 3000 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 19500, y: 3000 }, b: { x: 21500, y: 3000 } },
       // The visible top is continuous to a human but split across entity types.
-      { layer: 'COLUMN', a: { x: 19500, y: 0 }, b: { x: 21200, y: 0 } },
-      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 21200, y: 0 }, b: { x: 22500, y: 0 } },
+      { layer: 'COLUMN', a: { x: 19500, y: 0 }, b: { x: 20500, y: 0 } },
+      { layer: 'BEAM', lineType: 'HIDDEN', a: { x: 20500, y: 0 }, b: { x: 21500, y: 0 } },
     );
     expect(autoProposePanels(plan)).toContainEqual(expect.objectContaining({
-      label: 'UNMARKED SLAB', box: { x0: 19500, y0: 0, x1: 22500, y1: 3000 },
+      label: 'UNMARKED SLAB', box: { x0: 19500, y0: 0, x1: 21500, y1: 3000 },
       visualBoundary: true, confident: false,
     }));
   });

@@ -222,6 +222,7 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     }
     r.nos = 1;
     const reviewReasons = [
+      p.visualBoundary ? 'recovered by on-device visual boundary detection' : '',
       p.duplicate ? 'overlaps a stronger panel' : '',
       !p.confident ? 'dimension/void uncertain' : '',
       missingThickness ? 'no slab thickness found in panel, schedule, or UNO general note; using 175 mm fallback' : '',

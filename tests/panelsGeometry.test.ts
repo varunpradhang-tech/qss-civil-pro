@@ -95,9 +95,11 @@ describe('unmarked slab geometry', () => {
       box: { x0: 19500, y0: 0, x1: 21500, y1: 3000 }, visualBoundary: true,
       confident: false,
     }));
+    // An inset lift X covering 40% of the proposed visual bay is still a
+    // void, even though its strokes do not touch the outer beam corners.
     plan.segments.push(
-      { layer: 'VOID', a: { x: 19500, y: 0 }, b: { x: 21500, y: 3000 } },
-      { layer: 'VOID', a: { x: 19500, y: 3000 }, b: { x: 21500, y: 0 } },
+      { layer: 'VOID', a: { x: 19900, y: 500 }, b: { x: 21100, y: 2500 } },
+      { layer: 'VOID', a: { x: 19900, y: 2500 }, b: { x: 21100, y: 500 } },
     );
     expect(autoProposePanels(plan).some((panel) => panel.visualBoundary)).toBe(false);
   });
@@ -531,6 +533,11 @@ describe('unmarked slab geometry', () => {
     expect(autoProposePanels(plan)).toEqual(expect.arrayContaining([
       expect.objectContaining({ box: { x0: 2000, y0: 0, x1: 4000, y1: 3000 }, visualBoundary: true }),
     ]));
+    for (let x = 2200; x <= 3800; x += 300) plan.segments.push({
+      layer: 'A-Plan-Stair', a: { x, y: 300 }, b: { x, y: 2700 },
+    });
+    expect(autoProposePanels(plan).some((panel) => panel.box.x0 === 2000
+      && panel.box.y0 === 0 && panel.box.x1 === 4000 && panel.box.y1 === 3000)).toBe(false);
   });
 
   it('prefers a slab schedule row over the UNO general-note default', () => {

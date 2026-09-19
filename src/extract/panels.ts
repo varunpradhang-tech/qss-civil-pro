@@ -1073,6 +1073,15 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // numbering, Excel export, totals, and reference-file marking.
   const measurable = out.filter((panel) => {
     const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+    // A stair flight can also be bounded by beams/walls, but its repeated
+    // treads are not a slab panel. Apply this at final verification so every
+    // proposal path (dotted, mixed, hatch or visual) obeys the same rule.
+    const stairStrokes = allSegs.filter((segment) => /(?:^|[-_$\s])(?:stair|step|flight)(?:$|[-_$\s])/i.test(segment.layer)
+      && ((segment.a.x + segment.b.x) / 2) >= panel.box.x0
+      && ((segment.a.x + segment.b.x) / 2) <= panel.box.x1
+      && ((segment.a.y + segment.b.y) / 2) >= panel.box.y0
+      && ((segment.a.y + segment.b.y) / 2) <= panel.box.y1);
+    if (stairStrokes.length >= 4) return false;
     // Final sheet-level safeguard: later recovery passes (hatches, mixed
     // cantilever faces and closed-strip detection) must not re-introduce a
     // section, projection or schedule cell that the primary plan pass
@@ -1102,6 +1111,20 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // cutout can be divided between a retained panel and a nested proposal that
   // is subsequently deleted, silently losing part of the deduction.
   markDuplicates(measurable);
+  // Near-rectangular beam bays are measured to their verified orthogonal
+  // boundaries. Small drafting skews in one CAD face must not create an
+  // artificial trapezoid or different quantities for mirrored panels.
+  for (const panel of measurable) {
+    if (!panel.visualBoundary || panel.polygon?.length !== 4 || panel.netAreaM2 === undefined) continue;
+    const rectAreaM2 = boxArea(panel.box) / 1e6;
+    if (rectAreaM2 > 0 && panel.netAreaM2 / rectAreaM2 >= 0.9) {
+      panel.polygon = [
+        { x: panel.box.x0, y: panel.box.y0 }, { x: panel.box.x1, y: panel.box.y0 },
+        { x: panel.box.x1, y: panel.box.y1 }, { x: panel.box.x0, y: panel.box.y1 },
+      ];
+      panel.netAreaM2 = rectAreaM2;
+    }
+  }
   assignCutouts(measurable.filter((panel) => !panel.duplicate), cutouts); // QSS-SLAB-004
   for (const panel of measurable) if (panel.openingM2 < 0.4) panel.openingM2 = 0;
   // An inferred hatch/cantilever proposal that is mostly an opening is an
@@ -1109,8 +1132,9 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // are retained and receive the normal IS-code opening deduction instead.
   for (const panel of measurable) {
     const gross = panel.netAreaM2 ?? boxArea(panel.box) / 1e6;
+    const openingRatio = gross > 0 ? panel.openingM2 / gross : 0;
     if (!/^S\d+[A-Z]?$/i.test(panel.label || '') && gross > 0
-      && panel.openingM2 / gross >= 0.5) panel.duplicate = true;
+      && (openingRatio >= 0.5 || (panel.visualBoundary && openingRatio >= 0.35))) panel.duplicate = true;
   }
   // An L-shaped chajja is commonly drawn as two perpendicular strips. Deduct
   // their shared corner only after nested/false candidates have been removed;

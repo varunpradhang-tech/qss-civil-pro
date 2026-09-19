@@ -361,7 +361,7 @@ export function ExtractPage() {
         <section className="ai-review-panel" aria-labelledby="ai-review-title">
           <div className="ai-review-heading">
             <div>
-              <h3 id="ai-review-title"><BrainCircuit size={18} /> AI-assisted review queue</h3>
+              <h3 id="ai-review-title"><BrainCircuit size={18} /> Rule-engine review queue</h3>
               <p>Review-only safety mode. These items remain calculated by the deterministic rule engine; the buttons record review decisions and do not change quantity.</p>
             </div>
             <span>{s.aiReviewQueue.filter((record) => record.decision === 'pending').length} pending</span>

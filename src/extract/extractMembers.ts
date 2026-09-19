@@ -232,7 +232,10 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     r.openings = round3(p.openingM2);
     if (p.netAreaM2 !== undefined) {
       r.netArea = round3(Math.max(p.netAreaM2 - p.openingM2, 0));
-      r.cadPolygon = p.polygon;
+      // Keep exact polygon geometry only for genuinely irregular panels.
+      // Near-rectangular visual candidates have already been normalized to
+      // their verified bounding rectangle and must render/export as such.
+      r.cadPolygon = irregularAreaOnly ? p.polygon : undefined;
     }
     r.nos = 1;
     const reviewReasons = [

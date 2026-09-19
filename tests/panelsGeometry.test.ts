@@ -795,6 +795,8 @@ describe('unmarked slab geometry', () => {
     const irregular = autoProposePanels(hatched).find((panel) => panel.label === 'HATCH-SLAB');
     expect(irregular?.polygon).toHaveLength(4);
     expect(irregular?.netAreaM2).toBeCloseTo(9.25, 3);
+    const irregularMember = extractMembers(hatched, 'slab').find((member) => member.netArea === 9.25);
+    expect(irregularMember).toMatchObject({ length: 0, breadth: 0, netArea: 9.25 });
   });
 
   it('does not let an internal irregular hatch reshape a bounded S-labelled rectangle', () => {

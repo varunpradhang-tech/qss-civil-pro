@@ -1015,6 +1015,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const visibleRuns = mergeAxisBeamSegments(visibleSource
       .map((segment) => ({ ...segment, layer: 'BEAM', lineType: 'CONTINUOUS' })), 80);
     const structuralRuns = mergeAxisBeamSegments(segs.filter(inPlan), 80);
+    const visibleFaces = polygoniseCadFaces([
+      ...visibleSource,
+      ...mergeAxisFragments(visibleSource, 80, () => true, 'VISUALLY JOINED GENERIC'),
+    ], 80);
     const visibleH = visibleRuns.filter((segment) => Math.abs(segment.a.y - segment.b.y) < ALIGN_TOL);
     // Geometry decides whether a bay exists; a drawing-wide U.N.O. note only
     // supplies its measurement later. Always consider visible beam/wall/column
@@ -1068,9 +1072,22 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
           // intervening wall/column; retain the nearer bay instead.
           || out.some((panel) => overlapFrac(panel.box, box) > 0.1)) continue;
         const centre = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+        // The paired-run search supplies a reliable outer extent, but the
+        // actual closed face may be stepped or notched. Retain that polygon
+        // instead of billing its rectangular bounding box.
+        const exactFace = visibleFaces
+          .filter((face) => pointInPolygon(centre, face.polygon)
+            && Math.abs(face.box.x0 - x0) <= 300 && Math.abs(face.box.x1 - x1) <= 300
+            && Math.abs(face.box.y0 - y0) <= 300 && Math.abs(face.box.y1 - y1) <= 300)
+          .sort((a, b) => a.areaM2 - b.areaM2)[0];
+        const exactShape = exactFace ? simplifyCollinearPolygon(exactFace.polygon) : undefined;
+        const irregular = !!exactFace && !!exactShape && exactShape.length >= 3
+          && exactFace.areaM2 < areaM2 * 0.985;
         out.push({ label: 'UNMARKED SLAB', box, lengthMm: x1 - x0, breadthMm: y1 - y0,
           openingM2: 0, thicknessMm: panelThickness(box, centre, thicknesses),
-          confident: false, duplicate: false, visualBoundary: true });
+          confident: false, duplicate: false, visualBoundary: true,
+          polygon: irregular ? exactShape : undefined,
+          netAreaM2: irregular ? exactFace.areaM2 : undefined });
       }
     }
     // Keep actual dotted-beam faces in the marked plan footprint too. Other
@@ -1154,13 +1171,18 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // cutout can be divided between a retained panel and a nested proposal that
   // is subsequently deleted, silently losing part of the deduction.
   markDuplicates(measurable);
-  // Near-rectangular beam bays are measured to their verified orthogonal
-  // boundaries. Small drafting skews in one CAD face must not create an
-  // artificial trapezoid or different quantities for mirrored panels.
+  // Near-rectangular slab outlines are measured to their verified orthogonal
+  // boundaries. Apply this consistently to every proposal path, not only a
+  // previously reported panel. True stepped/notched polygons remain exact.
   for (const panel of measurable) {
-    if (!panel.visualBoundary || panel.polygon?.length !== 4 || panel.netAreaM2 === undefined) continue;
+    if (panel.polygon?.length !== 4 || panel.netAreaM2 === undefined) continue;
     const rectAreaM2 = boxArea(panel.box) / 1e6;
-    if (rectAreaM2 > 0 && panel.netAreaM2 / rectAreaM2 >= 0.9) {
+    const orthogonal = panel.polygon.every((point, index) => {
+      const next = panel.polygon![(index + 1) % panel.polygon!.length];
+      const dx = Math.abs(next.x - point.x), dy = Math.abs(next.y - point.y);
+      return Math.min(dx, dy) <= Math.max(80, Math.max(dx, dy) * 0.035);
+    });
+    if (rectAreaM2 > 0 && orthogonal && panel.netAreaM2 / rectAreaM2 >= 0.985) {
       panel.polygon = [
         { x: panel.box.x0, y: panel.box.y0 }, { x: panel.box.x1, y: panel.box.y0 },
         { x: panel.box.x1, y: panel.box.y1 }, { x: panel.box.x0, y: panel.box.y1 },

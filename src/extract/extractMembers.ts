@@ -214,8 +214,14 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     r.cadY0 = p.box.y0;
     r.cadX1 = p.box.x1;
     r.cadY1 = p.box.y1;
-    r.length = round3(p.lengthMm / 1000);
-    r.breadth = round3(p.breadthMm / 1000);
+    const boundingAreaM2 = (p.lengthMm / 1000) * (p.breadthMm / 1000);
+    const irregularAreaOnly = !!p.polygon && p.netAreaM2 !== undefined
+      && (p.polygon.length !== 4 || boundingAreaM2 <= 0 || p.netAreaM2 / boundingAreaM2 < 0.985);
+    // A bounding rectangle is reference geometry, not a valid L × B
+    // measurement for a stepped/notched slab. Such panels are billed only by
+    // their exact polygonal net area.
+    r.length = irregularAreaOnly ? 0 : round3(p.lengthMm / 1000);
+    r.breadth = irregularAreaOnly ? 0 : round3(p.breadthMm / 1000);
     const explicitCode = (p.inferredSlabCode || p.label)?.replace(/\s/g, '').toUpperCase();
     const slabCode = explicitCode && /^S\d+[A-Z]?$/.test(explicitCode) ? explicitCode : scheduleDefaultCode;
     if (!p.label && slabCode) r.member = `P${i + 1} (${slabCode})`;

@@ -342,9 +342,13 @@ export function ExtractPage() {
                   <td><input type="radio" name="member-select" checked={selected === r.id} onChange={() => setSelected(r.id)} /></td>
                   <td><input value={r.member} onChange={(e) => s.updateMember(r.id, { member: e.target.value })} /></td>
                   <td><input value={r.floor} onChange={(e) => s.updateMember(r.id, { floor: e.target.value })} /></td>
-                  {fields.map((f) => (
-                    <td key={f}><input type="number" value={r[f] as number} onChange={(e) => s.updateMember(r.id, { [f]: +e.target.value } as Partial<MemberRow>)} /></td>
-                  ))}
+                  {fields.map((f) => {
+                    const areaOnlyDimension = r.netArea !== undefined && r.cadPolygon
+                      && (f === 'length' || f === 'breadth') && Number(r[f]) === 0;
+                    return <td key={f}>{areaOnlyDimension
+                      ? <span title="Irregular slab—measured by exact net area">Area only</span>
+                      : <input type="number" value={r[f] as number} onChange={(e) => s.updateMember(r.id, { [f]: +e.target.value } as Partial<MemberRow>)} />}</td>;
+                  })}
                   <td className="qty-cell">{qtyText(disp(rowQty(r), rule.unit).v)}</td>
                 </tr>
               ))}

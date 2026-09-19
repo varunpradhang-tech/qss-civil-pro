@@ -83,6 +83,10 @@ const CUTOUT_LAYERS = /cut|open|void|shaft|lift|duct|ots/i;
 // slab faces. Likewise, cutout outlines are applied after the gross panel is
 // found and must never shorten or subdivide that panel.
 const NON_STRUCTURAL_BOUNDARY_LAYERS = /grid|axis|centre|center|dim|dimension|annot|text|title|schedule|section|cut|open|void|shaft|lift|duct|ots/i;
+// A rendered framing-plan boundary is sometimes placed on a generic CAD
+// layer. Keep those visible strokes available to the visual enclosure pass,
+// while excluding annotation, services, finishes and known non-slab symbols.
+const NON_VISUAL_BOUNDARY_LAYERS = /grid|axis|centre|center|dim|dimension|annot|text|title|schedule|section|cut|open|void|shaft|lift|duct|ots|rebar|reinfor|elect|plumb|sanit|furn|door|window|tile|finish|hatch|stair|step|flight|rail|leader/i;
 const isStructuralBoundaryLayer = (layer: string) => BOUND_LAYERS.test(layer)
   && !NON_STRUCTURAL_BOUNDARY_LAYERS.test(layer);
 // Some CAD sheets draw a column grid on a layer such as COL-1 without naming
@@ -91,6 +95,13 @@ const isStructuralBoundarySegment = (segment: Segment) => isStructuralBoundaryLa
   && !(/col/i.test(segment.layer)
     && Math.hypot(segment.b.x - segment.a.x, segment.b.y - segment.a.y) > 50_000);
 const ALIGN_TOL = 200;
+const isVisiblePlanBoundarySegment = (segment: Segment) => {
+  const dx = Math.abs(segment.b.x - segment.a.x), dy = Math.abs(segment.b.y - segment.a.y);
+  const length = Math.hypot(dx, dy);
+  return !NON_VISUAL_BOUNDARY_LAYERS.test(segment.layer)
+    && !/center|dashdot|phantom/i.test(segment.lineType || '')
+    && (dx < ALIGN_TOL || dy < ALIGN_TOL) && length >= 300 && length <= 30_000;
+};
 
 export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const allSegs: Segment[] = [...dwg.segments];
@@ -1000,8 +1011,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // face walk. Build visible side runs from all structural strokes, then
     // test the spaces between paired dotted beam faces. This handles mirrored
     // bays where duplicated/split column entities make polygon topology fail.
-    const visibleRuns = mergeAxisBeamSegments(segs.filter(inPlan)
-      .map((segment) => ({ ...segment, layer: 'BEAM', lineType: 'CONTINUOUS' })), 300);
+    const visibleSource = allSegs.filter((segment) => inPlan(segment) && isVisiblePlanBoundarySegment(segment));
+    const visibleRuns = mergeAxisBeamSegments(visibleSource
+      .map((segment) => ({ ...segment, layer: 'BEAM', lineType: 'CONTINUOUS' })), 80);
+    const structuralRuns = mergeAxisBeamSegments(segs.filter(inPlan), 80);
     const visibleH = visibleRuns.filter((segment) => Math.abs(segment.a.y - segment.b.y) < ALIGN_TOL);
     // Geometry decides whether a bay exists; a drawing-wide U.N.O. note only
     // supplies its measurement later. Always consider visible beam/wall/column
@@ -1024,7 +1037,31 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         const y0 = crossings[i], y1 = crossings[i + 1];
         const box = { x0, y0, x1, y1 };
         const areaM2 = boxArea(box) / 1e6;
+        const sideSupported = (line: Segment) => {
+          const horizontal = Math.abs(line.a.y - line.b.y) < ALIGN_TOL;
+          const vertical = Math.abs(line.a.x - line.b.x) < ALIGN_TOL;
+          if (horizontal) {
+            const y = (line.a.y + line.b.y) / 2;
+            const overlap = Math.max(0, Math.min(x1, Math.max(line.a.x, line.b.x))
+              - Math.max(x0, Math.min(line.a.x, line.b.x)));
+            return (Math.abs(y - y0) <= 300 || Math.abs(y - y1) <= 300)
+              && overlap >= Math.max(600, (x1 - x0) * 0.4);
+          }
+          if (vertical) {
+            const x = (line.a.x + line.b.x) / 2;
+            const overlap = Math.max(0, Math.min(y1, Math.max(line.a.y, line.b.y))
+              - Math.max(y0, Math.min(line.a.y, line.b.y)));
+            return (Math.abs(x - x0) <= 300 || Math.abs(x - x1) <= 300)
+              && overlap >= Math.max(600, (y1 - y0) * 0.4);
+          }
+          return false;
+        };
+        // Generic-layer lines may complete a visible bay, but they cannot
+        // create quantities alone: at least one side must still be confirmed
+        // by a beam/wall/column/RCC entity.
+        const structurallyCorroborated = structuralRuns.some(sideSupported);
         if (y1 - y0 < 1500 || areaM2 < 2 || areaM2 > 150
+          || !structurallyCorroborated
           || bayImageShowsFullX(allSegs, box)
           // Visual candidates represent separate physical bays. Even a modest
           // overlap means a farther pair of structural faces has spanned an

@@ -47,12 +47,20 @@ describe('unmarked slab geometry', () => {
       );
       plan.texts.push({ layer: 'S-slab thk.', text: '150', pos: { x: x0 + 2000, y: 1500 } });
     }
+    // An adjacent bay is visibly closed, but three sides are on a generic
+    // consultant layer. The shared RCC/beam side corroborates the enclosure.
+    plan.segments.push(
+      { layer: 'A-WORK', a: { x: 19000, y: 0 }, b: { x: 22000, y: 0 } },
+      { layer: 'A-WORK', a: { x: 19000, y: 3000 }, b: { x: 22000, y: 3000 } },
+      { layer: 'A-WORK', a: { x: 22000, y: 0 }, b: { x: 22000, y: 3000 } },
+    );
     // A section callout in the plan must not erase the marked slab bays.
     plan.texts.push({ layer: 'SHEET-TEXT', text: 'SECTION 1-1', pos: { x: 2000, y: 5000 } });
     const panels = autoProposePanels(plan);
-    expect(panels).toHaveLength(4);
-    expect(panels.every((panel) => panel.label === 'UNMARKED SLAB'
-      && panel.thicknessMm === 150 && !panel.confident)).toBe(true);
+    expect(panels).toHaveLength(5);
+    expect(panels).toContainEqual(expect.objectContaining({
+      label: 'UNMARKED SLAB', box: { x0: 19000, y0: 0, x1: 22000, y1: 3000 }, visualBoundary: true,
+    }));
   });
 
   it('keeps an adjacent unmarked dotted-beam slab alongside thickness-marked bays', () => {

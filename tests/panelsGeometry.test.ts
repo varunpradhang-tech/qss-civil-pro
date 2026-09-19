@@ -505,7 +505,7 @@ describe('unmarked slab geometry', () => {
     expect(member.reviewReason).not.toContain('using 175 mm fallback');
   });
 
-  it('uses a slab UNO note to recover a wall-enclosed visual bay without dotted beam faces', () => {
+  it('recovers a wall-enclosed visual bay without using a UNO note as geometry evidence', () => {
     const plan = drawing();
     plan.segments = [
       { layer: 'WALL', a: { x: 2000, y: 0 }, b: { x: 2000, y: 3000 } },
@@ -515,7 +515,6 @@ describe('unmarked slab geometry', () => {
     ];
     plan.texts = [
       { layer: 'TITLE', text: 'TYPICAL FLOOR FRAMING PLAN', pos: { x: 9000, y: -3000 } },
-      { layer: 'NOTES', text: '9. FOR ALL SLAB SHALL BE 140MM THK. U.N.O.', pos: { x: 9000, y: 9000 } },
     ];
     // Seed neighbouring marked bays so this region is established as the
     // framing-plan footprint; the candidate itself has no S-code/number.

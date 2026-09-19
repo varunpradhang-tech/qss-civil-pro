@@ -147,15 +147,6 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     .map((t) => ({ text: t.text.replace(/\s/g, '').toUpperCase(), pos: t.pos, trustedLayer: /slabs?\s*no/i.test(t.layer) }));
   const cutouts = extractCutouts(dwg);
   const thicknesses = extractThicknesses(dwg);
-  // A U.N.O. slab-thickness note is drawing-wide slab evidence. It does not
-  // create geometry by itself, but it permits the visual pass to close a bay
-  // with solid wall/column/outer-beam faces when dotted inner beam faces are
-  // absent. Full-bay X and overlap rejection still apply below.
-  const hasSlabUnoNote = dwg.texts.some((text) => {
-    const normalized = text.text.replace(/\\P|\r?\n/g, ' ').replace(/\s+/g, ' ');
-    return /(?:FOR\s+)?ALL\s+SLABS?(?:\s+THICKNESS)?\s+SHALL\s+BE/i.test(normalized)
-      && /U\s*\.?\s*N\s*\.?\s*O/i.test(normalized);
-  });
   const sectionCantileverThickness = cantileverSectionThickness(dwg);
   const holdNotes = dwg.texts.filter((t) => /HOLD/i.test(t.text.replace(/\s+/g, '')));
 
@@ -1006,7 +997,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const visibleRuns = mergeAxisBeamSegments(segs.filter(inPlan)
       .map((segment) => ({ ...segment, layer: 'BEAM', lineType: 'CONTINUOUS' })), 300);
     const visibleH = visibleRuns.filter((segment) => Math.abs(segment.a.y - segment.b.y) < ALIGN_TOL);
-    const verticalSides = (hasSlabUnoNote ? visibleRuns : localDotted)
+    // Geometry decides whether a bay exists; a drawing-wide U.N.O. note only
+    // supplies its measurement later. Always consider visible beam/wall/column
+    // sides here, then reject X-marked and overlapping false candidates.
+    const verticalSides = visibleRuns
       .filter((segment) => Math.abs(segment.a.x - segment.b.x) < ALIGN_TOL);
     for (let leftIndex = 0; leftIndex < verticalSides.length; leftIndex++) for (let rightIndex = leftIndex + 1;
       rightIndex < verticalSides.length; rightIndex++) {

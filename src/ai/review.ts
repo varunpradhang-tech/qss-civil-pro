@@ -1,5 +1,6 @@
 import type { MemberRow } from '../takeoff/rules.js';
 import { AI_REVIEW_SCHEMA_VERSION, type AiPanelProposal, type AiReviewRecord } from './contracts.js';
+import { irregularPanelPolygon } from '../takeoff/panelGeometry.js';
 
 const finitePoint = (point: { x: number; y: number }): boolean => Number.isFinite(point.x) && Number.isFinite(point.y);
 
@@ -48,11 +49,13 @@ function memberBoundary(member: MemberRow): { x: number; y: number }[] {
 export function buildRuleEngineReviewQueue(members: MemberRow[], sourceFile: string): AiReviewRecord[] {
   return members
     .filter((member) => member.needsReview)
-    .map((member) => validateAiPanelProposal({
+    .map((member) => {
+      const exactPolygon = irregularPanelPolygon(member);
+      return validateAiPanelProposal({
       schemaVersion: AI_REVIEW_SCHEMA_VERSION,
       id: `review-${member.id}`,
       memberId: member.id,
-      shape: member.cadPolygon?.length === 3 ? 'triangle' : member.cadPolygon?.length ? 'polygon' : 'rectangle',
+      shape: exactPolygon?.length === 3 ? 'triangle' : exactPolygon ? 'polygon' : 'rectangle',
       boundary: memberBoundary(member),
       slabCode: member.member.match(/\(([^)]+)\)/)?.[1],
       thicknessMm: member.height > 0 ? member.height * 1000 : undefined,
@@ -64,5 +67,6 @@ export function buildRuleEngineReviewQueue(members: MemberRow[], sourceFile: str
         confidence: 0.5,
       }],
       warnings: member.reviewReason ? [member.reviewReason] : [],
-    }));
+      });
+    });
 }

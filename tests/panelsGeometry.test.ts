@@ -502,7 +502,7 @@ describe('unmarked slab geometry', () => {
     ] };
     const [member] = extractMembers([drawing(), notes], 'slab');
     expect(member).toMatchObject({ height: 0.14, slabThickness: 0.14 });
-    expect(member.reviewReason).not.toContain('using 175 mm fallback');
+    expect(member.reviewReason ?? '').not.toContain('using 175 mm fallback');
   });
 
   it('recovers a wall-enclosed visual bay without using a UNO note as geometry evidence', () => {

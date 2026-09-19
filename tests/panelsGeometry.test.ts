@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoProposePanels, detectClosedCantileverStrips, detectLongDottedSlabStrips, joinBrokenStructuralSegments, markDuplicates } from '../src/extract/panels.js';
+import { autoProposePanels, detectClosedCantileverStrips, detectLongDottedSlabStrips, joinBrokenStructuralSegments, markDuplicates, normalizeNearRectangularPanels } from '../src/extract/panels.js';
 import { extractMembers, selectGeometrySheet } from '../src/extract/extractMembers.js';
 import type { NormalizedDwg } from '../src/domain/types.js';
 
@@ -17,6 +17,23 @@ const drawing = (): NormalizedDwg => ({
 });
 
 describe('unmarked slab geometry', () => {
+  it('straightens a four-edge visual bay without rectangularising a notched slab', () => {
+    const panels = [
+      { label: 'UNMARKED SLAB', box: { x0: 0, y0: 0, x1: 4450, y1: 3100 },
+        polygon: [{ x: 0, y: 0 }, { x: 4450, y: 0 }, { x: 4450, y: 3100 }, { x: 0, y: 2860 }],
+        netAreaM2: 13.261, lengthMm: 4450, breadthMm: 3100, openingM2: 0, thicknessMm: 140,
+        confident: false, duplicate: false, visualBoundary: true },
+      { label: 'UNMARKED SLAB', box: { x0: 5000, y0: 0, x1: 10000, y1: 5000 },
+        polygon: [{ x: 5000, y: 0 }, { x: 10000, y: 0 }, { x: 10000, y: 5000 },
+          { x: 6000, y: 5000 }, { x: 6000, y: 3500 }, { x: 5000, y: 3500 }],
+        netAreaM2: 23.5, lengthMm: 5000, breadthMm: 5000, openingM2: 0, thicknessMm: 225,
+        confident: false, duplicate: false, visualBoundary: true },
+    ];
+    normalizeNearRectangularPanels(panels);
+    expect(panels[0].netAreaM2).toBeCloseTo(13.795, 3);
+    expect(panels[1].polygon).toHaveLength(6);
+    expect(panels[1].netAreaM2).toBe(23.5);
+  });
   it('joins drawing breaks up to 80 mm but preserves 100-150 mm expansion joints', () => {
     const fragments = [
       { layer: 'RCC WALL', a: { x: 0, y: 0 }, b: { x: 1500, y: 0 } },

@@ -1174,22 +1174,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // Near-rectangular slab outlines are measured to their verified orthogonal
   // boundaries. Apply this consistently to every proposal path, not only a
   // previously reported panel. True stepped/notched polygons remain exact.
-  for (const panel of measurable) {
-    if (panel.polygon?.length !== 4 || panel.netAreaM2 === undefined) continue;
-    const rectAreaM2 = boxArea(panel.box) / 1e6;
-    const orthogonal = panel.polygon.every((point, index) => {
-      const next = panel.polygon![(index + 1) % panel.polygon!.length];
-      const dx = Math.abs(next.x - point.x), dy = Math.abs(next.y - point.y);
-      return Math.min(dx, dy) <= Math.max(80, Math.max(dx, dy) * 0.035);
-    });
-    if (rectAreaM2 > 0 && orthogonal && panel.netAreaM2 / rectAreaM2 >= 0.985) {
-      panel.polygon = [
-        { x: panel.box.x0, y: panel.box.y0 }, { x: panel.box.x1, y: panel.box.y0 },
-        { x: panel.box.x1, y: panel.box.y1 }, { x: panel.box.x0, y: panel.box.y1 },
-      ];
-      panel.netAreaM2 = rectAreaM2;
-    }
-  }
+  normalizeNearRectangularPanels(measurable);
   assignCutouts(measurable.filter((panel) => !panel.duplicate), cutouts); // QSS-SLAB-004
   for (const panel of measurable) if (panel.openingM2 < 0.4) panel.openingM2 = 0;
   // An inferred hatch/cantilever proposal that is mostly an opening is an
@@ -1214,6 +1199,27 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // A duplicate proposal represents the same physical bay and must never be
   // billed as an additional slab panel.
   return measurable.filter((panel) => !panel.duplicate);
+}
+
+export function normalizeNearRectangularPanels(panels: PanelProposalBox[]): void {
+  for (const panel of panels) {
+    if (panel.polygon?.length !== 4 || panel.netAreaM2 === undefined) continue;
+    const rectAreaM2 = boxArea(panel.box) / 1e6;
+    const skewRatio = panel.visualBoundary ? 0.07 : 0.035;
+    const fillRatio = panel.visualBoundary ? 0.9 : 0.985;
+    const orthogonal = panel.polygon.every((point, index) => {
+      const next = panel.polygon![(index + 1) % panel.polygon!.length];
+      const dx = Math.abs(next.x - point.x), dy = Math.abs(next.y - point.y);
+      return Math.min(dx, dy) <= Math.max(80, Math.max(dx, dy) * skewRatio);
+    });
+    if (rectAreaM2 > 0 && orthogonal && panel.netAreaM2 / rectAreaM2 >= fillRatio) {
+      panel.polygon = [
+        { x: panel.box.x0, y: panel.box.y0 }, { x: panel.box.x1, y: panel.box.y0 },
+        { x: panel.box.x1, y: panel.box.y1 }, { x: panel.box.x0, y: panel.box.y1 },
+      ];
+      panel.netAreaM2 = rectAreaM2;
+    }
+  }
 }
 
 // Distribute each cutout only across panels its geometry actually overlaps.

@@ -1134,9 +1134,15 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // On mixed model-space drawings, however, retain only candidates in the
     // framing-plan footprint established by the slab-thickness marks. This
     // removes remote beam details without privileging any one slab rule.
-    const planCandidates = out.filter((panel) => panel.box.x0 >= footprint.x0 - 3000
-      && panel.box.x1 <= footprint.x1 + 3000 && panel.box.y0 >= footprint.y0 - 7000
-      && panel.box.y1 <= footprint.y1 + 7000);
+    const planCandidates = out.filter((panel) => {
+      // Visually closed bays can project farther than the thickness-marked
+      // rooms (for example a notched perimeter slab beside the last marked
+      // bay). Give only those corroborated visual candidates the wider side
+      // allowance; ordinary CAD fallbacks retain the tighter detail guard.
+      const xPad = panel.visualBoundary ? 6000 : 3000;
+      return panel.box.x0 >= footprint.x0 - xPad && panel.box.x1 <= footprint.x1 + xPad
+        && panel.box.y0 >= footprint.y0 - 7000 && panel.box.y1 <= footprint.y1 + 7000;
+    });
     const planAxis = (footprint.x0 + footprint.x1) / 2;
     const recoveredMirrors: PanelProposalBox[] = [];
     for (const source of [...planCandidates]) {

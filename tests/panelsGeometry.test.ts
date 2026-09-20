@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoProposePanels, detectClosedCantileverStrips, detectLongDottedSlabStrips, joinBrokenStructuralSegments, markDuplicates, normalizeNearRectangularPanels } from '../src/extract/panels.js';
+import { autoProposePanels, detectClosedCantileverStrips, detectLongDottedSlabStrips, joinBrokenStructuralSegments, markDuplicates, normalizeMirroredPlanPanels, normalizeNearRectangularPanels, notchLargePanelsAtCornerOverlaps } from '../src/extract/panels.js';
 import { extractMembers, selectGeometrySheet } from '../src/extract/extractMembers.js';
 import type { NormalizedDwg } from '../src/domain/types.js';
 
@@ -17,6 +17,29 @@ const drawing = (): NormalizedDwg => ({
 });
 
 describe('unmarked slab geometry', () => {
+  it('uses one interpretation for mirrored top chajjas and mirrored room bays', () => {
+    const panels = [
+      { label: 'UNMARKED SLAB', box: { x0: 0, y0: 9000, x1: 12000, y1: 10557 }, lengthMm: 12000, breadthMm: 1557, openingM2: 0, thicknessMm: 140, confident: false, duplicate: false },
+      { label: 'UNMARKED SLAB', box: { x0: 18000, y0: 9300, x1: 30000, y1: 10557 }, lengthMm: 12000, breadthMm: 1257, openingM2: 0, thicknessMm: 140, confident: false, duplicate: false },
+      { label: 'UNMARKED SLAB', box: { x0: 6000, y0: 4000, x1: 9065, y1: 7850 }, lengthMm: 3065, breadthMm: 3850, openingM2: 0, thicknessMm: 140, confident: false, duplicate: false },
+      { label: 'UNMARKED SLAB', box: { x0: 20650, y0: 4000, x1: 24330, y1: 8450 }, lengthMm: 3680, breadthMm: 4450, openingM2: 0, thicknessMm: 140, confident: false, duplicate: false },
+    ];
+    normalizeMirroredPlanPanels(panels, 15000, 10557);
+    expect(panels[0].breadthMm).toBe(1600);
+    expect(panels[1].breadthMm).toBe(1600);
+    expect(panels[3].lengthMm).toBe(3065);
+    expect(panels[3].breadthMm).toBe(3850);
+  });
+
+  it('measures a large corner-notched slab by exact polygon area only', () => {
+    const panels = [
+      { label: 'UNMARKED SLAB', box: { x0: 0, y0: 0, x1: 7400, y1: 4600 }, lengthMm: 7400, breadthMm: 4600, openingM2: 0, thicknessMm: 140, confident: false, duplicate: false },
+      { label: 'CANTILEVER', box: { x0: 6800, y0: 3500, x1: 9000, y1: 5000 }, lengthMm: 2200, breadthMm: 1500, openingM2: 0, thicknessMm: 140, confident: false, duplicate: false },
+    ];
+    notchLargePanelsAtCornerOverlaps(panels);
+    expect(panels[0].polygon).toHaveLength(6);
+    expect(panels[0].netAreaM2).toBeCloseTo(33.38, 2);
+  });
   it('straightens a four-edge visual bay without rectangularising a notched slab', () => {
     const panels = [
       { label: 'UNMARKED SLAB', box: { x0: 0, y0: 0, x1: 4450, y1: 3100 },
@@ -202,6 +225,21 @@ describe('unmarked slab geometry', () => {
       label: 'UNMARKED SLAB', box: { x0: 19500, y0: 0, x1: 21500, y1: 3000 },
       visualBoundary: true, confident: false,
     }));
+  });
+
+  it('recovers mirrored unmarked bays between hidden supports and comment-layer plan edges', () => {
+    const segments = [
+      { layer: 'VIN_BEAM', lineType: 'HIDDEN', a: { x: 1000, y: 7000 }, b: { x: 3500, y: 7000 } },
+      { layer: 'A-Comments', lineType: 'CONTINUOUS', a: { x: 1000, y: 500 }, b: { x: 3500, y: 500 } },
+      { layer: 'VIN_BEAM', lineType: 'HIDDEN', a: { x: 11500, y: 7000 }, b: { x: 14000, y: 7000 } },
+      { layer: 'A-Comments', lineType: 'CONTINUOUS', a: { x: 11500, y: 500 }, b: { x: 14000, y: 500 } },
+    ];
+    const recovered = detectClosedCantileverStrips(segments);
+    expect(recovered.filter((panel) => panel.visualBoundary && panel.closedStructuralBoundary))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ label: 'UNMARKED SLAB', box: { x0: 1000, y0: 500, x1: 3500, y1: 7000 } }),
+        expect.objectContaining({ label: 'UNMARKED SLAB', box: { x0: 11500, y0: 500, x1: 14000, y1: 7000 } }),
+      ]));
   });
 
   it('follows a thickness-confirmed slab hatch past a beam label into its connected lower loop', () => {

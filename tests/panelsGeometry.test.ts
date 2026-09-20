@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { autoProposePanels, detectClosedCantileverStrips, detectLongDottedSlabStrips, joinBrokenStructuralSegments, markDuplicates, normalizeMirroredPlanPanels, normalizeNearRectangularPanels, notchLargePanelsAtCornerOverlaps } from '../src/extract/panels.js';
+import type { PanelProposalBox } from '../src/extract/panels.js';
 import { extractMembers, selectGeometrySheet } from '../src/extract/extractMembers.js';
 import type { NormalizedDwg } from '../src/domain/types.js';
 
@@ -18,7 +19,7 @@ const drawing = (): NormalizedDwg => ({
 
 describe('unmarked slab geometry', () => {
   it('uses one interpretation for mirrored top chajjas and mirrored room bays', () => {
-    const panels = [
+    const panels: PanelProposalBox[] = [
       { label: 'UNMARKED SLAB', box: { x0: 0, y0: 9000, x1: 12000, y1: 10557 }, lengthMm: 12000, breadthMm: 1557, openingM2: 0, thicknessMm: 140, confident: false, duplicate: false },
       { label: 'UNMARKED SLAB', box: { x0: 18000, y0: 9300, x1: 30000, y1: 10557 }, lengthMm: 12000, breadthMm: 1257, openingM2: 0, thicknessMm: 140, confident: false, duplicate: false },
       { label: 'UNMARKED SLAB', box: { x0: 6000, y0: 4000, x1: 9065, y1: 7850 }, lengthMm: 3065, breadthMm: 3850, openingM2: 0, thicknessMm: 140, confident: false, duplicate: false },
@@ -32,7 +33,7 @@ describe('unmarked slab geometry', () => {
   });
 
   it('measures a large corner-notched slab by exact polygon area only', () => {
-    const panels = [
+    const panels: PanelProposalBox[] = [
       { label: 'UNMARKED SLAB', box: { x0: 0, y0: 0, x1: 7400, y1: 4600 }, lengthMm: 7400, breadthMm: 4600, openingM2: 0, thicknessMm: 140, confident: false, duplicate: false },
       { label: 'CANTILEVER', box: { x0: 6800, y0: 3500, x1: 9000, y1: 5000 }, lengthMm: 2200, breadthMm: 1500, openingM2: 0, thicknessMm: 140, confident: false, duplicate: false },
     ];

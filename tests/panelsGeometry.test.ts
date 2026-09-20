@@ -230,16 +230,16 @@ describe('unmarked slab geometry', () => {
 
   it('recovers mirrored unmarked bays between hidden supports and comment-layer plan edges', () => {
     const segments = [
-      { layer: 'VIN_BEAM', lineType: 'HIDDEN', a: { x: 1000, y: 7000 }, b: { x: 3500, y: 7000 } },
-      { layer: 'A-Comments', lineType: 'CONTINUOUS', a: { x: 1000, y: 500 }, b: { x: 3500, y: 500 } },
-      { layer: 'VIN_BEAM', lineType: 'HIDDEN', a: { x: 11500, y: 7000 }, b: { x: 14000, y: 7000 } },
-      { layer: 'A-Comments', lineType: 'CONTINUOUS', a: { x: 11500, y: 500 }, b: { x: 14000, y: 500 } },
+      { layer: 'VIN_BEAM', lineType: 'HIDDEN', a: { x: 1000, y: 7000 }, b: { x: 4000, y: 7000 } },
+      { layer: 'A-Comments', lineType: 'CONTINUOUS', a: { x: 1000, y: 500 }, b: { x: 4000, y: 500 } },
+      { layer: 'VIN_BEAM', lineType: 'HIDDEN', a: { x: 11500, y: 7000 }, b: { x: 14500, y: 7000 } },
+      { layer: 'A-Comments', lineType: 'CONTINUOUS', a: { x: 11500, y: 500 }, b: { x: 14500, y: 500 } },
     ];
     const recovered = detectClosedCantileverStrips(segments);
     expect(recovered.filter((panel) => panel.visualBoundary && panel.closedStructuralBoundary))
       .toEqual(expect.arrayContaining([
-        expect.objectContaining({ label: 'UNMARKED SLAB', box: { x0: 1000, y0: 500, x1: 3500, y1: 7000 } }),
-        expect.objectContaining({ label: 'UNMARKED SLAB', box: { x0: 11500, y0: 500, x1: 14000, y1: 7000 } }),
+        expect.objectContaining({ label: 'UNMARKED SLAB', box: { x0: 1000, y0: 500, x1: 4000, y1: 7000 } }),
+        expect.objectContaining({ label: 'UNMARKED SLAB', box: { x0: 11500, y0: 500, x1: 14500, y1: 7000 } }),
       ]));
   });
 

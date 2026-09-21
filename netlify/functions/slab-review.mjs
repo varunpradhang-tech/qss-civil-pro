@@ -9,9 +9,11 @@ const json = (statusCode, body) => ({
 
 const sameOrigin = (event) => {
   const origin = event.headers?.origin;
+    const requestHost = event.headers?.host || event.headers?.Host;
   const hosts = [process.env.URL, process.env.DEPLOY_PRIME_URL]
     .filter(Boolean)
     .map((url) => new URL(url).host);
+  if (requestHost) hosts.push(requestHost);
   return !origin || !hosts.length || hosts.includes(new URL(origin).host);
 };
 

@@ -66,7 +66,7 @@ export const handler = async (event) => {
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-QSS-API-Version': API_VERSION },
-      body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: 0, responseMimeType: 'application/json', responseSchema: reviewSchema } }),
+      body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: 0, thinkingConfig: { thinkingLevel: 'minimal' }, responseMimeType: 'application/json', responseSchema: reviewSchema } }),
     });
     const payload = await response.json();
     if (!response.ok) return json(response.status >= 500 ? 502 : response.status, { error: payload.error?.message || 'Gemini request failed' });

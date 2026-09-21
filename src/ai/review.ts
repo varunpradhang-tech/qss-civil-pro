@@ -1,6 +1,6 @@
 import type { MemberRow } from '../takeoff/rules.js';
 import { AI_REVIEW_SCHEMA_VERSION, type AiPanelProposal, type AiReviewRecord } from './contracts.js';
-import { irregularPanelPolygon } from '../takeoff/panelGeometry.js';
+import { irregularPanelPolygons } from '../takeoff/panelGeometry.js';
 
 const finitePoint = (point: { x: number; y: number }): boolean => Number.isFinite(point.x) && Number.isFinite(point.y);
 
@@ -20,14 +20,17 @@ export function validateAiPanelProposal(proposal: AiPanelProposal): AiReviewReco
   if (proposal.schemaVersion !== AI_REVIEW_SCHEMA_VERSION) validationErrors.push('Unsupported AI review schema.');
   if (!proposal.id.trim()) validationErrors.push('Proposal id is required.');
   if (proposal.boundary.length < 3 || proposal.boundary.some((point) => !finitePoint(point))) validationErrors.push('A finite boundary with at least three vertices is required.');
+  if (proposal.boundaryParts?.some((part) => part.length < 3 || part.some((point) => !finitePoint(point))))
+    validationErrors.push('Every boundary part needs at least three finite vertices.');
   if (!Number.isFinite(proposal.confidence) || proposal.confidence < 0 || proposal.confidence > 1) validationErrors.push('Confidence must be between 0 and 1.');
   if (!proposal.evidence.length) validationErrors.push('At least one evidence item is required.');
   if (proposal.evidence.some((item) => !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1)) validationErrors.push('Evidence confidence must be between 0 and 1.');
   if (proposal.thicknessMm != null && (!Number.isFinite(proposal.thicknessMm) || proposal.thicknessMm <= 0)) validationErrors.push('Slab thickness must be a positive number.');
 
-  const deterministicAreaM2 = validationErrors.some((error) => error.startsWith('A finite boundary'))
+  const deterministicAreaM2 = validationErrors.some((error) => error.includes('boundary') && error.includes('finite'))
     ? undefined
-    : polygonAreaM2(proposal.boundary);
+    : (proposal.boundaryParts?.length ? proposal.boundaryParts : [proposal.boundary])
+      .reduce((sum, part) => sum + polygonAreaM2(part), 0);
   if (deterministicAreaM2 != null && deterministicAreaM2 <= 0) validationErrors.push('Boundary area must be greater than zero.');
 
   return { proposal, decision: 'pending', validationErrors, deterministicAreaM2 };
@@ -50,13 +53,15 @@ export function buildRuleEngineReviewQueue(members: MemberRow[], sourceFile: str
   return members
     .filter((member) => member.needsReview)
     .map((member) => {
-      const exactPolygon = irregularPanelPolygon(member);
+      const exactParts = irregularPanelPolygons(member);
+      const exactPolygon = exactParts[0];
       return validateAiPanelProposal({
       schemaVersion: AI_REVIEW_SCHEMA_VERSION,
       id: `review-${member.id}`,
       memberId: member.id,
       shape: exactPolygon?.length === 3 ? 'triangle' : exactPolygon ? 'polygon' : 'rectangle',
       boundary: memberBoundary(member),
+      boundaryParts: exactParts.length > 1 ? exactParts : undefined,
       slabCode: member.member.match(/\(([^)]+)\)/)?.[1],
       thicknessMm: member.height > 0 ? member.height * 1000 : undefined,
       confidence: 0.5,

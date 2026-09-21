@@ -22,6 +22,8 @@ export interface AiPanelProposal {
   memberId?: string;
   shape: AiPanelShape;
   boundary: Pt[];
+  /** Separate outlines of one measured slab; area is the sum of these parts. */
+  boundaryParts?: Pt[][];
   slabCode?: string;
   thicknessMm?: number;
   confidence: number;

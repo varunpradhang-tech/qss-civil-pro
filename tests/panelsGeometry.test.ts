@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoProposePanels, detectClosedCantileverStrips, detectLongDottedSlabStrips, joinBrokenStructuralSegments, markDuplicates, normalizeMirroredPlanPanels, normalizeNearRectangularPanels, notchLargePanelsAtCornerOverlaps } from '../src/extract/panels.js';
+import { autoProposePanels, detectClosedCantileverStrips, detectLongDottedSlabStrips, joinBrokenStructuralSegments, markDuplicates, normalizeMirroredPlanPanels, normalizeNearRectangularPanels, notchLargePanelsAtCornerOverlaps, separateCoreMirrorOverlaps } from '../src/extract/panels.js';
 import type { PanelProposalBox } from '../src/extract/panels.js';
 import { extractMembers, selectGeometrySheet } from '../src/extract/extractMembers.js';
 import type { NormalizedDwg } from '../src/domain/types.js';
@@ -18,6 +18,21 @@ const drawing = (): NormalizedDwg => ({
 });
 
 describe('unmarked slab geometry', () => {
+  it('stops overlapping mirror bays at the stepped RCC core faces', () => {
+    const panel = (x0: number, x1: number): PanelProposalBox => ({ label: 'UNMARKED SLAB',
+      box: { x0, y0: 0, x1, y1: 2000 }, lengthMm: x1 - x0, breadthMm: 2000,
+      openingM2: 0, thicknessMm: 140, confident: false, duplicate: false });
+    const panels = [panel(0, 6500), panel(3500, 10000)];
+    const face = (x: number, y0: number, y1: number) => ({ layer: 'RCC COLUMN',
+      a: { x, y: y0 }, b: { x, y: y1 } });
+    separateCoreMirrorOverlaps(panels, [face(4500, 0, 500), face(5500, 0, 500),
+      face(4850, 500, 2000), face(5150, 500, 2000)], 5000);
+    expect(panels[0].polygon).toHaveLength(6);
+    expect(panels[1].polygon).toHaveLength(6);
+    expect(panels[0].netAreaM2).toBeCloseTo(9.525, 3);
+    expect(panels[1].netAreaM2).toBeCloseTo(9.525, 3);
+    expect(panels[0].box.x1).toBeLessThan(panels[1].box.x0);
+  });
   it('uses one interpretation for mirrored top chajjas and mirrored room bays', () => {
     const panels: PanelProposalBox[] = [
       { label: 'UNMARKED SLAB', box: { x0: 0, y0: 9000, x1: 12000, y1: 10557 }, lengthMm: 12000, breadthMm: 1557, openingM2: 0, thicknessMm: 140, confident: false, duplicate: false },

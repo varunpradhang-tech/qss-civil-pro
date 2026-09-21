@@ -17,4 +17,15 @@ describe('AI slab review safety contract', () => {
     expect(result.validationErrors.length).toBeGreaterThanOrEqual(3);
     expect(result.deterministicAreaM2).toBeUndefined();
   });
+
+  it('adds every separate chajja outline without billing the bounding rectangle', () => {
+    const boundary = [{ x: 0, y: 0 }, { x: 2000, y: 0 }, { x: 2000, y: 1000 }, { x: 0, y: 1000 }];
+    const other = [{ x: 5000, y: 0 }, { x: 6000, y: 0 }, { x: 6000, y: 1000 }, { x: 5000, y: 1000 }];
+    const record = validateAiPanelProposal({ schemaVersion: AI_REVIEW_SCHEMA_VERSION,
+      id: 'chajja', shape: 'polygon', boundary, boundaryParts: [boundary, other],
+      confidence: 0.5, evidence: [{ kind: 'rule-engine', sourceFile: 'plan.dwg', description: 'Two outlines', confidence: 0.5 }],
+      warnings: [] });
+    expect(record.validationErrors).toEqual([]);
+    expect(record.deterministicAreaM2).toBe(3);
+  });
 });

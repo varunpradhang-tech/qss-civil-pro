@@ -16,6 +16,7 @@ export interface PanelProposalBox {
   confident: boolean;
   duplicate: boolean; // overlaps a stronger panel → excluded from total, flagged for review
   polygon?: Pt[]; // exact outline for non-rectangular cantilever/chajja panels
+  polygonParts?: Pt[][]; // beam-separated parts of one area-only panel
   netAreaM2?: number; // exact polygon area before opening deductions
   dottedBoundary?: boolean; // verified long strip enclosed by dashed beam faces
   cantileverBoundary?: boolean; // dashed beam face to continuous free edge
@@ -1286,6 +1287,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       if (aggregateArea > 0 && covered / aggregateArea >= 0.72) planCandidates.splice(i, 1);
     }
     normalizeMirroredPlanPanels(planCandidates, planAxis, footprint.y1);
+    separateCoreMirrorOverlaps(planCandidates, segs, planAxis);
     // A partly broken outer bay can lose its lower leg while its reflected
     // counterpart remains complete. Transfer the complete *polygon*, never
     // its bounding rectangle, only when beam ink corroborates the mirror.
@@ -1326,7 +1328,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         { x: parent.box.x1, y: parent.box.y1 }, { x: parent.box.x0, y: parent.box.y1 },
       ];
       const joined = unionVisualPolygons([base, hatch.polygon as Pt[]]);
-      if (!joined || joined.areaM2 <= (parent.netAreaM2 || boxArea(parent.box) / 1e6)) continue;
+      if (!joined || joined.parts?.length !== 1
+        || joined.areaM2 <= (parent.netAreaM2 || boxArea(parent.box) / 1e6)) continue;
       parent.polygon = joined.polygon; parent.box = joined.box; parent.netAreaM2 = joined.areaM2;
       parent.lengthMm = joined.box.x1 - joined.box.x0;
       parent.breadthMm = joined.box.y1 - joined.box.y0;
@@ -1431,10 +1434,71 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         polygons.push([{ x: Math.min(outer, inner), y: a.box.y1 }, { x: Math.max(outer, inner), y: a.box.y1 },
           { x: Math.max(outer, inner), y: b.box.y0 }, { x: Math.min(outer, inner), y: b.box.y0 }]);
       }
-      const union = unionVisualPolygons(polygons);
+      // A proposed perimeter strip can extend through the adjacent bay's
+      // beam face. That occupied room area is not cantilever soffit.
+      const occupied = planCandidates.filter((panel) => !bands.includes(panel)
+        && !panel.cantileverBoundary
+        && (panel.label === 'UNMARKED SLAB' || panel.label === 'BALCONY CANTILEVER')
+        && Math.sign((panel.box.x0 + panel.box.x1) / 2 - planAxis) === side)
+        .map((panel) => panel.polygon || [
+          { x: panel.box.x0, y: panel.box.y0 }, { x: panel.box.x1, y: panel.box.y0 },
+          { x: panel.box.x1, y: panel.box.y1 }, { x: panel.box.x0, y: panel.box.y1 },
+        ]);
+      // Parallel long beam faces identify the clear cantilever strip: the
+      // outer 200 mm beam and inner 600 mm support beam are both excluded.
+      const probeY = (perimeter.y0 + perimeter.y1) / 2;
+      const faceXs = [...new Set(segs.filter((line) => /beam/i.test(line.layer)
+        && Math.abs(line.a.x - line.b.x) <= 40
+        && Math.min(line.a.y, line.b.y) < probeY
+        && Math.max(line.a.y, line.b.y) > probeY
+        && Math.abs(line.a.y - line.b.y) >= 2500)
+        .map((line) => Math.round((line.a.x + line.b.x) / 2)))]
+        .filter((x) => side < 0 ? x >= perimeter.x0 - 100 && x <= perimeter.x0 + 4000
+          : x <= perimeter.x1 + 100 && x >= perimeter.x1 - 4000)
+        .sort((a, b) => side < 0 ? a - b : b - a);
+      const boxPolygon = (x0: number, y0: number, x1: number, y1: number): Pt[] => [
+        { x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 },
+      ];
+      if (faceXs.length >= 4 && faceXs[1] - faceXs[0] !== 0) {
+        const outerBeam = Math.abs(faceXs[1] - faceXs[0]);
+        const clearWidth = Math.abs(faceXs[2] - faceXs[1]);
+        const innerBeam = Math.abs(faceXs[3] - faceXs[2]);
+        if (outerBeam >= 100 && outerBeam <= 450 && clearWidth >= 800 && clearWidth <= 2500
+          && innerBeam >= 300 && innerBeam <= 1000) {
+          const horizontals = segs.filter((line) => /beam/i.test(line.layer)
+            && Math.abs(line.a.y - line.b.y) <= 40
+            && Math.abs(line.a.x - line.b.x) >= 3000)
+            .map((line) => (line.a.y + line.b.y) / 2);
+          const nearestY = (target: number) => horizontals.reduce((best, y) =>
+            Math.abs(y - target) < Math.abs(best - target) ? y : best, Infinity);
+          const low = nearestY(perimeter.y0 + clearWidth);
+          const high = nearestY(perimeter.y1 - clearWidth);
+          if (Math.abs(low - perimeter.y0 - clearWidth) <= 300
+            && Math.abs(high - perimeter.y1 + clearWidth) <= 300 && high > low) {
+            const outer = side < 0 ? perimeter.x0 : perimeter.x1;
+            const outerInner = faceXs[1], innerOuter = faceXs[2];
+            occupied.push(side < 0
+              ? boxPolygon(outer - 100, low, outerInner, high)
+              : boxPolygon(outerInner, low, outer + 100, high));
+            occupied.push(side < 0
+              ? boxPolygon(innerOuter, low, planAxis, high)
+              : boxPolygon(planAxis, low, innerOuter, high));
+            const bottomOuter = nearestY(low - clearWidth);
+            if (Math.abs(bottomOuter - low + clearWidth) <= 250)
+              occupied.push(boxPolygon(Math.min(outer, planAxis), perimeter.y0 - 100,
+                Math.max(outer, planAxis), bottomOuter));
+            const topOuter = nearestY(high + clearWidth);
+            if (Math.abs(topOuter - high - clearWidth) <= 250)
+              occupied.push(boxPolygon(Math.min(outer, planAxis), topOuter,
+                Math.max(outer, planAxis), perimeter.y1 + 100));
+          }
+        }
+      }
+      const union = unionVisualPolygons(polygons, 25, occupied);
       if (!union || union.areaM2 < 5) continue;
       for (let i = planCandidates.length - 1; i >= 0; i--) if (bands.includes(planCandidates[i])) planCandidates.splice(i, 1);
       const merged: PanelProposalBox = { label: 'CANTILEVER CHAJJA', box: union.box, polygon: union.polygon,
+        polygonParts: union.parts,
         netAreaM2: union.areaM2, lengthMm: union.box.x1 - union.box.x0, breadthMm: union.box.y1 - union.box.y0,
         openingM2: bands.reduce((sum, panel) => sum + panel.openingM2, 0),
         thicknessMm: Math.max(...bands.map((panel) => panel.thicknessMm)), confident: false, duplicate: false,
@@ -1452,7 +1516,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         const canonical = (a.netAreaM2 || 0) <= (b.netAreaM2 || 0) ? a : b;
         const counterpart = canonical === a ? b : a;
         counterpart.polygon = mirrorPolygon(canonical.polygon as Pt[]);
-        counterpart.box = bbox(counterpart.polygon);
+        counterpart.polygonParts = canonical.polygonParts?.map(mirrorPolygon);
+        counterpart.box = counterpart.polygonParts ? bbox(counterpart.polygonParts.flat()) : bbox(counterpart.polygon);
         counterpart.netAreaM2 = canonical.netAreaM2;
         counterpart.lengthMm = counterpart.box.x1 - counterpart.box.x0;
         counterpart.breadthMm = counterpart.box.y1 - counterpart.box.y0;
@@ -1534,7 +1599,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const stairStrokes = allSegs.filter((segment) => {
       if (!/(?:^|[-_$\s])(?:stair|step|flight)(?:$|[-_$\s])/i.test(segment.layer)) return false;
       const midpoint = { x: (segment.a.x + segment.b.x) / 2, y: (segment.a.y + segment.b.y) / 2 };
-      return panel.polygon ? pointInPolygon(midpoint, panel.polygon)
+      return panel.polygonParts?.length ? panel.polygonParts.some((part) => pointInPolygon(midpoint, part))
+        : panel.polygon ? pointInPolygon(midpoint, panel.polygon)
         : midpoint.x >= panel.box.x0 && midpoint.x <= panel.box.x1
           && midpoint.y >= panel.box.y0 && midpoint.y <= panel.box.y1;
     });
@@ -1560,7 +1626,9 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const plausibleBay = panel.lengthMm >= 300 && panel.breadthMm >= 300
       && panel.lengthMm <= maxSpan && panel.breadthMm <= maxSpan
       && grossM2 <= 400;
-    const held = holdNotes.some((note) => panel.polygon ? pointInPolygon(note.pos, panel.polygon)
+    const held = holdNotes.some((note) => panel.polygonParts?.length
+      ? panel.polygonParts.some((part) => pointInPolygon(note.pos, part))
+      : panel.polygon ? pointInPolygon(note.pos, panel.polygon)
       : note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
         && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
     return plausibleBay && !held;
@@ -1597,6 +1665,80 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // A duplicate proposal represents the same physical bay and must never be
   // billed as an additional slab panel.
   return measurable.filter((panel) => !panel.duplicate);
+}
+
+/** Resolve mirrored slab candidates that both claim the central RCC core.
+ * Read the core's beam/column faces at each height, including stepped faces,
+ * so neither half can take area from the other half or from the core. */
+export function separateCoreMirrorOverlaps(panels: PanelProposalBox[], segments: Segment[], axisX: number): void {
+  const vertical = segments.filter((line) => /beam|column|wall|rcc/i.test(line.layer)
+    && Math.abs(line.a.x - line.b.x) <= 40
+    && Math.abs(line.a.y - line.b.y) >= 200)
+    .map((line) => ({ x: (line.a.x + line.b.x) / 2,
+      y0: Math.min(line.a.y, line.b.y), y1: Math.max(line.a.y, line.b.y) }))
+    .filter((line) => Math.abs(line.x - axisX) <= 2000);
+  const eligible = panels.filter((panel) => panel.label === 'UNMARKED SLAB' && !panel.polygon
+    && boxArea(panel.box) >= 2_000_000 && boxArea(panel.box) <= 20_000_000);
+  const used = new Set<PanelProposalBox>();
+  for (const left of eligible.filter((panel) => (panel.box.x0 + panel.box.x1) / 2 < axisX)) {
+    if (used.has(left)) continue;
+    const right = eligible.find((panel) => panel !== left && !used.has(panel)
+      && (panel.box.x0 + panel.box.x1) / 2 > axisX
+      && Math.abs(panel.box.x1 - (2 * axisX - left.box.x0)) <= 250
+      && Math.abs(panel.box.y0 - left.box.y0) <= 120
+      && Math.abs(panel.box.y1 - left.box.y1) <= 120
+      && (left.box.x1 > axisX + 200 || panel.box.x0 < axisX - 200));
+    if (!right) continue;
+    const y0 = Math.max(left.box.y0, right.box.y0), y1 = Math.min(left.box.y1, right.box.y1);
+    const faces = vertical.filter((line) => line.y0 < y1 - 100 && line.y1 > y0 + 100);
+    const cuts = [...new Set([y0, y1, ...faces.flatMap((line) =>
+      [Math.max(y0, line.y0), Math.min(y1, line.y1)])])].sort((a, b) => a - b);
+    const bands: { y0: number; y1: number; leftX: number; rightX: number }[] = [];
+    for (let i = 0; i < cuts.length - 1; i++) {
+      const low = cuts[i], high = cuts[i + 1];
+      if (high - low < 40) continue;
+      const mid = (low + high) / 2;
+      const atHeight = faces.filter((face) => face.y0 <= mid && face.y1 >= mid);
+      const leftFaces = atHeight.filter((face) => face.x < axisX - 80 && face.x > left.box.x0 + 500)
+        .sort((a, b) => b.x - a.x);
+      const rightFaces = atHeight.filter((face) => face.x > axisX + 80 && face.x < right.box.x1 - 500)
+        .sort((a, b) => a.x - b.x);
+      if (!leftFaces.length || !rightFaces.length) continue;
+      // Paired lines within one beam are its two faces. The slab stops at
+      // the outer face, not at the far side of the beam material.
+      const leftX = Math.min(...leftFaces.filter((face) => leftFaces[0].x - face.x <= 400).map((face) => face.x));
+      const rightX = Math.max(...rightFaces.filter((face) => face.x - rightFaces[0].x <= 400).map((face) => face.x));
+      if (rightX - leftX < 150 || leftX >= rightX) continue;
+      const previous = bands[bands.length - 1];
+      if (previous && Math.abs(previous.y1 - low) < 40
+        && Math.abs(previous.leftX - leftX) <= 50 && Math.abs(previous.rightX - rightX) <= 50) {
+        previous.y1 = high;
+      } else bands.push({ y0: low, y1: high, leftX, rightX });
+    }
+    if (!bands.length || bands[0].y0 > y0 + 100 || bands[bands.length - 1].y1 < y1 - 100
+      || bands.some((band, index) => index && band.y0 - bands[index - 1].y1 > 100)) continue;
+    const leftInner: Pt[] = [{ x: bands[0].leftX, y: y0 }];
+    const rightInner: Pt[] = [{ x: bands[0].rightX, y: y0 }];
+    for (let i = 0; i < bands.length; i++) {
+      leftInner.push({ x: bands[i].leftX, y: bands[i].y1 });
+      rightInner.push({ x: bands[i].rightX, y: bands[i].y1 });
+      if (i + 1 < bands.length) {
+        leftInner.push({ x: bands[i + 1].leftX, y: bands[i].y1 });
+        rightInner.push({ x: bands[i + 1].rightX, y: bands[i].y1 });
+      }
+    }
+    const apply = (panel: PanelProposalBox, polygon: Pt[]) => {
+      panel.polygon = simplifyCollinearPolygon(polygon);
+      panel.box = bbox(panel.polygon);
+      panel.netAreaM2 = Math.abs(shoelace(panel.polygon)) / 1e6;
+      panel.lengthMm = panel.box.x1 - panel.box.x0;
+      panel.breadthMm = panel.box.y1 - panel.box.y0;
+      panel.visualBoundary = true;
+    };
+    apply(left, [{ x: left.box.x0, y: y0 }, ...leftInner, { x: left.box.x0, y: y1 }]);
+    apply(right, [{ x: right.box.x1, y: y0 }, ...rightInner, { x: right.box.x1, y: y1 }]);
+    used.add(left); used.add(right);
+  }
 }
 
 export function normalizeNearRectangularPanels(panels: PanelProposalBox[]): void {
@@ -1700,7 +1842,9 @@ function assignCutouts(panels: PanelProposalBox[], cutouts: Cutout[]): void {
     // Excel formula and total quantity all apply the same rule.
     if (c.areaM2 < 0.4) continue;
     let overlaps = panels
-      .map((p) => ({ p, ov: p.polygon ? polygonRectIntersectionArea(p.polygon, c.box) / 1e6 : rectOverlap(c.box, p.box) }))
+      .map((p) => ({ p, ov: p.polygonParts?.length
+        ? p.polygonParts.reduce((sum, part) => sum + polygonRectIntersectionArea(part, c.box) / 1e6, 0)
+        : p.polygon ? polygonRectIntersectionArea(p.polygon, c.box) / 1e6 : rectOverlap(c.box, p.box) }))
       .filter((o) => o.ov > 0);
     if (c.inferredX) {
       // An unlabelled pair of crossing diagonals is common in lift/stair voids,

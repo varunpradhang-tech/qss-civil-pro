@@ -411,8 +411,12 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       r.slabThickness = 0.175;
       r.slabCodeSide1 = side1?.code;
       r.slabCodeSide2 = side2?.code;
-      r.slabThicknessSide1 = side1 ? round3((slabThicknesses.get(side1.code) ?? 0) / 1000) : 0;
-      r.slabThicknessSide2 = side2 ? round3((slabThicknesses.get(side2.code) ?? 0) / 1000) : 0;
+      // Slab thickness is a universal beam-side deduction. A missing/ambiguous
+      // slab mark must not silently turn the exposed beam side into full depth;
+      // use the standard 175 mm slab fallback and keep the row reviewable.
+      const defaultSlabThickness = 175;
+      r.slabThicknessSide1 = side1 ? round3((slabThicknesses.get(side1.code) ?? defaultSlabThickness) / 1000) : 0;
+      r.slabThicknessSide2 = side2 ? round3((slabThicknesses.get(side2.code) ?? defaultSlabThickness) / 1000) : 0;
       r.innerSideCount = Number(!!r.slabThicknessSide1) + Number(!!r.slabThicknessSide2);
       r.nos = 1;
       const sourceA = useMarkedDimension ? markedDimension.dimension.p1 : nearest?.a;

@@ -18,6 +18,8 @@ import { PageHeader } from '../components/PageHeader.js';
 import { PremiumBadge } from '../components/PremiumBadge.js';
 import { renderDwgTiles } from '../vision/renderDwg.js';
 import { requestGeminiSlabReview } from '../vision/geminiReview.js';
+import { tilePolygonToCad } from '../vision/geometryTransform.js';
+import { validateReviewCandidates } from '../vision/validateReview.js';
 
 const REQUIREMENTS = [
   'Grid lines are shown on the drawing',
@@ -105,7 +107,14 @@ export function ExtractPage() {
             s.setStatus(`Rendering high-resolution visual review tiles for ${dwg.fileName}…`);
             const tiles = await renderDwgTiles(dwg);
             const review = await requestGeminiSlabReview(tiles.map((tile) => ({ data: tile.data, mimeType: tile.mimeType })), `Drawing: ${dwg.fileName}. Tile coordinates are CAD millimetres: ${JSON.stringify(tiles.map(({ x0, y0, x1, y1 }) => ({ x0, y0, x1, y1 })))}.`);
-            s.setStatus(`Gemini visual review returned ${review.panels.length} proposals for ${dwg.fileName}; CAD validation is required before quantities change.`);
+            const validated = validateReviewCandidates(review.panels.flatMap((panel) => {
+              const tile = tiles[panel.tile_index];
+              if (!tile) return [];
+              const polygon = tilePolygonToCad(panel.polygon, tile);
+              return polygon.length >= 3 ? [{ id: panel.id, type: panel.type, confidence: panel.confidence, polygon }] : [];
+            }), dwg.segments);
+            const accepted = validated.filter((panel) => panel.accepted);
+            s.setStatus(`Gemini visual review returned ${review.panels.length} proposals; ${accepted.length} passed CAD validation for ${dwg.fileName}.`);
           } catch (reviewError) {
             s.setStatus(`Gemini review unavailable; continuing with the verified CAD parser. ${(reviewError as Error).message}`);
           }

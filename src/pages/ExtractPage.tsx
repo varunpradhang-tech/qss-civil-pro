@@ -101,10 +101,14 @@ export function ExtractPage() {
         out.push({ id: dwg.fileName, name: dwg.fileName, dwg, sourceBytes: source,
           slabDimCount: dwg.dimensions.filter((d) => /slabs no/i.test(d.layer)).length });
         if (import.meta.env.VITE_GEMINI_REVIEW === 'true') {
-          s.setStatus(`Rendering high-resolution visual review tiles for ${dwg.fileName}…`);
-          const tiles = await renderDwgTiles(dwg);
-          const review = await requestGeminiSlabReview(tiles.map((tile) => ({ data: tile.data, mimeType: tile.mimeType })), `Drawing: ${dwg.fileName}. Tile coordinates are CAD millimetres: ${JSON.stringify(tiles.map(({ x0, y0, x1, y1 }) => ({ x0, y0, x1, y1 })))}.`);
-          s.setStatus(`Gemini visual review returned ${review.panels.length} proposals for ${dwg.fileName}; CAD validation is required before quantities change.`);
+          try {
+            s.setStatus(`Rendering high-resolution visual review tiles for ${dwg.fileName}…`);
+            const tiles = await renderDwgTiles(dwg);
+            const review = await requestGeminiSlabReview(tiles.map((tile) => ({ data: tile.data, mimeType: tile.mimeType })), `Drawing: ${dwg.fileName}. Tile coordinates are CAD millimetres: ${JSON.stringify(tiles.map(({ x0, y0, x1, y1 }) => ({ x0, y0, x1, y1 })))}.`);
+            s.setStatus(`Gemini visual review returned ${review.panels.length} proposals for ${dwg.fileName}; CAD validation is required before quantities change.`);
+          } catch (reviewError) {
+            s.setStatus(`Gemini review unavailable; continuing with the verified CAD parser. ${(reviewError as Error).message}`);
+          }
         }
       }
       s.setStatus(parsed.mode === 'remote'

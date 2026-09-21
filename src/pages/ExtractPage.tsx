@@ -16,6 +16,8 @@ import { buildSlabReferencePdf } from '../export/pdf.js';
 import { useUI, displayQuantity } from '../state/ui.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { PremiumBadge } from '../components/PremiumBadge.js';
+import { renderDwgTiles } from '../vision/renderDwg.js';
+import { requestGeminiSlabReview } from '../vision/geminiReview.js';
 
 const REQUIREMENTS = [
   'Grid lines are shown on the drawing',
@@ -98,6 +100,12 @@ export function ExtractPage() {
         const source = sources.get(dwg.fileName);
         out.push({ id: dwg.fileName, name: dwg.fileName, dwg, sourceBytes: source,
           slabDimCount: dwg.dimensions.filter((d) => /slabs no/i.test(d.layer)).length });
+        if (import.meta.env.VITE_GEMINI_REVIEW === 'true') {
+          s.setStatus(`Rendering high-resolution visual review tiles for ${dwg.fileName}…`);
+          const tiles = await renderDwgTiles(dwg);
+          const review = await requestGeminiSlabReview(tiles.map((tile) => ({ data: tile.data, mimeType: tile.mimeType })), `Drawing: ${dwg.fileName}. Tile coordinates are CAD millimetres: ${JSON.stringify(tiles.map(({ x0, y0, x1, y1 }) => ({ x0, y0, x1, y1 })))}.`);
+          s.setStatus(`Gemini visual review returned ${review.panels.length} proposals for ${dwg.fileName}; CAD validation is required before quantities change.`);
+        }
       }
       s.setStatus(parsed.mode === 'remote'
         ? `Processed ${out.length} drawing${out.length === 1 ? '' : 's'} with the QSS processing service.${parsed.warning ? ` ${parsed.warning}` : ''}`

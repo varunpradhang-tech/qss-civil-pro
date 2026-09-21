@@ -114,6 +114,7 @@ export function ExtractPage() {
               return polygon.length >= 3 ? [{ id: panel.id, type: panel.type, confidence: panel.confidence, polygon }] : [];
             }), dwg.segments);
             const accepted = validated.filter((panel) => panel.accepted);
+            out[out.length - 1].visualPanels = accepted.map((panel) => ({ id: panel.id, polygon: panel.polygon, areaM2: panel.areaM2 }));
             s.setStatus(`Gemini visual review returned ${review.panels.length} proposals; ${accepted.length} passed CAD validation for ${dwg.fileName}.`);
           } catch (reviewError) {
             s.setStatus(`Gemini review unavailable; continuing with the verified CAD parser. ${(reviewError as Error).message}`);

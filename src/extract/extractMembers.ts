@@ -216,7 +216,8 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     r.cadY1 = p.box.y1;
     const boundingAreaM2 = (p.lengthMm / 1000) * (p.breadthMm / 1000);
     const irregularAreaOnly = !!p.polygon && p.netAreaM2 !== undefined
-      && (p.polygon.length !== 4 || boundingAreaM2 <= 0 || p.netAreaM2 / boundingAreaM2 < 0.985);
+      && ((p.polygonParts?.length || 0) > 1 || p.polygon.length !== 4
+        || boundingAreaM2 <= 0 || p.netAreaM2 / boundingAreaM2 < 0.985);
     // A bounding rectangle is reference geometry, not a valid L × B
     // measurement for a stepped/notched slab. Such panels are billed only by
     // their exact polygonal net area.
@@ -235,7 +236,8 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
       // Keep exact polygon geometry only for genuinely irregular panels.
       // Near-rectangular visual candidates have already been normalized to
       // their verified bounding rectangle and must render/export as such.
-      r.cadPolygon = irregularAreaOnly ? p.polygon : undefined;
+      r.cadPolygon = irregularAreaOnly && !p.polygonParts?.length ? p.polygon : undefined;
+      r.cadPolygonParts = irregularAreaOnly && p.polygonParts?.length ? p.polygonParts : undefined;
     }
     r.nos = 1;
     const reviewReasons = [

@@ -2,7 +2,7 @@ import type { MemberRow } from '../takeoff/rules.js';
 import type { NormalizedDwg, Pt } from '../domain/types.js';
 import { slabReferenceGeometry } from './dxf.js';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import { irregularPanelPolygon } from '../takeoff/panelGeometry.js';
+import { irregularPanelPolygons } from '../takeoff/panelGeometry.js';
 
 const PAGE_W = 1190.55; // A3 landscape, points
 const PAGE_H = 841.89;
@@ -50,14 +50,14 @@ export function buildSlabReferencePdf(dwgs: NormalizedDwg[], members: MemberRow[
     const panelRadius = [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)
       ? Math.min(baseRadius, Math.max(2, Math.min(Math.abs((m.cadX1 as number) - (m.cadX0 as number)), Math.abs((m.cadY1 as number) - (m.cadY0 as number))) * scale * 0.12))
       : baseRadius;
-    const exactPolygon = irregularPanelPolygon(m);
-    if (exactPolygon) {
+    const exactPolygons = irregularPanelPolygons(m);
+    for (const exactPolygon of exactPolygons) {
       const polygon = exactPolygon.map(map);
       stream += `0 0.65 0 RG 0.8 w ${n(polygon[0].x)} ${n(polygon[0].y)} m `;
       for (let i = 1; i < polygon.length; i++) stream += `${n(polygon[i].x)} ${n(polygon[i].y)} l `;
       stream += 'h S\n';
     }
-    if (!exactPolygon && [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
+    if (!exactPolygons.length && [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
       const x0 = m.cadX0 as number, y0 = m.cadY0 as number, x1 = m.cadX1 as number, y1 = m.cadY1 as number;
       const a = map({ x: x0, y: y0 }), b = map({ x: x1, y: y1 });
       const pw = Math.abs(b.x - a.x), ph = Math.abs(b.y - a.y);
@@ -129,15 +129,15 @@ export async function overlayPanelNumbersOnPdf(source: ArrayBuffer, dwg: Normali
     const x = ox + ((m.cadX as number) - min.x) * scale;
     const y = oy + ((m.cadY as number) - min.y) * scale;
     const panelNo = m.member.match(/^P\d+/i)?.[0] ?? m.member;
-    const exactPolygon = irregularPanelPolygon(m);
-    if (exactPolygon) {
+    const exactPolygons = irregularPanelPolygons(m);
+    for (const exactPolygon of exactPolygons) {
       for (let i = 0; i < exactPolygon.length; i++) {
         const a = exactPolygon[i], b = exactPolygon[(i + 1) % exactPolygon.length];
         page.drawLine({ start: { x: ox + (a.x - min.x) * scale, y: oy + (a.y - min.y) * scale },
           end: { x: ox + (b.x - min.x) * scale, y: oy + (b.y - min.y) * scale }, color: rgb(0, 0.72, 0), thickness: 0.65 });
       }
     }
-    if (!exactPolygon && [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
+    if (!exactPolygons.length && [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
       const bx = ox + ((m.cadX0 as number) - min.x) * scale;
       const by = oy + ((m.cadY0 as number) - min.y) * scale;
       page.drawRectangle({ x: bx, y: by, width: ((m.cadX1 as number) - (m.cadX0 as number)) * scale, height: ((m.cadY1 as number) - (m.cadY0 as number)) * scale, borderColor: rgb(0, 0.72, 0), borderWidth: 0.45, opacity: 0.35, borderOpacity: 0.65 });

@@ -48,4 +48,18 @@ describe('raster bay cues', () => {
     expect(union?.rectangular).toBe(false);
     expect(union?.areaM2).toBeCloseTo(8, 1);
   });
+  it('excludes neighboring room area and bills every returned chajja outline', () => {
+    const union = unionVisualPolygons([
+      [{ x: 0, y: 0 }, { x: 2000, y: 0 }, { x: 2000, y: 5000 }, { x: 0, y: 5000 }],
+      [{ x: 5000, y: 0 }, { x: 6000, y: 0 }, { x: 6000, y: 1000 }, { x: 5000, y: 1000 }],
+    ], 25, [[{ x: 1200, y: 1000 }, { x: 2500, y: 1000 },
+      { x: 2500, y: 4000 }, { x: 1200, y: 4000 }]]);
+    expect(union?.areaM2).toBeCloseTo(8.6, 2);
+    expect(union?.parts).toHaveLength(2);
+    const outlineArea = (union?.parts || []).reduce((total, part) => total + Math.abs(part.reduce((sum, point, index, points) => {
+      const next = points[(index + 1) % points.length];
+      return sum + point.x * next.y - next.x * point.y;
+    }, 0)) / 2e6, 0);
+    expect(union?.areaM2).toBeCloseTo(outlineArea, 6);
+  });
 });

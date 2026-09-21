@@ -2,7 +2,7 @@ import type { Segment } from '../domain/types.js';
 
 export interface ImageBay { x0: number; y0: number; x1: number; y1: number }
 export interface ImagePoint { x: number; y: number }
-export interface SegmentedBay { polygon: ImagePoint[]; areaM2: number; box: ImageBay; rectangular: boolean }
+export interface SegmentedBay { polygon: ImagePoint[]; areaM2: number; box: ImageBay; rectangular: boolean; parts?: ImagePoint[][] }
 
 // Render the drawing strokes into a small, layer-independent monochrome image.
 // This deliberately tests what is visible in the bay, not CAD layer names.
@@ -197,7 +197,7 @@ export function mirroredBaySimilarity(segments: Segment[], left: ImageBay, right
 }
 
 /** Raster-union connected slab fragments into one display/quantity outline. */
-export function unionVisualPolygons(polygons: ImagePoint[][], step = 25): SegmentedBay | null {
+export function unionVisualPolygons(polygons: ImagePoint[][], step = 25, exclusions: ImagePoint[][] = []): SegmentedBay | null {
   if (!polygons.length) return null;
   const bounds = polygons.flat().reduce((box, point) => ({ x0: Math.min(box.x0, point.x), y0: Math.min(box.y0, point.y),
     x1: Math.max(box.x1, point.x), y1: Math.max(box.y1, point.y) }),
@@ -213,10 +213,11 @@ export function unionVisualPolygons(polygons: ImagePoint[][], step = 25): Segmen
     }
     return value;
   };
-  const cells = new Uint8Array(nx * ny); let count = 0;
+  const cells = new Uint8Array(nx * ny);
   for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
     const point = { x: bounds.x0 + (x + 0.5) * step, y: bounds.y0 + (y + 0.5) * step };
-    if (polygons.some((polygon) => inside(point, polygon))) { cells[y * nx + x] = 1; count++; }
+    if (polygons.some((polygon) => inside(point, polygon))
+      && !exclusions.some((polygon) => inside(point, polygon))) cells[y * nx + x] = 1;
   }
   const filled = (x: number, y: number) => x >= 0 && y >= 0 && x < nx && y < ny && !!cells[y * nx + x];
   type Edge = { a: ImagePoint; b: ImagePoint };
@@ -241,10 +242,20 @@ export function unionVisualPolygons(polygons: ImagePoint[][], step = 25): Segmen
   }
   const raster = loops.sort((a, b) => polygonArea(b) - polygonArea(a))[0];
   if (!raster) return null;
-  const polygon = simplifyRasterPolygon(raster, 2).map((point) => ({ x: bounds.x0 + point.x * step, y: bounds.y0 + point.y * step }));
-  const box = polygon.reduce((value, point) => ({ x0: Math.min(value.x0, point.x), y0: Math.min(value.y0, point.y),
+  const parts = loops.map((loop) => simplifyRasterPolygon(loop, 2)
+    .map((point) => ({ x: bounds.x0 + point.x * step, y: bounds.y0 + point.y * step })));
+  const polygon = parts[0];
+  const box = parts.flat().reduce((value, point) => ({ x0: Math.min(value.x0, point.x), y0: Math.min(value.y0, point.y),
     x1: Math.max(value.x1, point.x), y1: Math.max(value.y1, point.y) }),
   { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
-  const areaM2 = count * step * step / 1e6, boundingM2 = (box.x1 - box.x0) * (box.y1 - box.y0) / 1e6;
-  return { polygon, box, areaM2, rectangular: polygon.length === 4 && areaM2 >= boundingM2 * 0.985 };
+  // Preserve every detached perimeter loop in one area-only quantity row;
+  // beam-separated regions must not be hidden inside the reported area.
+  const signedArea = (points: ImagePoint[]) => points.reduce((sum, point, index) => {
+    const next = points[(index + 1) % points.length];
+    return sum + point.x * next.y - next.x * point.y;
+  }, 0) / 2;
+  const areaM2 = Math.abs(parts.reduce((sum, part) => sum + signedArea(part), 0)) / 1e6;
+  const boundingM2 = (box.x1 - box.x0) * (box.y1 - box.y0) / 1e6;
+  return { polygon, parts, box, areaM2,
+    rectangular: parts.length === 1 && polygon.length === 4 && areaM2 >= boundingM2 * 0.985 };
 }

@@ -343,7 +343,7 @@ export function ExtractPage() {
                   <td><input value={r.member} onChange={(e) => s.updateMember(r.id, { member: e.target.value })} /></td>
                   <td><input value={r.floor} onChange={(e) => s.updateMember(r.id, { floor: e.target.value })} /></td>
                   {fields.map((f) => {
-                    const areaOnlyDimension = r.netArea !== undefined && r.cadPolygon
+                    const areaOnlyDimension = r.netArea !== undefined && (r.cadPolygon || r.cadPolygonParts?.length)
                       && (f === 'length' || f === 'breadth') && Number(r[f]) === 0;
                     return <td key={f}>{areaOnlyDimension
                       ? <span title="Irregular slab—measured by exact net area">Area only</span>

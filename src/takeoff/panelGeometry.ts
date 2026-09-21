@@ -32,3 +32,11 @@ export function irregularPanelPolygon(member: MemberRow): Pt[] | undefined {
   if (boxArea > 0 && nearOrthogonal && area(polygon) / boxArea >= 0.9) return undefined;
   return polygon;
 }
+
+/** Every visible outline belonging to one area-only quantity row. */
+export function irregularPanelPolygons(member: MemberRow): Pt[][] {
+  if (member.cadPolygonParts?.length) return member.cadPolygonParts
+    .filter((part) => part.length >= 3) as Pt[][];
+  const single = irregularPanelPolygon(member);
+  return single ? [single] : [];
+}

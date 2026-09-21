@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Upload, Plus, Copy, Trash2, Ruler, FileSpreadsheet, Info, Download,
   ArrowRight, Layers, Hash, ShieldCheck, Loader2, X, CheckCircle2,
+  BrainCircuit, AlertTriangle,
 } from 'lucide-react';
 import { useStore, type Sheet } from '../state/store.js';
 import { parseDrawingsWithFallback } from '../workers/parseClient.js';
@@ -15,6 +16,8 @@ import { buildSlabReferencePdf } from '../export/pdf.js';
 import { useUI, displayQuantity } from '../state/ui.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { PremiumBadge } from '../components/PremiumBadge.js';
+import { renderDwgTiles } from '../vision/renderDwg.js';
+import { requestGeminiSlabReview } from '../vision/geminiReview.js';
 
 const REQUIREMENTS = [
   'Grid lines are shown on the drawing',
@@ -97,6 +100,12 @@ export function ExtractPage() {
         const source = sources.get(dwg.fileName);
         out.push({ id: dwg.fileName, name: dwg.fileName, dwg, sourceBytes: source,
           slabDimCount: dwg.dimensions.filter((d) => /slabs no/i.test(d.layer)).length });
+        if (import.meta.env.VITE_GEMINI_REVIEW === 'true') {
+          s.setStatus(`Rendering high-resolution visual review tiles for ${dwg.fileName}…`);
+          const tiles = await renderDwgTiles(dwg);
+          const review = await requestGeminiSlabReview(tiles.map((tile) => ({ data: tile.data, mimeType: tile.mimeType })), `Drawing: ${dwg.fileName}. Tile coordinates are CAD millimetres: ${JSON.stringify(tiles.map(({ x0, y0, x1, y1 }) => ({ x0, y0, x1, y1 })))}.`);
+          s.setStatus(`Gemini visual review returned ${review.panels.length} proposals for ${dwg.fileName}; CAD validation is required before quantities change.`);
+        }
       }
       s.setStatus(parsed.mode === 'remote'
         ? `Processed ${out.length} drawing${out.length === 1 ? '' : 's'} with the QSS processing service.${parsed.warning ? ` ${parsed.warning}` : ''}`
@@ -341,15 +350,47 @@ export function ExtractPage() {
                   <td><input type="radio" name="member-select" checked={selected === r.id} onChange={() => setSelected(r.id)} /></td>
                   <td><input value={r.member} onChange={(e) => s.updateMember(r.id, { member: e.target.value })} /></td>
                   <td><input value={r.floor} onChange={(e) => s.updateMember(r.id, { floor: e.target.value })} /></td>
-                  {fields.map((f) => (
-                    <td key={f}><input type="number" value={r[f] as number} onChange={(e) => s.updateMember(r.id, { [f]: +e.target.value } as Partial<MemberRow>)} /></td>
-                  ))}
+                  {fields.map((f) => {
+                    const areaOnlyDimension = r.netArea !== undefined && (r.cadPolygon || r.cadPolygonParts?.length)
+                      && (f === 'length' || f === 'breadth') && Number(r[f]) === 0;
+                    return <td key={f}>{areaOnlyDimension
+                      ? <span title="Irregular slab—measured by exact net area">Area only</span>
+                      : <input type="number" value={r[f] as number} onChange={(e) => s.updateMember(r.id, { [f]: +e.target.value } as Partial<MemberRow>)} />}</td>;
+                  })}
                   <td className="qty-cell">{qtyText(disp(rowQty(r), rule.unit).v)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      {!s.parsing && s.workGroup === 'slab' && s.aiReviewQueue.length > 0 && (
+        <section className="ai-review-panel" aria-labelledby="ai-review-title">
+          <div className="ai-review-heading">
+            <div>
+              <h3 id="ai-review-title"><BrainCircuit size={18} /> Rule-engine review queue</h3>
+              <p>Review-only safety mode. These items remain calculated by the deterministic rule engine; the buttons record review decisions and do not change quantity.</p>
+            </div>
+            <span>{s.aiReviewQueue.filter((record) => record.decision === 'pending').length} pending</span>
+          </div>
+          <div className="ai-review-list">
+            {s.aiReviewQueue.map((record) => (
+              <article key={record.proposal.id} className={`ai-review-item decision-${record.decision}`}>
+                <div>
+                  <strong>{s.members.find((member) => member.id === record.proposal.memberId)?.member || record.proposal.id}</strong>
+                  <span>Confidence {Math.round(record.proposal.confidence * 100)}% · {record.proposal.shape}{record.deterministicAreaM2 != null ? ` · ${record.deterministicAreaM2.toFixed(3)} m² verified geometry` : ''}</span>
+                  {record.proposal.evidence.map((evidence, index) => <small key={`${record.proposal.id}-${index}`}>{evidence.description} — {evidence.sourceFile}</small>)}
+                  {record.validationErrors.map((error) => <small className="ai-validation-error" key={error}><AlertTriangle size={12} /> {error}</small>)}
+                </div>
+                <div className="ai-review-actions">
+                  <button type="button" onClick={() => s.setAiReviewDecision(record.proposal.id, 'accepted')} disabled={record.validationErrors.length > 0}>Accept review</button>
+                  <button type="button" onClick={() => s.setAiReviewDecision(record.proposal.id, 'rejected')}>Reject review</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
       )}
 
       {!s.parsing && canDetail && s.outputType === 'floor' && (

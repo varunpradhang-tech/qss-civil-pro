@@ -1,5 +1,6 @@
 import type { NormalizedDwg, Pt, Segment } from '../domain/types.js';
 import type { MemberRow } from '../takeoff/rules.js';
+import { irregularPanelPolygons } from '../takeoff/panelGeometry.js';
 
 const pair = (code: number, value: string | number) => `${code}\r\n${value}\r\n`;
 const cleanLayer = (value: string) => (value || 'QSS_REFERENCE').replace(/[^A-Za-z0-9_$-]/g, '_').slice(0, 60);
@@ -80,12 +81,13 @@ export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[
     if (!Number.isFinite(m.cadX) || !Number.isFinite(m.cadY)) continue;
     const c = { x: m.cadX as number, y: m.cadY as number };
     const panelNo = m.member.match(/^P\d+/i)?.[0] ?? m.member;
-    if (m.cadPolygon?.length && m.cadPolygon.length >= 3) {
-      for (let i = 0; i < m.cadPolygon.length; i++) entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: m.cadPolygon[i], b: m.cadPolygon[(i + 1) % m.cadPolygon.length] }, 'QSS_PANEL_BOUNDARY', 3);
+    const exactPolygons = irregularPanelPolygons(m);
+    for (const exactPolygon of exactPolygons) {
+      for (let i = 0; i < exactPolygon.length; i++) entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: exactPolygon[i], b: exactPolygon[(i + 1) % exactPolygon.length] }, 'QSS_PANEL_BOUNDARY', 3);
     }
-    if (!m.cadPolygon?.length && [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
+    if (!exactPolygons.length && [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
       const x0 = m.cadX0 as number, y0 = m.cadY0 as number, x1 = m.cadX1 as number, y1 = m.cadY1 as number;
-      if (!m.cadPolygon?.length) {
+      if (!exactPolygons.length) {
         entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x0, y: y0 }, b: { x: x1, y: y0 } }, 'QSS_PANEL_BOUNDARY', 3);
         entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x1, y: y0 }, b: { x: x1, y: y1 } }, 'QSS_PANEL_BOUNDARY', 3);
         entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: { x: x1, y: y1 }, b: { x: x0, y: y1 } }, 'QSS_PANEL_BOUNDARY', 3);

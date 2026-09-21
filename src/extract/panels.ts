@@ -3,6 +3,7 @@
 // Best-effort; low-confidence/duplicate proposals are flagged for review. Pure/headless.
 import type { NormalizedDwg, Pt, Segment } from '../domain/types.js';
 import { polygoniseCadFaces } from './topology.js';
+import { bayImageShowsFullX, mirroredBaySimilarity, segmentVisualBay, unionVisualPolygons } from '../vision/bayImage.js';
 
 export interface PanelProposalBox {
   label?: string;
@@ -15,6 +16,7 @@ export interface PanelProposalBox {
   confident: boolean;
   duplicate: boolean; // overlaps a stronger panel → excluded from total, flagged for review
   polygon?: Pt[]; // exact outline for non-rectangular cantilever/chajja panels
+  polygonParts?: Pt[][]; // beam-separated parts of one area-only panel
   netAreaM2?: number; // exact polygon area before opening deductions
   dottedBoundary?: boolean; // verified long strip enclosed by dashed beam faces
   cantileverBoundary?: boolean; // dashed beam face to continuous free edge
@@ -22,6 +24,9 @@ export interface PanelProposalBox {
   mixedBoundary?: boolean; // exact C-marked dotted-inner/continuous-outer closed face
   closedStructuralBoundary?: boolean; // missing S mark recovered from its actual closed CAD face
   dimensionBounded?: boolean; // rectangular cantilever recovered from associated CAD dimension endpoints
+  thicknessMarkedBoundary?: boolean; // numeric slab-depth mark enclosed by four structural faces
+  hatchConnectedBoundary?: boolean; // same-pattern slab hatch connected to a numeric depth mark
+  visualBoundary?: boolean; // dotted beam face completed by beam/wall/column faces
 }
 
 interface ThkText { pos: Pt; mm: number; }
@@ -79,9 +84,25 @@ const CUTOUT_LAYERS = /cut|open|void|shaft|lift|duct|ots/i;
 // slab faces. Likewise, cutout outlines are applied after the gross panel is
 // found and must never shorten or subdivide that panel.
 const NON_STRUCTURAL_BOUNDARY_LAYERS = /grid|axis|centre|center|dim|dimension|annot|text|title|schedule|section|cut|open|void|shaft|lift|duct|ots/i;
+// A rendered framing-plan boundary is sometimes placed on a generic CAD
+// layer. Keep those visible strokes available to the visual enclosure pass,
+// while excluding annotation, services, finishes and known non-slab symbols.
+const NON_VISUAL_BOUNDARY_LAYERS = /grid|axis|centre|center|dim|dimension|annot|text|title|schedule|section|cut|open|void|shaft|lift|duct|ots|rebar|reinfor|elect|plumb|sanit|furn|door|window|tile|finish|hatch|stair|step|flight|rail|leader/i;
 const isStructuralBoundaryLayer = (layer: string) => BOUND_LAYERS.test(layer)
   && !NON_STRUCTURAL_BOUNDARY_LAYERS.test(layer);
+// Some CAD sheets draw a column grid on a layer such as COL-1 without naming
+// it GRID. A line spanning most of the sheet is not a local column/slab face.
+const isStructuralBoundarySegment = (segment: Segment) => isStructuralBoundaryLayer(segment.layer)
+  && !(/col/i.test(segment.layer)
+    && Math.hypot(segment.b.x - segment.a.x, segment.b.y - segment.a.y) > 50_000);
 const ALIGN_TOL = 200;
+const isVisiblePlanBoundarySegment = (segment: Segment) => {
+  const dx = Math.abs(segment.b.x - segment.a.x), dy = Math.abs(segment.b.y - segment.a.y);
+  const length = Math.hypot(dx, dy);
+  return !NON_VISUAL_BOUNDARY_LAYERS.test(segment.layer)
+    && !/center|dashdot|phantom/i.test(segment.lineType || '')
+    && (dx < ALIGN_TOL || dy < ALIGN_TOL) && length >= 300 && length <= 30_000;
+};
 
 export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const allSegs: Segment[] = [...dwg.segments];
@@ -89,13 +110,25 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     for (let i = 0; i < pl.pts.length - 1; i++) allSegs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer, lineType: pl.lineType });
     if (pl.closed && pl.pts.length > 2) allSegs.push({ a: pl.pts[pl.pts.length - 1], b: pl.pts[0], layer: pl.layer, lineType: pl.lineType });
   }
-  const segs: Segment[] = [...dwg.segments.filter((s) => isStructuralBoundaryLayer(s.layer))];
+  const segs: Segment[] = [...dwg.segments.filter(isStructuralBoundarySegment)];
   for (const pl of dwg.polylines.filter((p) => isStructuralBoundaryLayer(p.layer))) {
-    for (let i = 0; i < pl.pts.length - 1; i++) segs.push({ a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer, lineType: pl.lineType });
-    if (pl.closed && pl.pts.length > 2) segs.push({ a: pl.pts[pl.pts.length - 1], b: pl.pts[0], layer: pl.layer, lineType: pl.lineType });
+    for (let i = 0; i < pl.pts.length - 1; i++) {
+      const segment = { a: pl.pts[i], b: pl.pts[i + 1], layer: pl.layer, lineType: pl.lineType };
+      if (isStructuralBoundarySegment(segment)) segs.push(segment);
+    }
+    if (pl.closed && pl.pts.length > 2) {
+      const segment = { a: pl.pts[pl.pts.length - 1], b: pl.pts[0], layer: pl.layer, lineType: pl.lineType };
+      if (isStructuralBoundarySegment(segment)) segs.push(segment);
+    }
   }
   for (const hatch of dwg.hatches.filter((h) => isStructuralBoundaryLayer(h.layer)))
     for (let i = 0; i < hatch.pts.length; i++) segs.push({ a: hatch.pts[i], b: hatch.pts[(i + 1) % hatch.pts.length], layer: hatch.layer });
+
+  // First visual rule for every drawing: reconnect collinear structural
+  // fragments split by blocks, supports, joints or drafting breaks. These
+  // synthetic runs supplement (never replace) the original CAD entities, so
+  // every downstream slab rule sees the same visually continuous boundary.
+  segs.push(...joinBrokenStructuralSegments(segs));
 
   const H = segs.filter((s) => Math.abs(s.a.y - s.b.y) < ALIGN_TOL)
     .map((s) => ({ y: (s.a.y + s.b.y) / 2, x1: Math.min(s.a.x, s.b.x), x2: Math.max(s.a.x, s.b.x) }));
@@ -105,10 +138,18 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const dims = dwg.dimensions.filter((d) => /slabs?\s*no/i.test(d.layer));
   const Hdims = dims.filter((d) => d.dir === 'H').map((d) => d.measurement);
   const Vdims = dims.filter((d) => d.dir === 'V').map((d) => d.measurement);
-  const sectionNotes = dwg.texts.filter((t) => /\b(?:SECTION|SEC\.)\s*[:\-–]*\s*\d+\s*[-–]\s*\d+/i.test(t.text));
-  const scheduleNotes = dwg.texts.filter((t) => /\b(?:SLAB\s+)?(?:REINFORCEMENT\s+)?SCHEDULE\b/i.test(t.text));
-  const excludedDetailPoint = (p: Pt) => sectionNotes.some((note) => Math.abs(note.pos.x - p.x) <= 30_000 && p.y >= note.pos.y - 2500 && p.y <= note.pos.y + 15_000)
-    || scheduleNotes.some((note) => Math.abs(note.pos.x - p.x) <= 60_000 && p.y >= note.pos.y - 25_000 && p.y <= note.pos.y + 3000);
+  const sectionNotes = dwg.texts.filter((t) => /^\s*(?:SECTION|SEC\.|PROJECTION|ELEVATION|DETAIL)\b/i.test(t.text));
+  // Only schedule headings define an excluded sheet region. Notes such as
+  // "spacing as per schedule" occur inside the framing plan and must not
+  // suppress the surrounding slab bays.
+  const scheduleNotes = dwg.texts.filter((t) => /^\s*(?:SLAB\s+)?(?:REINFORCEMENT\s+)?SCHEDULE\s*$/i.test(t.text));
+  const excludedDetailPoint = (p: Pt) => sectionNotes.some((note) =>
+    // A title excludes only its local detail block. Treating an entire sheet
+    // row (or a 60 m schedule window) as non-plan geometry can suppress a
+    // genuine framing bay positioned elsewhere on the same combined sheet.
+    Math.abs(note.pos.x - p.x) <= 12_000 && Math.abs(note.pos.y - p.y) <= 8_000)
+    || scheduleNotes.some((note) => Math.abs(note.pos.x - p.x) <= 15_000
+      && p.y >= note.pos.y - 15_000 && p.y <= note.pos.y + 3_000);
   const labels = dwg.texts
     .filter((t) => /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
     .filter((t) => !excludedDetailPoint(t.pos))
@@ -135,6 +176,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   };
 
   const out: PanelProposalBox[] = [];
+  const thicknessSeededPanels: PanelProposalBox[] = [];
+  let deferredSolidFallback = false;
   for (const L of labels) {
     const c: Pt = L.pos;
     const aboveOptions = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y > c.y).sort((a, b) => a.y - b.y);
@@ -181,13 +224,120 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const box = { x0: left.x, y0: below.y, x1: right.x, y1: above.y };
     out.push({ label: L.text, box, lengthMm: sL.v, breadthMm: sB.v, openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: sL.ok && sB.ok && !expandedFromBeamFace, duplicate: false });
   }
+
+  // An unmarked framing plan may use a number on its dedicated slab-thickness
+  // layer instead of an S code in every bay. Treat that number as a *seed*,
+  // never as a dimension: all four nearby structural faces must still enclose
+  // a plausible bay, and the result remains review-only.
+  if (!labels.length && dwg.texts.some((text) => /\bFRAMING\s+PLAN\b/i.test(text.text))) {
+    const seeds = dwg.texts.filter((text) => /slab[\s.-]*thk/i.test(text.layer)
+      && /^\d{2,3}$/.test(text.text.trim())
+      && Number(text.text) >= 75 && Number(text.text) <= 350);
+    for (const seed of seeds) {
+      const c = seed.pos;
+      // SECTION 3-3 / 7-7 leaders can be printed *inside* the main framing
+      // plan. A dedicated slab-thickness mark plus four beam faces is stronger
+      // local evidence than proximity to such a callout.
+      const above = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y > c.y)
+        .sort((a, b) => a.y - b.y)[0];
+      const below = H.filter((h) => h.x1 - ALIGN_TOL <= c.x && c.x <= h.x2 + ALIGN_TOL && h.y < c.y)
+        .sort((a, b) => b.y - a.y)[0];
+      const right = V.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x > c.x)
+        .sort((a, b) => a.x - b.x)[0];
+      const left = V.filter((v) => v.y1 - ALIGN_TOL <= c.y && c.y <= v.y2 + ALIGN_TOL && v.x < c.x)
+        .sort((a, b) => b.x - a.x)[0];
+      if (!above || !below || !right || !left) continue;
+      const box = { x0: left.x, y0: below.y, x1: right.x, y1: above.y };
+      const width = box.x1 - box.x0, height = box.y1 - box.y0;
+      if (width < 600 || height < 600 || width > 15_000 || height > 15_000
+        || width * height > 200e6 || bayImageShowsFullX(allSegs, box)) continue;
+      if (thicknessSeededPanels.some((panel) => Math.abs(panel.box.x0 - box.x0) < ALIGN_TOL
+        && Math.abs(panel.box.y0 - box.y0) < ALIGN_TOL
+        && Math.abs(panel.box.x1 - box.x1) < ALIGN_TOL
+        && Math.abs(panel.box.y1 - box.y1) < ALIGN_TOL)) continue;
+      thicknessSeededPanels.push({ label: 'UNMARKED SLAB', box,
+        lengthMm: width, breadthMm: height, openingM2: 0,
+        thicknessMm: Number(seed.text), confident: false, duplicate: false,
+        thicknessMarkedBoundary: true });
+    }
+    if (thicknessSeededPanels.length >= 4) out.push(...thicknessSeededPanels);
+    else thicknessSeededPanels.length = 0;
+  }
+
+  // Some framing plans omit S1/S2 marks entirely and use ordinary (solid)
+  // beam/wall faces rather than HIDDEN lines. Recover only unequivocal closed
+  // mixed-RCC bays here. This fallback is deliberately disabled whenever a
+  // usable plan slab mark exists; the labelled and dotted-boundary passes stay
+  // authoritative for normal drawings.
+  if (!out.length && !labels.length && dwg.texts.some((text) => /\bFRAMING\s+PLAN\b/i.test(text.text))) {
+    // Dotted beam faces have their own topology-based pass below. Taking them
+    // here would create an unflagged panel and suppress that pass as overlap.
+    const solidH = segs.filter((segment) => !/dash|hidden/i.test(segment.lineType || '')
+      && Math.abs(segment.a.y - segment.b.y) < ALIGN_TOL)
+      .map((segment) => ({ y: (segment.a.y + segment.b.y) / 2,
+        x1: Math.min(segment.a.x, segment.b.x), x2: Math.max(segment.a.x, segment.b.x) }));
+    const solidV = segs.filter((segment) => !/dash|hidden/i.test(segment.lineType || '')
+      && Math.abs(segment.a.x - segment.b.x) < ALIGN_TOL)
+      .map((segment) => ({ x: (segment.a.x + segment.b.x) / 2,
+        y1: Math.min(segment.a.y, segment.b.y), y2: Math.max(segment.a.y, segment.b.y) }));
+    const coversX = (h: typeof H[number], x0: number, x1: number) => h.x1 <= x0 + ALIGN_TOL && h.x2 >= x1 - ALIGN_TOL;
+    const coversY = (v: typeof V[number], y0: number, y1: number) => v.y1 <= y0 + ALIGN_TOL && v.y2 >= y1 - ALIGN_TOL;
+    const candidates: Array<{ box: { x0: number; y0: number; x1: number; y1: number }; area: number }> = [];
+    // The pair-of-pairs search grows as H²×V². A consultant plan with
+    // thousands of beam faces can otherwise lock the browser for hours.
+    // Large plans use the bounded CAD-face pass below instead.
+    deferredSolidFallback = solidH.length * solidV.length > 2_500;
+    if (!deferredSolidFallback)
+    for (let li = 0; li < solidV.length; li++) for (let ri = li + 1; ri < solidV.length; ri++) {
+      const x0 = Math.min(solidV[li].x, solidV[ri].x), x1 = Math.max(solidV[li].x, solidV[ri].x);
+      if (x1 - x0 < 600) continue;
+      for (let bi = 0; bi < solidH.length; bi++) for (let ti = bi + 1; ti < solidH.length; ti++) {
+        const y0 = Math.min(solidH[bi].y, solidH[ti].y), y1 = Math.max(solidH[bi].y, solidH[ti].y);
+        if (y1 - y0 < 600 || !coversX(solidH[bi], x0, x1) || !coversX(solidH[ti], x0, x1)
+          || !coversY(solidV[li], y0, y1) || !coversY(solidV[ri], y0, y1)) continue;
+        const area = (x1 - x0) * (y1 - y0);
+        if (area / 1e6 <= 400) candidates.push({ box: { x0, y0, x1, y1 }, area });
+      }
+    }
+    const accepted: typeof candidates = [];
+    for (const candidate of candidates.sort((a, b) => b.area - a.area)) {
+      if (accepted.some((larger) => candidate.box.x0 >= larger.box.x0 - ALIGN_TOL
+        && candidate.box.y0 >= larger.box.y0 - ALIGN_TOL
+        && candidate.box.x1 <= larger.box.x1 + ALIGN_TOL
+        && candidate.box.y1 <= larger.box.y1 + ALIGN_TOL)) continue;
+      accepted.push(candidate);
+    }
+    accepted.forEach((candidate, index) => {
+      const centre = { x: (candidate.box.x0 + candidate.box.x1) / 2, y: (candidate.box.y0 + candidate.box.y1) / 2 };
+      if (excludedDetailPoint(centre)) return;
+      out.push({ label: `S${index + 1}`, box: candidate.box,
+        lengthMm: candidate.box.x1 - candidate.box.x0, breadthMm: candidate.box.y1 - candidate.box.y0,
+        openingM2: 0, thicknessMm: panelThickness(candidate.box, centre, thicknesses),
+        confident: true, duplicate: false });
+    });
+  }
   // Closed CAD faces are used only for additive exterior/cantilever evidence.
   // Never replace an already bounded S-labelled slab with a smaller face:
   // opening frames, bracing diagonals and detail lines can form closed
   // quadrilaterals inside an otherwise complete rectangular slab panel.
-  const topologySegments = allSegs.filter((segment) => isStructuralBoundaryLayer(segment.layer)
+  const topologySegments = allSegs.filter((segment) => isStructuralBoundarySegment(segment)
     || /slab|chajja|edge/i.test(segment.layer) || /^A-PLNT$/i.test(segment.layer));
   const topologyFaces = polygoniseCadFaces(topologySegments);
+  if (deferredSolidFallback && !out.length && !labels.length) {
+    // On a large unmarked plan, accept only actual rectangular structural
+    // faces. They remain review items because no S mark corroborates them.
+    for (const face of topologyFaces) {
+      const shape = simplifyCollinearPolygon(face.polygon);
+      const centre = { x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 };
+      if (shape.length !== 4 || face.areaM2 < 0.2 || face.areaM2 > 400
+        || face.areaM2 < boxArea(face.box) / 1e6 * 0.985
+        || excludedDetailPoint(centre)) continue;
+      out.push({ label: 'UNMARKED SLAB', box: face.box,
+        lengthMm: face.box.x1 - face.box.x0, breadthMm: face.box.y1 - face.box.y0,
+        openingM2: 0, thicknessMm: panelThickness(face.box, centre, thicknesses),
+        confident: false, duplicate: false, closedStructuralBoundary: true });
+    }
+  }
   // Some consultants place the outer structural/free edge on A-STRS or layer
   // 0. Include those entities only in the unresolved-S recovery graph; they
   // are not allowed to reshape any normally measured panel.
@@ -263,11 +413,71 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   const inferredSlabCode = [...slabCodeCounts].sort((a, b) => b[1] - a[1])[0]?.[0] || 'S1';
   const dottedBeamSegments = allSegs.filter((segment) => /beam/i.test(segment.layer)
     && /dash|hidden/i.test(segment.lineType || '') && !/center/i.test(segment.lineType || ''));
-  // Beam faces commonly terminate on opposite sides of a small column/node;
-  // a 300 mm CAD snap joins those intended corners without bridging a normal
-  // slab bay or beam spacing.
-  const dottedFaces = polygoniseCadFaces(dottedBeamSegments, 300);
-  for (const face of dottedFaces) {
+  // Beam faces commonly terminate on opposite sides of a small column/node.
+  // Real consultant files also split each side at dimensions and slab bays,
+  // so polygonising raw HIDDEN pieces alone misses complete four-sided rooms.
+  // Add a second pass after joining only collinear dotted BEAM fragments.
+  const mergedDottedBeamSegments = mergeAxisBeamSegments(dottedBeamSegments)
+    .filter((segment) => /hidden/i.test(segment.lineType || ''));
+  const allDottedFaces = [
+    ...polygoniseCadFaces(dottedBeamSegments, 300),
+    ...polygoniseCadFaces(mergedDottedBeamSegments, 300),
+  ];
+  // A sheet can contain the framing plan, beam/slab schedules and several
+  // sections. Closed HIDDEN loops are meaningful only in the framing-plan
+  // region; the same line type is also used in projection/section details.
+  // Group nearby faces first, then retain the groups spatially associated
+  // with a FRAMING PLAN title instead of applying project-specific limits.
+  const framingTitles = dwg.texts.filter((text) => /\bFRAMING\s+PLAN\b/i.test(text.text));
+  // Match actual drawing headings only. Notes inside a plan such as
+  // "R/F SPACING AS PER SCHEDULE" must not classify that plan bay as a
+  // schedule/detail region.
+  const detailTitles = dwg.texts.filter((text) => !/\bFRAMING\s+PLAN\b/i.test(text.text)
+    && (/^\s*(?:SECTION|SEC\.|PROJECTION|ELEVATION|DETAIL)\b/i.test(text.text)
+      || /^\s*(?:SLAB\s+|BEAM\s+)?(?:REINFORCEMENT\s+)?SCHEDULE\s*$/i.test(text.text)));
+  const faceGroups: typeof allDottedFaces[] = [];
+  type FaceBox = { x0: number; y0: number; x1: number; y1: number };
+  const boxGap = (a: FaceBox, b: FaceBox) => Math.hypot(
+    Math.max(0, a.x0 - b.x1, b.x0 - a.x1),
+    Math.max(0, a.y0 - b.y1, b.y0 - a.y1));
+  for (const face of allDottedFaces) {
+    const touching = faceGroups.filter((group) => group.some((other) => boxGap(face.box, other.box) <= 15_000));
+    if (!touching.length) faceGroups.push([face]);
+    else {
+      const target = touching[0]; target.push(face);
+      for (const extra of touching.slice(1)) {
+        target.push(...extra); faceGroups.splice(faceGroups.indexOf(extra), 1);
+      }
+    }
+  }
+  const pointBoxDistance = (point: Pt, box: FaceBox) => Math.hypot(
+    Math.max(0, box.x0 - point.x, point.x - box.x1),
+    Math.max(0, box.y0 - point.y, point.y - box.y1));
+  const planDottedFace = (face: typeof allDottedFaces[number]) => {
+    if (thicknessSeededPanels.length < 4 || face.areaM2 < 2
+      || !thicknessSeededPanels.some((panel) => boxGap(face.box, panel.box) <= 3000)
+      || bayImageShowsFullX(allSegs, face.box)) return false;
+    // Beam numbers along multiple sides corroborate that this is a bay in the
+    // framing plan, not a similarly shaped section near a SECTION leader.
+    const nearbyBeamNumbers = dwg.texts.filter((text) => /^B\d+[A-Z]?$/i.test(text.text.trim())
+      && /beam\s*no/i.test(text.layer)
+      && text.pos.x >= face.box.x0 - 600 && text.pos.x <= face.box.x1 + 600
+      && text.pos.y >= face.box.y0 - 600 && text.pos.y <= face.box.y1 + 600);
+    return nearbyBeamNumbers.length >= 2;
+  };
+  const dottedFaces = !framingTitles.length ? allDottedFaces : faceGroups
+    .filter((group) => {
+      const box = group.reduce((acc, face) => ({
+        x0: Math.min(acc.x0, face.box.x0), y0: Math.min(acc.y0, face.box.y0),
+        x1: Math.max(acc.x1, face.box.x1), y1: Math.max(acc.y1, face.box.y1),
+      }), { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+      const planDistance = Math.min(...framingTitles.map((title) => pointBoxDistance(title.pos, box)));
+      const detailDistance = detailTitles.length
+        ? Math.min(...detailTitles.map((title) => pointBoxDistance(title.pos, box))) : Infinity;
+      return planDistance <= detailDistance;
+    })
+    .flat();
+  for (const face of new Set([...dottedFaces, ...allDottedFaces.filter(planDottedFace)])) {
     const shape = simplifyCollinearPolygon(face.polygon);
     const width = face.box.x1 - face.box.x0, height = face.box.y1 - face.box.y0;
     const centre = { x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 };
@@ -275,6 +485,10 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     if (holdNotes.some((note) => pointInPolygon(note.pos, face.polygon))) continue;
     if (markEnvelope && (centre.x < markEnvelope.minX - 3000 || centre.x > markEnvelope.maxX + 3000
       || centre.y < markEnvelope.minY - 3000 || centre.y > markEnvelope.maxY + 3000)) continue;
+    // Apply sheet-region exclusion before consulting raw S marks. Section and
+    // schedule details often repeat S1/S2 text inside perfectly closed loops;
+    // that text describes the detail and must not turn it into a plan panel.
+    if (excludedDetailPoint(centre) && !planDottedFace(face)) continue;
     const containedLabel = labels.find((label) => pointInPolygon(label.pos, shape))
       || rawSlabMarks.find((label) => pointInPolygon(label.pos, shape));
     if (containedLabel) {
@@ -297,18 +511,23 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       }
       continue;
     }
-    if (excludedDetailPoint(centre)) continue;
     // The face must occupy previously unmeasured space. Boundary contact is
     // harmless, but material overlap would create a second panel.
     if (out.some((panel) => polygonRectIntersectionArea(face.polygon, panel.box) / 1e6 > face.areaM2 * 0.1)) continue;
     const bboxArea = boxArea(face.box) / 1e6;
     const irregular = face.areaM2 < bboxArea * 0.985;
-    out.push({ label: inferredSlabCode, box: face.box,
+    // Four hidden beam faces enclosing a room make a rectangular bay. A
+    // narrow H/U-shaped closed loop instead follows the beam *material*
+    // around several bays (rather than the slab inside one bay). Without an
+    // actual slab mark, never promote that irregular loop to a quantity.
+    if (irregular && !planDottedFace(face)) continue;
+    out.push({ label: planDottedFace(face) ? 'UNMARKED SLAB' : inferredSlabCode, box: face.box,
       polygon: irregular ? shape : undefined,
       netAreaM2: irregular ? face.areaM2 : undefined,
       lengthMm: width, breadthMm: height, openingM2: 0,
       thicknessMm: panelThickness(face.box, centre, thicknesses),
-      confident: true, duplicate: false, dottedBoundary: true });
+      confident: !planDottedFace(face), duplicate: false, dottedBoundary: true,
+      visualBoundary: planDottedFace(face) });
   }
   // Some corner bays close against a column/wall or a continuous beam return,
   // so their loop is not made exclusively from dotted entities. Recover only
@@ -481,6 +700,60 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0,
       openingM2: 0, thicknessMm: panelThickness(box, c, thicknesses), confident: true, duplicate: false });
   }
+  // In some framing plans the numeric slab-depth circle, rather than an S
+  // code, confirms a patterned hatch. Follow only physically adjacent loops
+  // of that same dedicated slab/sunken-slab hatch; beam labels may divide the
+  // strip without ending the slab. Never infer this from generic sheet hatches.
+  if (thicknessSeededPanels.length >= 4 && !labels.length) {
+    const slabHatches = hatchCandidates.filter(({ hatch }) => /slab|sunk/i.test(hatch.layer));
+    const markedPlan = thicknessSeededPanels.reduce((box, panel) => ({
+      x0: Math.min(box.x0, panel.box.x0), y0: Math.min(box.y0, panel.box.y0),
+      x1: Math.max(box.x1, panel.box.x1), y1: Math.max(box.y1, panel.box.y1),
+    }), { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+    const boundaryNear = (a: Pt[], b: Pt[]): boolean => {
+      const pointToEdge = (p: Pt, start: Pt, end: Pt): number => {
+        const dx = end.x - start.x, dy = end.y - start.y;
+        const t = Math.max(0, Math.min(1, ((p.x - start.x) * dx + (p.y - start.y) * dy)
+          / Math.max(dx * dx + dy * dy, 1)));
+        return Math.hypot(p.x - start.x - t * dx, p.y - start.y - t * dy);
+      };
+      const close = (points: Pt[], edges: Pt[]) => points.some((point) => edges.some((start, i) =>
+        pointToEdge(point, start, edges[(i + 1) % edges.length]) <= 250));
+      return close(a, b) || close(b, a);
+    };
+    const depthMarks = dwg.texts.filter((text) => /slab[\s.-]*thk/i.test(text.layer)
+      && /^\d{2,3}$/.test(text.text.trim()) && Number(text.text) >= 75 && Number(text.text) <= 350);
+    const connected = new Map<number, number>();
+    const queue: number[] = [];
+    slabHatches.forEach((candidate, index) => {
+      const mark = depthMarks.find((text) => pointInPolygon(text.pos, candidate.polygon));
+      if (mark) { connected.set(index, Number(mark.text)); queue.push(index); }
+    });
+    for (let at = 0; at < queue.length; at++) {
+      const index = queue[at], source = slabHatches[index];
+      slabHatches.forEach((candidate, neighbour) => {
+        if (connected.has(neighbour) || hatchSignature(candidate.hatch) !== hatchSignature(source.hatch)
+          || rectGap(candidate.box, source.box) > 250
+          || !boundaryNear(candidate.polygon, source.polygon)) return;
+        connected.set(neighbour, connected.get(index)!); queue.push(neighbour);
+      });
+    }
+    for (const [index, thicknessMm] of connected) {
+      const { hatch, polygon, box, areaM2 } = slabHatches[index];
+      if (out.some((panel) => polygonRectIntersectionArea(polygon, panel.box) / 1e6 > areaM2 * 0.1)) continue;
+      // Exterior continuous hatch is a balcony/cantilever slab, even where
+      // B-number annotations and transverse beams cross it. The classification
+      // follows hatch continuity and the plan perimeter, never a particular
+      // consultant's B41A/B42 labels or thickness alone.
+      const exterior = box.x0 <= markedPlan.x0 + 500 || box.x1 >= markedPlan.x1 - 500
+        || box.y0 <= markedPlan.y0 - 500 || box.y1 >= markedPlan.y1 - 500;
+      const balcony = exterior && /sunk|balcony|cantilever/i.test(hatch.layer);
+      out.push({ label: balcony ? 'BALCONY CANTILEVER' : 'HATCH-SLAB', box, polygon, netAreaM2: areaM2,
+        lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0,
+        openingM2: 0, thicknessMm, confident: false, duplicate: false,
+        hatchConnectedBoundary: true });
+    }
+  }
   // Cantilevers are an additive detector only. They never alter the stable
   // S-label ray-casting above: dashed inner face + continuous outer face +
   // continuous closures at both ends.
@@ -528,6 +801,19 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const longSide = Math.max(panel.lengthMm, panel.breadthMm);
     const shortSide = Math.min(panel.lengthMm, panel.breadthMm);
     const stripLike = shortSide > 0 && longSide / shortSide >= 2;
+    // A continuous exterior beam and a fragmented hidden beam can enclose a
+    // long unmarked slab band. Require several independently measured bays
+    // immediately along its inner face; a remote sheet/grid line has no such
+    // local support and must not become a slab.
+    const horizontalStrip = panel.lengthMm >= panel.breadthMm;
+    const adjacentMeasuredBays = labelledPanels.filter((measured) => horizontalStrip
+      ? Math.min(Math.abs(measured.box.y1 - panel.box.y0), Math.abs(measured.box.y0 - panel.box.y1)) <= 1000
+        && Math.min(measured.box.x1, panel.box.x1) - Math.max(measured.box.x0, panel.box.x0) >= 1000
+      : Math.min(Math.abs(measured.box.x1 - panel.box.x0), Math.abs(measured.box.x0 - panel.box.x1)) <= 1000
+        && Math.min(measured.box.y1, panel.box.y1) - Math.max(measured.box.y0, panel.box.y0) >= 1000).length;
+    const verifiedLongSlabStrip = !panel.polygon && panel.cantileverBoundary
+      && longSide >= 60_000 && shortSide >= 800 && shortSide <= 3000
+      && adjacentMeasuredBays >= 4;
     if (!localCMark && !unresolvedSlabMark && !stripLike) return false;
     if (unresolvedSlabMark) panel.label = unresolvedSlabMark.text;
     if (excludedDetailPoint(centre)) return false;
@@ -549,7 +835,14 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       const verifiedExteriorStrip = panel.cantileverBoundary && crossesSideEnvelope
         && Math.max(panel.lengthMm, panel.breadthMm) >= 3000;
       const verifiedCornerPolygon = panel.polygon && edgeDistance <= 3000;
-      if (!verifiedExteriorStrip && !verifiedCornerPolygon && !unresolvedSlabMark) return false;
+      // A mirrored pair recovered between an actual hidden beam face and an
+      // A-Comments outer plan edge is also valid inside the broad envelope of
+      // all labels. detectClosedCantileverStrips only sets both flags after a
+      // size-matched mate is found on the opposite side of the plan, so this
+      // does not admit isolated annotation lines.
+      const corroboratedCommentBand = panel.visualBoundary && panel.closedStructuralBoundary;
+      if (!verifiedExteriorStrip && !verifiedCornerPolygon && !unresolvedSlabMark
+        && !verifiedLongSlabStrip && !corroboratedCommentBand) return false;
     }
     if (labelEnvelope) {
       const dx = Math.max(labelEnvelope.minX - centre.x, 0, centre.x - labelEnvelope.maxX);
@@ -571,6 +864,11 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       // gates above are the authoritative checks.
       return true;
     }
+    if (verifiedLongSlabStrip) {
+      panel.label = 'SLAB STRIP';
+      panel.confident = false; // no local S mark: retain a review flag
+      return true;
+    }
     // A full-width exterior strip legitimately touches/overlaps the adjacent
     // labelled bay at its supporting beam. Do not let that rectangular proxy
     // erase a structurally closed dashed-to-solid cantilever near the plan
@@ -580,6 +878,16 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       if (crossesSideEnvelope && Math.max(panel.lengthMm, panel.breadthMm) >= 3000) return true;
     }
     if (unresolvedSlabMark) return true;
+    // The paired comment-edge band is independently bounded by its hidden
+    // support and mirrored counterpart. A neighbouring irregular slab's
+    // rectangular proxy can overlap this real bay even though the actual
+    // polygons do not, so proxy overlap must not erase it.
+    if (panel.visualBoundary && panel.closedStructuralBoundary) {
+      // This fallback is for the tall mirrored side bays whose closing wall is
+      // broken. Horizontal A-Comments bands at the bottom coincide with the
+      // already measured hatch/stepped balcony and would double its quantity.
+      return panel.breadthMm >= panel.lengthMm * 1.5;
+    }
     return !labelledPanels.some((labelled) => overlapFrac(panel.box, labelled.box) > 0.1);
   }));
   // Some symmetric end chajjas expose complementary dimensions: one end
@@ -659,24 +967,680 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // faces are collinear. The ordinary S/hatch proposals above retain every
   // transverse beam as a separate panel boundary.
 
+  // A consultant may put "FRAMING PLAN" in the title block of a sheet that
+  // actually consists of repeated beam sections/details. A title alone is
+  // not evidence of a measurable plan. On a section-dominated, unmarked
+  // sheet require several sizeable bounded bays in the region nearer a plan
+  // heading than any detail heading; otherwise all closed beam loops are
+  // detail geometry, including apparent cantilevers.
+  if (thicknessSeededPanels.length >= 4 && !labels.length) {
+    // First-pass bay reading: a dotted beam face is slab-side evidence, not a
+    // demand that every other side be dotted too. Close it with neighbouring
+    // structural beam, wall or column faces in the marked framing-plan region.
+    // Keep only actual closed CAD faces; no rectangle is invented across an
+    // open edge. Thickness marks/hatches remain corroborating evidence below.
+    const footprint = thicknessSeededPanels.reduce((box, panel) => ({
+      x0: Math.min(box.x0, panel.box.x0), y0: Math.min(box.y0, panel.box.y0),
+      x1: Math.max(box.x1, panel.box.x1), y1: Math.max(box.y1, panel.box.y1),
+    }), { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+    const inPlan = (segment: Segment) => Math.max(segment.a.x, segment.b.x) >= footprint.x0 - 3000
+      && Math.min(segment.a.x, segment.b.x) <= footprint.x1 + 3000
+      && Math.max(segment.a.y, segment.b.y) >= footprint.y0 - 3000
+      && Math.min(segment.a.y, segment.b.y) <= footprint.y1 + 3000;
+    const localDotted = mergedDottedBeamSegments.filter(inPlan);
+    const mixedFaces = polygoniseCadFaces([
+      ...segs.filter(inPlan), ...localDotted,
+    ], 300);
+    const dottedSide = (box: PanelProposalBox['box']) => localDotted.some((segment) => {
+      const horizontal = Math.abs(segment.a.y - segment.b.y) < ALIGN_TOL;
+      const vertical = Math.abs(segment.a.x - segment.b.x) < ALIGN_TOL;
+      if (horizontal) {
+        const y = (segment.a.y + segment.b.y) / 2;
+        const overlap = Math.max(0, Math.min(box.x1, Math.max(segment.a.x, segment.b.x))
+          - Math.max(box.x0, Math.min(segment.a.x, segment.b.x)));
+        return (Math.abs(y - box.y0) <= 300 || Math.abs(y - box.y1) <= 300)
+          && overlap >= Math.max(600, (box.x1 - box.x0) * 0.4);
+      }
+      if (vertical) {
+        const x = (segment.a.x + segment.b.x) / 2;
+        const overlap = Math.max(0, Math.min(box.y1, Math.max(segment.a.y, segment.b.y))
+          - Math.max(box.y0, Math.min(segment.a.y, segment.b.y)));
+        return (Math.abs(x - box.x0) <= 300 || Math.abs(x - box.x1) <= 300)
+          && overlap >= Math.max(600, (box.y1 - box.y0) * 0.4);
+      }
+      return false;
+    });
+    const visualBays = mixedFaces.filter((face) => {
+      const box = face.box, w = box.x1 - box.x0, h = box.y1 - box.y0;
+      return w >= 1500 && h >= 1500 && face.areaM2 >= 2 && face.areaM2 <= 150
+        && face.areaM2 >= boxArea(box) / 1e6 * 0.985
+        && dottedSide(box) && !bayImageShowsFullX(allSegs, box)
+        && !out.some((panel) => polygonRectIntersectionArea(face.polygon, panel.box) / 1e6 > face.areaM2 * 0.1);
+    });
+    for (const face of visualBays) {
+      const box = face.box, centre = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
+      out.push({ label: 'UNMARKED SLAB', box, lengthMm: box.x1 - box.x0,
+        breadthMm: box.y1 - box.y0, openingM2: 0,
+        thicknessMm: panelThickness(box, centre, thicknesses), confident: false,
+        duplicate: false, visualBoundary: true });
+    }
+    // Raster-style rectangular recovery does not depend on a successful CAD
+    // face walk. Build visible side runs from all structural strokes, then
+    // test the spaces between paired dotted beam faces. This handles mirrored
+    // bays where duplicated/split column entities make polygon topology fail.
+    const visibleSource = allSegs.filter((segment) => inPlan(segment) && isVisiblePlanBoundarySegment(segment));
+    const visibleRuns = mergeAxisBeamSegments(visibleSource
+      .map((segment) => ({ ...segment, layer: 'BEAM', lineType: 'CONTINUOUS' })), 80);
+    const structuralRuns = mergeAxisBeamSegments(segs.filter(inPlan), 80);
+    const visibleFaces = polygoniseCadFaces([
+      ...visibleSource,
+      ...mergeAxisFragments(visibleSource, 80, () => true, 'VISUALLY JOINED GENERIC'),
+    ], 80);
+    const visibleH = visibleRuns.filter((segment) => Math.abs(segment.a.y - segment.b.y) < ALIGN_TOL);
+    // Geometry decides whether a bay exists; a drawing-wide U.N.O. note only
+    // supplies its measurement later. Always consider visible beam/wall/column
+    // sides here, then reject X-marked and overlapping false candidates.
+    const verticalSides = visibleRuns
+      .filter((segment) => Math.abs(segment.a.x - segment.b.x) < ALIGN_TOL);
+    for (let leftIndex = 0; leftIndex < verticalSides.length; leftIndex++) for (let rightIndex = leftIndex + 1;
+      rightIndex < verticalSides.length; rightIndex++) {
+      const left = verticalSides[leftIndex], right = verticalSides[rightIndex];
+      const x0 = Math.min(left.a.x, right.a.x), x1 = Math.max(left.a.x, right.a.x);
+      const yMin = Math.max(Math.min(left.a.y, left.b.y), Math.min(right.a.y, right.b.y));
+      const yMax = Math.min(Math.max(left.a.y, left.b.y), Math.max(right.a.y, right.b.y));
+      if (x1 - x0 < 1500 || x1 - x0 > 15_000 || yMax - yMin < 1500) continue;
+      const crossings = visibleH.filter((line) => {
+        const lo = Math.min(line.a.x, line.b.x), hi = Math.max(line.a.x, line.b.x);
+        const y = (line.a.y + line.b.y) / 2;
+        return y >= yMin - 300 && y <= yMax + 300 && lo <= x0 + 300 && hi >= x1 - 300;
+      }).map((line) => (line.a.y + line.b.y) / 2).sort((a, b) => a - b);
+      for (let i = 0; i < crossings.length - 1; i++) {
+        const y0 = crossings[i], y1 = crossings[i + 1];
+        const box = { x0, y0, x1, y1 };
+        const areaM2 = boxArea(box) / 1e6;
+        const sideSupported = (line: Segment) => {
+          const horizontal = Math.abs(line.a.y - line.b.y) < ALIGN_TOL;
+          const vertical = Math.abs(line.a.x - line.b.x) < ALIGN_TOL;
+          if (horizontal) {
+            const y = (line.a.y + line.b.y) / 2;
+            const overlap = Math.max(0, Math.min(x1, Math.max(line.a.x, line.b.x))
+              - Math.max(x0, Math.min(line.a.x, line.b.x)));
+            return (Math.abs(y - y0) <= 300 || Math.abs(y - y1) <= 300)
+              && overlap >= Math.max(600, (x1 - x0) * 0.4);
+          }
+          if (vertical) {
+            const x = (line.a.x + line.b.x) / 2;
+            const overlap = Math.max(0, Math.min(y1, Math.max(line.a.y, line.b.y))
+              - Math.max(y0, Math.min(line.a.y, line.b.y)));
+            return (Math.abs(x - x0) <= 300 || Math.abs(x - x1) <= 300)
+              && overlap >= Math.max(600, (y1 - y0) * 0.4);
+          }
+          return false;
+        };
+        // Generic-layer lines may complete a visible bay, but they cannot
+        // create quantities alone: at least one side must still be confirmed
+        // by a beam/wall/column/RCC entity.
+        const structurallyCorroborated = structuralRuns.some(sideSupported);
+        if (y1 - y0 < 1500 || areaM2 < 2 || areaM2 > 150
+          || !structurallyCorroborated
+          || bayImageShowsFullX(allSegs, box)
+          // Retain established rectangular bays. Only allow a new visual face
+          // through an overlapping aggregate polygon so that a merged region
+          // can be split into its actual constituent slab panels.
+          || out.some((panel) => !panel.polygon && overlapFrac(panel.box, box) > 0.1)) continue;
+        const centre = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+        // The paired-run search supplies a reliable outer extent, but the
+        // actual closed face may be stepped or notched. Retain that polygon
+        // instead of billing its rectangular bounding box.
+        const exactFace = visibleFaces
+          .filter((face) => pointInPolygon(centre, face.polygon)
+            && Math.abs(face.box.x0 - x0) <= 300 && Math.abs(face.box.x1 - x1) <= 300
+            && Math.abs(face.box.y0 - y0) <= 300 && Math.abs(face.box.y1 - y1) <= 300)
+          .sort((a, b) => a.areaM2 - b.areaM2)[0];
+        const exactShape = exactFace ? simplifyCollinearPolygon(exactFace.polygon) : undefined;
+        const irregular = !!exactFace && !!exactShape && exactShape.length >= 3
+          && exactFace.areaM2 < areaM2 * 0.985;
+        out.push({ label: 'UNMARKED SLAB', box, lengthMm: x1 - x0, breadthMm: y1 - y0,
+          openingM2: 0, thicknessMm: panelThickness(box, centre, thicknesses),
+          confident: false, duplicate: false, visualBoundary: true,
+          polygon: irregular ? exactShape : undefined,
+          netAreaM2: irregular ? exactFace.areaM2 : undefined });
+      }
+    }
+    // Refine large rectangular fallbacks against the complete visible face.
+    // A room around a lift/core is frequently closed but stepped; billing its
+    // bounding rectangle overstates the slab. Preserve that closed polygon so
+    // the member is measured by direct area only.
+    for (const panel of out) {
+      if (panel.polygon || boxArea(panel.box) < 20_000_000) continue;
+      const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+      const gross = boxArea(panel.box) / 1e6;
+      const face = visibleFaces.filter((candidate) => pointInPolygon(centre, candidate.polygon)
+        && candidate.areaM2 >= gross * 0.35 && candidate.areaM2 <= gross * 1.02
+        && Math.abs(candidate.box.x0 - panel.box.x0) <= 800
+        && Math.abs(candidate.box.x1 - panel.box.x1) <= 800
+        && Math.abs(candidate.box.y0 - panel.box.y0) <= 800
+        && Math.abs(candidate.box.y1 - panel.box.y1) <= 800)
+        .sort((a, b) => a.areaM2 - b.areaM2)[0];
+      const shape = face ? simplifyCollinearPolygon(face.polygon) : undefined;
+      if (face && shape && shape.length >= 5 && face.areaM2 < gross * 0.985) {
+        panel.polygon = shape;
+        panel.netAreaM2 = face.areaM2;
+      }
+    }
+    // This is an additive visual pass. Never replace the complete candidate
+    // set with thickness/dotted-only results: doing so discards valid bays
+    // already closed by beams, walls and columns. The downstream geometry,
+    // X/void and duplicate filters decide which candidates survive.
+    // On mixed model-space drawings, however, retain only candidates in the
+    // framing-plan footprint established by the slab-thickness marks. This
+    // removes remote beam details without privileging any one slab rule.
+    const planCandidates = out.filter((panel) => {
+      // Visually closed bays can project farther than the thickness-marked
+      // rooms (for example a notched perimeter slab beside the last marked
+      // bay). Give only those corroborated visual candidates the wider side
+      // allowance; ordinary CAD fallbacks retain the tighter detail guard.
+      const xPad = panel.visualBoundary ? 6000 : 3000;
+      return panel.box.x0 >= footprint.x0 - xPad && panel.box.x1 <= footprint.x1 + xPad
+        && panel.box.y0 >= footprint.y0 - 7000 && panel.box.y1 <= footprint.y1 + 7000;
+    });
+    const planAxis = (footprint.x0 + footprint.x1) / 2;
+    // Drawing-wide visual symmetry pass. CAD entities are rendered into a
+    // layer-independent structural image, the white bay around each proposal
+    // is segmented, and only visually corresponding left/right regions are
+    // allowed to repair one another. This is deliberately before numbering:
+    // every renderer/export receives the same final geometry.
+    const structuralImageSegments = [...visibleSource, ...localDotted];
+    const visuallyReconciled = new Set<PanelProposalBox>();
+    const mirrorPolygon = (polygon: Pt[]) => polygon.map((point) => ({ x: 2 * planAxis - point.x, y: point.y })).reverse();
+    const applyVisualRegion = (panel: PanelProposalBox, region: ReturnType<typeof segmentVisualBay>) => {
+      if (!region) return;
+      const gross = boxArea(panel.box) / 1e6;
+      if (region.areaM2 < Math.max(0.2, gross * 0.5) || region.areaM2 > gross * 1.05
+        || Math.abs(region.box.x0 - panel.box.x0) > 400 || Math.abs(region.box.x1 - panel.box.x1) > 400
+        || Math.abs(region.box.y0 - panel.box.y0) > 400 || Math.abs(region.box.y1 - panel.box.y1) > 400) return;
+      panel.box = region.box;
+      panel.lengthMm = region.box.x1 - region.box.x0; panel.breadthMm = region.box.y1 - region.box.y0;
+      if (region.rectangular) { panel.polygon = undefined; panel.netAreaM2 = undefined; }
+      else { panel.polygon = region.polygon; panel.netAreaM2 = region.areaM2; panel.visualBoundary = true; }
+      visuallyReconciled.add(panel);
+    };
+    const mirrorCandidates = planCandidates.filter((panel) => !/CANTILEVER|HATCH/i.test(panel.label || '')
+      && boxArea(panel.box) >= 1_500_000);
+    for (const left of mirrorCandidates.filter((panel) => (panel.box.x0 + panel.box.x1) / 2 < planAxis - 250)) {
+      if (visuallyReconciled.has(left)) continue;
+      const expected = { x0: 2 * planAxis - left.box.x1, x1: 2 * planAxis - left.box.x0 };
+      const right = mirrorCandidates.filter((panel) => panel !== left
+        && (panel.box.x0 + panel.box.x1) / 2 > planAxis + 250
+        && Math.abs((panel.box.y0 + panel.box.y1 - left.box.y0 - left.box.y1) / 2) <= 800
+        && Math.abs(panel.box.x0 - expected.x0) <= 1400 && Math.abs(panel.box.x1 - expected.x1) <= 1400)
+        .sort((a, b) => Math.abs(a.box.x0 - expected.x0) + Math.abs(a.box.x1 - expected.x1))[0];
+      if (!right) continue;
+      const similarity = mirroredBaySimilarity(structuralImageSegments, left.box, right.box);
+      if (similarity < 0.42) continue;
+      const regionFor = (panel: PanelProposalBox) => {
+        const pad = Math.min(1400, Math.max(500, Math.min(panel.lengthMm, panel.breadthMm) * 0.3));
+        const search = { x0: panel.box.x0 - pad, y0: panel.box.y0 - pad,
+          x1: panel.box.x1 + pad, y1: panel.box.y1 + pad };
+        return segmentVisualBay(structuralImageSegments,
+          { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 }, search);
+      };
+      const leftRegion = regionFor(left), rightRegion = regionFor(right);
+      applyVisualRegion(left, leftRegion); applyVisualRegion(right, rightRegion);
+      // When one side is visually closed but the mirrored side has a small
+      // drafting break, transfer the segmented outline only after the raster
+      // comparison has independently established that the two bays match.
+      if (leftRegion && !rightRegion && similarity >= 0.6) {
+        const polygon = mirrorPolygon(leftRegion.polygon), box = bbox(polygon);
+        applyVisualRegion(right, { polygon, box, areaM2: leftRegion.areaM2, rectangular: leftRegion.rectangular });
+      } else if (rightRegion && !leftRegion && similarity >= 0.6) {
+        const polygon = mirrorPolygon(rightRegion.polygon), box = bbox(polygon);
+        applyVisualRegion(left, { polygon, box, areaM2: rightRegion.areaM2, rectangular: rightRegion.rectangular });
+      }
+    }
+    // Centre-spanning slabs are never split into artificial mirrored halves.
+    // Segment them once around their own seed and retain the complete region.
+    for (const panel of mirrorCandidates.filter((candidate) => candidate.box.x0 < planAxis && candidate.box.x1 > planAxis)) {
+      const pad = Math.min(1200, Math.max(500, Math.min(panel.lengthMm, panel.breadthMm) * 0.3));
+      applyVisualRegion(panel, segmentVisualBay(structuralImageSegments,
+        { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 },
+        { x0: panel.box.x0 - pad, y0: panel.box.y0 - pad, x1: panel.box.x1 + pad, y1: panel.box.y1 + pad }));
+    }
+    const recoveredMirrors: PanelProposalBox[] = [];
+    for (const source of [...planCandidates]) {
+      if (source.polygon || source.label !== 'UNMARKED SLAB'
+        || (source.box.x0 < planAxis && source.box.x1 > planAxis)) continue;
+      const box = { x0: 2 * planAxis - source.box.x1, x1: 2 * planAxis - source.box.x0,
+        y0: source.box.y0, y1: source.box.y1 };
+      if (overlapFrac(source.box, box) > 0.05) continue;
+      const insideAggregate = planCandidates.some((panel) => panel.polygon
+        && polygonRectOverlapFrac(panel.polygon, box) > 0.5);
+      const existingRectangle = planCandidates.some((panel) => !panel.polygon
+        && overlapFrac(panel.box, box) > 0.6);
+      if (box.x0 < footprint.x0 - 3000 || box.x1 > footprint.x1 + 3000
+        || existingRectangle
+        || (!insideAggregate && supportedVisualSides(box, visibleRuns) < 2)
+        || (!insideAggregate && supportedVisualSides(box, structuralRuns) < 1)
+        || bayImageShowsFullX(allSegs, box)) continue;
+      const centre = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
+      recoveredMirrors.push({ label: 'UNMARKED SLAB', box,
+        lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0, openingM2: 0,
+        thicknessMm: panelThickness(box, centre, thicknesses), confident: false,
+        duplicate: false, visualBoundary: true });
+    }
+    planCandidates.push(...recoveredMirrors);
+    notchLargePanelsAtCornerOverlaps(planCandidates);
+    // A rectangle proposed from its outer beam runs can hide an inward
+    // orthogonal return at a corner. Require both legs of that return in
+    // structural CAD ink before replacing the bounding box by direct area.
+    for (const panel of planCandidates) {
+      if (panel.polygon || boxArea(panel.box) < 20_000_000) continue;
+      const b = panel.box;
+      const returns = segs.filter((line) => Math.abs(line.a.x - line.b.x) <= 40)
+        .map((line) => ({ x: (line.a.x + line.b.x) / 2,
+          lo: Math.min(line.a.y, line.b.y), hi: Math.max(line.a.y, line.b.y) }))
+        .filter((line) => line.x >= b.x0 + 300 && line.x <= b.x1 - 300
+          && Math.abs(line.hi - b.y1) <= 100 && line.lo >= b.y1 - 1800
+          && line.hi - line.lo >= 200)
+        .map((line) => {
+          const side = line.x < (b.x0 + b.x1) / 2 ? 'left' : 'right';
+          const supported = segs.some((horizontal) => {
+            if (Math.abs(horizontal.a.y - horizontal.b.y) > 40
+              || Math.abs((horizontal.a.y + horizontal.b.y) / 2 - line.lo) > 100) return false;
+            const x0 = Math.min(horizontal.a.x, horizontal.b.x);
+            const x1 = Math.max(horizontal.a.x, horizontal.b.x);
+            return side === 'right' ? x0 <= line.x + 80 && x1 >= b.x1 - 100
+              : x0 <= b.x0 + 100 && x1 >= line.x - 80;
+          });
+          const notchArea = (side === 'right' ? b.x1 - line.x : line.x - b.x0) * (b.y1 - line.lo);
+          return { ...line, side, supported, notchArea };
+        })
+        .filter((line) => line.supported && line.notchArea >= 300_000
+          && line.notchArea <= boxArea(b) * 0.3)
+        .sort((a, c) => c.notchArea - a.notchArea);
+      const notch = returns[0];
+      if (!notch) continue;
+      panel.polygon = notch.side === 'right'
+        ? [{ x: b.x0, y: b.y0 }, { x: b.x1, y: b.y0 }, { x: b.x1, y: notch.lo },
+          { x: notch.x, y: notch.lo }, { x: notch.x, y: b.y1 }, { x: b.x0, y: b.y1 }]
+        : [{ x: b.x0, y: b.y0 }, { x: b.x1, y: b.y0 }, { x: b.x1, y: b.y1 },
+          { x: notch.x, y: b.y1 }, { x: notch.x, y: notch.lo }, { x: b.x0, y: notch.lo }];
+      panel.netAreaM2 = (boxArea(b) - notch.notchArea) / 1e6;
+      panel.visualBoundary = true;
+    }
+    for (const panel of planCandidates) {
+      if (panel.label === 'CANTILEVER' && panel.box.x0 > footprint.x0 + 3000
+        && panel.box.x1 < footprint.x1 - 3000) {
+        panel.label = 'UNMARKED SLAB';
+        panel.cantileverBoundary = false;
+      }
+    }
+    // Replace a coarse merged polygon only when independently supported
+    // mirrored bays cover most of it; this splits P13-style aggregates while
+    // preserving genuinely irregular standalone slabs.
+    for (let i = planCandidates.length - 1; i >= 0; i--) {
+      const aggregate = planCandidates[i];
+      if (!aggregate.polygon || aggregate.label === 'CANTILEVER') continue;
+      const covered = planCandidates.filter((panel) => !panel.polygon).reduce((sum, panel) => sum
+        + polygonRectIntersectionArea(aggregate.polygon as Pt[], panel.box), 0);
+      const aggregateArea = Math.abs(shoelace(aggregate.polygon));
+      if (aggregateArea > 0 && covered / aggregateArea >= 0.72) planCandidates.splice(i, 1);
+    }
+    normalizeMirroredPlanPanels(planCandidates, planAxis, footprint.y1);
+    separateCoreMirrorOverlaps(planCandidates, segs, planAxis);
+    // A partly broken outer bay can lose its lower leg while its reflected
+    // counterpart remains complete. Transfer the complete *polygon*, never
+    // its bounding rectangle, only when beam ink corroborates the mirror.
+    const irregularWings = planCandidates.filter((panel) => panel.polygon
+      && panel.label === 'UNMARKED SLAB' && panel.netAreaM2 !== undefined);
+    for (const source of irregularWings) {
+      const targetBox = { x0: 2 * planAxis - source.box.x1, x1: 2 * planAxis - source.box.x0,
+        y0: source.box.y0, y1: source.box.y1 };
+      const target = irregularWings.find((candidate) => candidate !== source
+        && (candidate.netAreaM2 || 0) < (source.netAreaM2 || 0) * 0.85
+        && Math.abs(candidate.box.x0 - targetBox.x0) <= 550
+        && Math.abs(candidate.box.x1 - targetBox.x1) <= 550
+        && Math.abs(candidate.box.y1 - targetBox.y1) <= 150
+        && source.box.y0 < candidate.box.y0 - 300
+        && candidate.box.y0 - source.box.y0 <= 2000);
+      if (!target || mirroredBaySimilarity(segs, targetBox, source.box) < 0.6) continue;
+      target.polygon = mirrorPolygon(source.polygon as Pt[]);
+      target.box = bbox(target.polygon);
+      target.netAreaM2 = source.netAreaM2;
+      target.lengthMm = target.box.x1 - target.box.x0;
+      target.breadthMm = target.box.y1 - target.box.y0;
+      target.visualBoundary = true;
+    }
+    // A hatch attached to the edge of an otherwise unmarked bay is part of
+    // that same slab. Union its actual outline into the parent and remove the
+    // standalone hatch proposal so one physical panel has one quantity row.
+    for (const hatch of [...planCandidates].filter((panel) => panel.label === 'HATCH-SLAB'
+      && panel.polygon && (panel.netAreaM2 || 0) <= 4)) {
+      const parent = planCandidates.filter((panel) => panel !== hatch
+        && panel.label === 'UNMARKED SLAB' && boxArea(panel.box) >= 3_000_000
+        && hatch.box.x0 >= panel.box.x0 - 100 && hatch.box.x1 <= panel.box.x1 + 100
+        && rectOverlap(hatch.box, panel.box) >= 0.05
+        && hatch.box.y0 < panel.box.y0 - 200)
+        .sort((a, b) => rectOverlap(hatch.box, b.box) - rectOverlap(hatch.box, a.box))[0];
+      if (!parent) continue;
+      const base = parent.polygon || [
+        { x: parent.box.x0, y: parent.box.y0 }, { x: parent.box.x1, y: parent.box.y0 },
+        { x: parent.box.x1, y: parent.box.y1 }, { x: parent.box.x0, y: parent.box.y1 },
+      ];
+      const joined = unionVisualPolygons([base, hatch.polygon as Pt[]]);
+      if (!joined || joined.parts?.length !== 1
+        || joined.areaM2 <= (parent.netAreaM2 || boxArea(parent.box) / 1e6)) continue;
+      parent.polygon = joined.polygon; parent.box = joined.box; parent.netAreaM2 = joined.areaM2;
+      parent.lengthMm = joined.box.x1 - joined.box.x0;
+      parent.breadthMm = joined.box.y1 - joined.box.y0;
+      parent.visualBoundary = true;
+      planCandidates.splice(planCandidates.indexOf(hatch), 1);
+    }
+    // A cut-out X can truncate only the lower corner of a bay. If a beam
+    // face continues beside it and the top beam spans the full width, add
+    // the upper leg to the slab instead of treating the whole bounding box
+    // as either a rectangle or a void.
+    for (const panel of planCandidates) {
+      if (panel.polygon || panel.label !== 'UNMARKED SLAB'
+        || boxArea(panel.box) < 4_000_000 || boxArea(panel.box) > 15_000_000) continue;
+      const b = panel.box;
+      const outsideFaces = segs.filter((line) => Math.abs(line.a.x - line.b.x) <= 40)
+        .map((line) => ({ x: (line.a.x + line.b.x) / 2,
+          lo: Math.min(line.a.y, line.b.y), hi: Math.max(line.a.y, line.b.y) }))
+        .filter((line) => line.x >= b.x0 - 1000 && line.x <= b.x0 - 300
+          && line.lo <= b.y1 - 600 && line.hi >= b.y1 - 100);
+      for (const face of outsideFaces) {
+        const topBeam = segs.some((line) => Math.abs(line.a.y - line.b.y) <= 40
+          && Math.abs((line.a.y + line.b.y) / 2 - b.y1) <= 80
+          && Math.min(line.a.x, line.b.x) <= face.x + 80
+          && Math.max(line.a.x, line.b.x) >= b.x1 - 80);
+        if (!topBeam) continue;
+        const voidStrokes = allSegs.filter((line) => /cut|open|void/i.test(line.layer)
+          && Math.abs(line.a.x - line.b.x) >= 200 && Math.abs(line.a.y - line.b.y) >= 200
+          && Math.min(line.a.x, line.b.x) >= face.x - 80
+          && Math.max(line.a.x, line.b.x) <= b.x0 + 80
+          && Math.min(line.a.y, line.b.y) >= b.y0 - 100
+          && Math.max(line.a.y, line.b.y) <= b.y1 - 300);
+        if (voidStrokes.length < 2) continue;
+        const voidTop = Math.max(...voidStrokes.map((line) => Math.max(line.a.y, line.b.y)));
+        if (voidTop <= b.y0 + 200 || voidTop >= b.y1 - 200) continue;
+        panel.polygon = [{ x: b.x0, y: b.y0 }, { x: b.x1, y: b.y0 },
+          { x: b.x1, y: b.y1 }, { x: face.x, y: b.y1 },
+          { x: face.x, y: voidTop }, { x: b.x0, y: voidTop }];
+        panel.box = bbox(panel.polygon);
+        panel.netAreaM2 = Math.abs(shoelace(panel.polygon)) / 1e6;
+        panel.lengthMm = panel.box.x1 - panel.box.x0;
+        panel.breadthMm = panel.box.y1 - panel.box.y0;
+        panel.visualBoundary = true;
+        break;
+      }
+    }
+    // Recover and assemble the continuous perimeter chajja. Long top/side
+    // bands and the connected bottom hatch are one physical slab, not a list
+    // of rectangles created by each CAD entity break. First use the visually
+    // mirrored side to restore a missing band; then union each building side
+    // into one exact irregular outline and one quantity row.
+    const perimeter = planCandidates.reduce((box, panel) => ({ x0: Math.min(box.x0, panel.box.x0),
+      y0: Math.min(box.y0, panel.box.y0), x1: Math.max(box.x1, panel.box.x1), y1: Math.max(box.y1, panel.box.y1) }),
+    { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+    const isPerimeterBand = (panel: PanelProposalBox) => {
+      // A large raw CANTILEVER candidate can span room bays and beam faces;
+      // it is not a perimeter fragment and must not be unioned into chajja.
+      if (/CANTILEVER/i.test(panel.label || '')
+        && panel.lengthMm > 5000 && panel.breadthMm > 5000) return false;
+      const ratio = Math.max(panel.lengthMm, panel.breadthMm) / Math.max(1, Math.min(panel.lengthMm, panel.breadthMm));
+      const sideBand = (panel.box.x0 <= perimeter.x0 + 450 || panel.box.x1 >= perimeter.x1 - 450)
+        && panel.breadthMm >= panel.lengthMm * 2.5;
+      const endBand = (panel.box.y0 <= perimeter.y0 + 450 || panel.box.y1 >= perimeter.y1 - 450)
+        && panel.lengthMm >= panel.breadthMm * 2.5;
+      const touches = sideBand || endBand || (!!panel.polygon && (panel.box.x0 <= perimeter.x0 + 450
+        || panel.box.x1 >= perimeter.x1 - 450 || panel.box.y0 <= perimeter.y0 + 450 || panel.box.y1 >= perimeter.y1 - 450));
+      return touches && (ratio >= 2.5 || !!panel.polygon || /CANTILEVER/i.test(panel.label || ''));
+    };
+    const initialBands = planCandidates.filter(isPerimeterBand);
+    for (const source of initialBands.filter((panel) => (panel.box.x0 + panel.box.x1) / 2 < planAxis)) {
+      const box = { x0: 2 * planAxis - source.box.x1, x1: 2 * planAxis - source.box.x0,
+        y0: source.box.y0, y1: source.box.y1 };
+      if (planCandidates.some((panel) => overlapFrac(panel.box, box) > 0.55)) continue;
+      if (mirroredBaySimilarity(structuralImageSegments, source.box, box) < 0.35) continue;
+      const polygon = source.polygon ? mirrorPolygon(source.polygon) : undefined;
+      planCandidates.push({ ...source, box, polygon, netAreaM2: source.netAreaM2,
+        lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0, confident: false, duplicate: false,
+        visualBoundary: true });
+    }
+    const mergedChajjas: PanelProposalBox[] = [];
+    for (const side of [-1, 1] as const) {
+      const bands = planCandidates.filter((panel) => isPerimeterBand(panel)
+        && Math.sign((panel.box.x0 + panel.box.x1) / 2 - planAxis) === side);
+      if (bands.length < 3) continue;
+      const polygons: Pt[][] = bands.map((panel) => panel.polygon || [
+        { x: panel.box.x0, y: panel.box.y0 }, { x: panel.box.x1, y: panel.box.y0 },
+        { x: panel.box.x1, y: panel.box.y1 }, { x: panel.box.x0, y: panel.box.y1 },
+      ]);
+      // Tiny unmeasured breaks between collinear perimeter fragments are CAD
+      // drafting discontinuities. Bridge only along the same exterior side
+      // and only up to 80 mm; expansion joints and opposite buildings remain
+      // separate because they are not collinear perimeter runs.
+      const vertical = bands.filter((panel) => side < 0
+        ? panel.box.x0 <= perimeter.x0 + 450 : panel.box.x1 >= perimeter.x1 - 450)
+        .sort((a, b) => a.box.y0 - b.box.y0);
+      for (let i = 0; i < vertical.length - 1; i++) {
+        const a = vertical[i], b = vertical[i + 1], gap = b.box.y0 - a.box.y1;
+        if (gap <= 0 || gap > 80) continue;
+        const depth = Math.min(1500, Math.max(500, (Math.min(a.lengthMm, a.breadthMm)
+          + Math.min(b.lengthMm, b.breadthMm)) / 2));
+        const outer = side < 0 ? perimeter.x0 : perimeter.x1;
+        const inner = side < 0 ? outer + depth : outer - depth;
+        polygons.push([{ x: Math.min(outer, inner), y: a.box.y1 }, { x: Math.max(outer, inner), y: a.box.y1 },
+          { x: Math.max(outer, inner), y: b.box.y0 }, { x: Math.min(outer, inner), y: b.box.y0 }]);
+      }
+      // A proposed perimeter strip can extend through the adjacent bay's
+      // beam face. That occupied room area is not cantilever soffit.
+      const occupied = planCandidates.filter((panel) => !bands.includes(panel)
+        && !panel.cantileverBoundary
+        && (panel.label === 'UNMARKED SLAB' || panel.label === 'BALCONY CANTILEVER')
+        && Math.sign((panel.box.x0 + panel.box.x1) / 2 - planAxis) === side)
+        .map((panel) => panel.polygon || [
+          { x: panel.box.x0, y: panel.box.y0 }, { x: panel.box.x1, y: panel.box.y0 },
+          { x: panel.box.x1, y: panel.box.y1 }, { x: panel.box.x0, y: panel.box.y1 },
+        ]);
+      // Parallel long beam faces identify the clear cantilever strip: the
+      // outer 200 mm beam and inner 600 mm support beam are both excluded.
+      const probeY = (perimeter.y0 + perimeter.y1) / 2;
+      const faceXs = [...new Set(segs.filter((line) => /beam/i.test(line.layer)
+        && Math.abs(line.a.x - line.b.x) <= 40
+        && Math.min(line.a.y, line.b.y) < probeY
+        && Math.max(line.a.y, line.b.y) > probeY
+        && Math.abs(line.a.y - line.b.y) >= 2500)
+        .map((line) => Math.round((line.a.x + line.b.x) / 2)))]
+        .filter((x) => side < 0 ? x >= perimeter.x0 - 100 && x <= perimeter.x0 + 4000
+          : x <= perimeter.x1 + 100 && x >= perimeter.x1 - 4000)
+        .sort((a, b) => side < 0 ? a - b : b - a);
+      const boxPolygon = (x0: number, y0: number, x1: number, y1: number): Pt[] => [
+        { x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 },
+      ];
+      if (faceXs.length >= 4 && faceXs[1] - faceXs[0] !== 0) {
+        const outerBeam = Math.abs(faceXs[1] - faceXs[0]);
+        const clearWidth = Math.abs(faceXs[2] - faceXs[1]);
+        const innerBeam = Math.abs(faceXs[3] - faceXs[2]);
+        if (outerBeam >= 100 && outerBeam <= 450 && clearWidth >= 800 && clearWidth <= 2500
+          && innerBeam >= 300 && innerBeam <= 1000) {
+          const horizontals = segs.filter((line) => /beam/i.test(line.layer)
+            && Math.abs(line.a.y - line.b.y) <= 40
+            && Math.abs(line.a.x - line.b.x) >= 3000)
+            .map((line) => (line.a.y + line.b.y) / 2);
+          const nearestY = (target: number) => horizontals.reduce((best, y) =>
+            Math.abs(y - target) < Math.abs(best - target) ? y : best, Infinity);
+          const low = nearestY(perimeter.y0 + clearWidth);
+          const high = nearestY(perimeter.y1 - clearWidth);
+          if (Math.abs(low - perimeter.y0 - clearWidth) <= 300
+            && Math.abs(high - perimeter.y1 + clearWidth) <= 300 && high > low) {
+            const outer = side < 0 ? perimeter.x0 : perimeter.x1;
+            const outerInner = faceXs[1], innerOuter = faceXs[2];
+            occupied.push(side < 0
+              ? boxPolygon(outer - 100, low, outerInner, high)
+              : boxPolygon(outerInner, low, outer + 100, high));
+            occupied.push(side < 0
+              ? boxPolygon(innerOuter, low, planAxis, high)
+              : boxPolygon(planAxis, low, innerOuter, high));
+            const bottomOuter = nearestY(low - clearWidth);
+            if (Math.abs(bottomOuter - low + clearWidth) <= 250)
+              occupied.push(boxPolygon(Math.min(outer, planAxis), perimeter.y0 - 100,
+                Math.max(outer, planAxis), bottomOuter));
+            const topOuter = nearestY(high + clearWidth);
+            if (Math.abs(topOuter - high - clearWidth) <= 250)
+              occupied.push(boxPolygon(Math.min(outer, planAxis), topOuter,
+                Math.max(outer, planAxis), perimeter.y1 + 100));
+          }
+        }
+      }
+      const union = unionVisualPolygons(polygons, 25, occupied);
+      if (!union || union.areaM2 < 5) continue;
+      for (let i = planCandidates.length - 1; i >= 0; i--) if (bands.includes(planCandidates[i])) planCandidates.splice(i, 1);
+      const merged: PanelProposalBox = { label: 'CANTILEVER CHAJJA', box: union.box, polygon: union.polygon,
+        polygonParts: union.parts,
+        netAreaM2: union.areaM2, lengthMm: union.box.x1 - union.box.x0, breadthMm: union.box.y1 - union.box.y0,
+        openingM2: bands.reduce((sum, panel) => sum + panel.openingM2, 0),
+        thicknessMm: Math.max(...bands.map((panel) => panel.thicknessMm)), confident: false, duplicate: false,
+        cantileverBoundary: true, visualBoundary: true, steppedBoundary: true };
+      planCandidates.push(merged); mergedChajjas.push(merged);
+    }
+    if (mergedChajjas.length === 2) {
+      const [a, b] = mergedChajjas;
+      const difference = Math.abs((a.netAreaM2 || 0) - (b.netAreaM2 || 0))
+        / Math.max(a.netAreaM2 || 1, b.netAreaM2 || 1);
+      if (difference <= 0.1) {
+        // Both rendered sides describe the same slab. Use the smaller exact
+        // outline as the conservative canonical interpretation and mirror it,
+        // eliminating entity-break noise without inflating quantity.
+        const canonical = (a.netAreaM2 || 0) <= (b.netAreaM2 || 0) ? a : b;
+        const counterpart = canonical === a ? b : a;
+        counterpart.polygon = mirrorPolygon(canonical.polygon as Pt[]);
+        counterpart.polygonParts = canonical.polygonParts?.map(mirrorPolygon);
+        counterpart.box = counterpart.polygonParts ? bbox(counterpart.polygonParts.flat()) : bbox(counterpart.polygon);
+        counterpart.netAreaM2 = canonical.netAreaM2;
+        counterpart.lengthMm = counterpart.box.x1 - counterpart.box.x0;
+        counterpart.breadthMm = counterpart.box.y1 - counterpart.box.y0;
+      }
+    }
+    // A recovered room rectangle must stop at the inner face of the merged
+    // chajja, not continue through the exterior slab to its free edge. Trim
+    // only a continuous overlap at the top/bottom of the rectangle; interior
+    // notches remain polygons and side contact remains harmless.
+    for (const panel of planCandidates) {
+      if (panel.polygon || panel.cantileverBoundary) continue;
+      const chajja = mergedChajjas.find((candidate) => candidate.polygon
+        && polygonRectOverlapFrac(candidate.polygon, panel.box) > 0.05);
+      if (!chajja?.polygon) continue;
+      const x = (panel.box.x0 + panel.box.x1) / 2, step = 25;
+      let low = panel.box.y0;
+      while (low < panel.box.y1 && pointInPolygon({ x, y: low + step / 2 }, chajja.polygon)) low += step;
+      let high = panel.box.y1;
+      while (high > low && pointInPolygon({ x, y: high - step / 2 }, chajja.polygon)) high -= step;
+      if (low - panel.box.y0 >= 100) panel.box.y0 = low;
+      if (panel.box.y1 - high >= 100) panel.box.y1 = high;
+      panel.lengthMm = panel.box.x1 - panel.box.x0; panel.breadthMm = panel.box.y1 - panel.box.y0;
+    }
+    for (const left of planCandidates.filter((panel) => !panel.polygon && !panel.cantileverBoundary
+      && (panel.box.x0 + panel.box.x1) / 2 < planAxis)) {
+      const mirrorX0 = 2 * planAxis - left.box.x1, mirrorX1 = 2 * planAxis - left.box.x0;
+      const right = planCandidates.find((panel) => !panel.polygon && !panel.cantileverBoundary
+        && (panel.box.x0 + panel.box.x1) / 2 > planAxis
+        && Math.abs(panel.box.x0 - mirrorX0) <= 600 && Math.abs(panel.box.x1 - mirrorX1) <= 600
+        && Math.abs(panel.box.y1 - left.box.y1) <= 250);
+      if (!right || Math.abs(right.breadthMm - left.breadthMm) < 250) continue;
+      const source = left.breadthMm <= right.breadthMm ? left : right, target = source === left ? right : left;
+      target.box = { x0: 2 * planAxis - source.box.x1, x1: 2 * planAxis - source.box.x0,
+        y0: source.box.y0, y1: source.box.y1 };
+      target.lengthMm = source.lengthMm; target.breadthMm = source.breadthMm;
+    }
+    normalizeMirroredPlanPanels(planCandidates, planAxis, footprint.y1);
+    out.splice(0, out.length, ...planCandidates);
+  }
+  if (!labels.length && framingTitles.length && sectionNotes.length >= 12
+    && sectionNotes.length >= framingTitles.length * 6) {
+    const distanceTo = (point: Pt, note: typeof dwg.texts[number]) =>
+      Math.hypot(point.x - note.pos.x, point.y - note.pos.y);
+    const planBays = out.filter((panel) => {
+      if (panel.cantileverBoundary || Math.min(panel.lengthMm, panel.breadthMm) < 1500) return false;
+      const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+      return Math.min(...framingTitles.map((note) => distanceTo(centre, note)))
+        < Math.min(...sectionNotes.map((note) => distanceTo(centre, note)));
+    });
+    if (planBays.length < 4 && thicknessSeededPanels.length < 4) return [];
+  }
+
+  // A full corner-to-corner X across an otherwise beam-enclosed, unmarked
+  // bay denotes a void. Check the four actual corners: merely crossing
+  // diagonals inside a larger S-marked slab are openings, not evidence that
+  // its entire enclosing panel is absent.
+  const diagonalSegments = allSegs.filter((segment) =>
+    Math.abs(segment.a.x - segment.b.x) > 300 && Math.abs(segment.a.y - segment.b.y) > 300);
+  const hasFullBayX = (box: PanelProposalBox['box']): boolean => {
+    const width = box.x1 - box.x0, height = box.y1 - box.y0;
+    const tol = Math.min(250, Math.max(40, Math.min(width, height) * 0.04));
+    const near = (point: Pt, x: number, y: number) =>
+      Math.abs(point.x - x) <= tol && Math.abs(point.y - y) <= tol;
+    const crossesCorners = (x0: number, y0: number, x1: number, y1: number) =>
+      diagonalSegments.some((segment) =>
+        (near(segment.a, x0, y0) && near(segment.b, x1, y1))
+        || (near(segment.b, x0, y0) && near(segment.a, x1, y1)));
+    return crossesCorners(box.x0, box.y0, box.x1, box.y1)
+      && crossesCorners(box.x0, box.y1, box.x1, box.y0);
+  };
   // HOLD / HOLD AREA is an explicit instruction that the containing bay is
   // outside the current measurable scope. Exclude it before deductions,
   // numbering, Excel export, totals, and reference-file marking.
   const measurable = out.filter((panel) => {
-    const grossM2 = (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
-    const verifiedLongSlab = /^S\d+[A-Z]?$|^CANTILEVER$|^SLAB STRIP$|^HATCH-SLAB$/i.test(panel.label || '');
+    const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+    // A stair flight can also be bounded by beams/walls, but its repeated
+    // treads are not a slab panel. Apply this at final verification so every
+    // proposal path (dotted, mixed, hatch or visual) obeys the same rule.
+    const stairStrokes = allSegs.filter((segment) => {
+      if (!/(?:^|[-_$\s])(?:stair|step|flight)(?:$|[-_$\s])/i.test(segment.layer)) return false;
+      const midpoint = { x: (segment.a.x + segment.b.x) / 2, y: (segment.a.y + segment.b.y) / 2 };
+      return panel.polygonParts?.length ? panel.polygonParts.some((part) => pointInPolygon(midpoint, part))
+        : panel.polygon ? pointInPolygon(midpoint, panel.polygon)
+        : midpoint.x >= panel.box.x0 && midpoint.x <= panel.box.x1
+          && midpoint.y >= panel.box.y0 && midpoint.y <= panel.box.y1;
+    });
+    if (stairStrokes.length >= 4) return false;
+    // Final sheet-level safeguard: later recovery passes (hatches, mixed
+    // cantilever faces and closed-strip detection) must not re-introduce a
+    // section, projection or schedule cell that the primary plan pass
+    // correctly rejected. This is intentionally independent of S1/S2 text;
+    // detail drawings often repeat those marks. A dedicated slab-thickness
+    // mark enclosed by four structural faces is an exception: section leaders
+    // can cross the plan itself without turning its bays into detail cells.
+    if (excludedDetailPoint(centre) && !panel.thicknessMarkedBoundary
+      && !panel.hatchConnectedBoundary && !panel.visualBoundary) return false;
+    const explicitlyMarked = rawSlabMarks.some((mark) => mark.pos.x >= panel.box.x0
+      && mark.pos.x <= panel.box.x1 && mark.pos.y >= panel.box.y0 && mark.pos.y <= panel.box.y1);
+    // The raster pass also catches X strokes split into multiple CAD entities.
+    // It does not create a slab or override an explicit S mark.
+    if (!explicitlyMarked && !panel.cantileverBoundary && (hasFullBayX(panel.box)
+      || bayImageShowsFullX(allSegs, panel.box))) return false;
+    const grossM2 = panel.netAreaM2 ?? (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
+    const verifiedLongSlab = /^S\d+[A-Z]?$|^CANTILEVER(?: CHAJJA)?$|^SLAB STRIP$|^HATCH-SLAB$/i.test(panel.label || '');
     const maxSpan = verifiedLongSlab ? Infinity : 30_000;
     const plausibleBay = panel.lengthMm >= 300 && panel.breadthMm >= 300
       && panel.lengthMm <= maxSpan && panel.breadthMm <= maxSpan
       && grossM2 <= 400;
-    const held = holdNotes.some((note) => note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
-      && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
+    const held = holdNotes.some((note) => panel.polygonParts?.length
+      ? panel.polygonParts.some((part) => pointInPolygon(note.pos, part))
+      : panel.polygon ? pointInPolygon(note.pos, panel.polygon)
+      : note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
+        && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
     return plausibleBay && !held;
   });
   // Resolve physical panel duplicates before assigning openings. Otherwise a
   // cutout can be divided between a retained panel and a nested proposal that
   // is subsequently deleted, silently losing part of the deduction.
   markDuplicates(measurable);
+  // Near-rectangular slab outlines are measured to their verified orthogonal
+  // boundaries. Apply this consistently to every proposal path, not only a
+  // previously reported panel. True stepped/notched polygons remain exact.
+  normalizeNearRectangularPanels(measurable);
   assignCutouts(measurable.filter((panel) => !panel.duplicate), cutouts); // QSS-SLAB-004
   for (const panel of measurable) if (panel.openingM2 < 0.4) panel.openingM2 = 0;
   // An inferred hatch/cantilever proposal that is mostly an opening is an
@@ -684,8 +1648,9 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // are retained and receive the normal IS-code opening deduction instead.
   for (const panel of measurable) {
     const gross = panel.netAreaM2 ?? boxArea(panel.box) / 1e6;
-    if (!/^S\d+[A-Z]?$/i.test(panel.label || '') && gross > 0
-      && panel.openingM2 / gross >= 0.5) panel.duplicate = true;
+    const openingRatio = gross > 0 ? panel.openingM2 / gross : 0;
+    if (!/^S\d+[A-Z]?$/i.test(panel.label || '') && !panel.cantileverBoundary && gross > 0
+      && (openingRatio >= 0.5 || (panel.visualBoundary && openingRatio >= 0.35))) panel.duplicate = true;
   }
   // An L-shaped chajja is commonly drawn as two perpendicular strips. Deduct
   // their shared corner only after nested/false candidates have been removed;
@@ -702,6 +1667,171 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   return measurable.filter((panel) => !panel.duplicate);
 }
 
+/** Resolve mirrored slab candidates that both claim the central RCC core.
+ * Read the core's beam/column faces at each height, including stepped faces,
+ * so neither half can take area from the other half or from the core. */
+export function separateCoreMirrorOverlaps(panels: PanelProposalBox[], segments: Segment[], axisX: number): void {
+  const vertical = segments.filter((line) => /beam|column|wall|rcc/i.test(line.layer)
+    && Math.abs(line.a.x - line.b.x) <= 40
+    && Math.abs(line.a.y - line.b.y) >= 200)
+    .map((line) => ({ x: (line.a.x + line.b.x) / 2,
+      y0: Math.min(line.a.y, line.b.y), y1: Math.max(line.a.y, line.b.y) }))
+    .filter((line) => Math.abs(line.x - axisX) <= 2000);
+  const eligible = panels.filter((panel) => panel.label === 'UNMARKED SLAB' && !panel.polygon
+    && boxArea(panel.box) >= 2_000_000 && boxArea(panel.box) <= 20_000_000);
+  const used = new Set<PanelProposalBox>();
+  for (const left of eligible.filter((panel) => (panel.box.x0 + panel.box.x1) / 2 < axisX)) {
+    if (used.has(left)) continue;
+    const right = eligible.find((panel) => panel !== left && !used.has(panel)
+      && (panel.box.x0 + panel.box.x1) / 2 > axisX
+      && Math.abs(panel.box.x1 - (2 * axisX - left.box.x0)) <= 250
+      && Math.abs(panel.box.y0 - left.box.y0) <= 120
+      && Math.abs(panel.box.y1 - left.box.y1) <= 120
+      && (left.box.x1 > axisX + 200 || panel.box.x0 < axisX - 200));
+    if (!right) continue;
+    const y0 = Math.max(left.box.y0, right.box.y0), y1 = Math.min(left.box.y1, right.box.y1);
+    const faces = vertical.filter((line) => line.y0 < y1 - 100 && line.y1 > y0 + 100);
+    const cuts = [...new Set([y0, y1, ...faces.flatMap((line) =>
+      [Math.max(y0, line.y0), Math.min(y1, line.y1)])])].sort((a, b) => a - b);
+    const bands: { y0: number; y1: number; leftX: number; rightX: number }[] = [];
+    for (let i = 0; i < cuts.length - 1; i++) {
+      const low = cuts[i], high = cuts[i + 1];
+      if (high - low < 40) continue;
+      const mid = (low + high) / 2;
+      const atHeight = faces.filter((face) => face.y0 <= mid && face.y1 >= mid);
+      const leftFaces = atHeight.filter((face) => face.x < axisX - 80 && face.x > left.box.x0 + 500)
+        .sort((a, b) => b.x - a.x);
+      const rightFaces = atHeight.filter((face) => face.x > axisX + 80 && face.x < right.box.x1 - 500)
+        .sort((a, b) => a.x - b.x);
+      if (!leftFaces.length || !rightFaces.length) continue;
+      // Paired lines within one beam are its two faces. The slab stops at
+      // the outer face, not at the far side of the beam material.
+      const leftX = Math.min(...leftFaces.filter((face) => leftFaces[0].x - face.x <= 400).map((face) => face.x));
+      const rightX = Math.max(...rightFaces.filter((face) => face.x - rightFaces[0].x <= 400).map((face) => face.x));
+      if (rightX - leftX < 150 || leftX >= rightX) continue;
+      const previous = bands[bands.length - 1];
+      if (previous && Math.abs(previous.y1 - low) < 40
+        && Math.abs(previous.leftX - leftX) <= 50 && Math.abs(previous.rightX - rightX) <= 50) {
+        previous.y1 = high;
+      } else bands.push({ y0: low, y1: high, leftX, rightX });
+    }
+    if (!bands.length || bands[0].y0 > y0 + 100 || bands[bands.length - 1].y1 < y1 - 100
+      || bands.some((band, index) => index && band.y0 - bands[index - 1].y1 > 100)) continue;
+    const leftInner: Pt[] = [{ x: bands[0].leftX, y: y0 }];
+    const rightInner: Pt[] = [{ x: bands[0].rightX, y: y0 }];
+    for (let i = 0; i < bands.length; i++) {
+      leftInner.push({ x: bands[i].leftX, y: bands[i].y1 });
+      rightInner.push({ x: bands[i].rightX, y: bands[i].y1 });
+      if (i + 1 < bands.length) {
+        leftInner.push({ x: bands[i + 1].leftX, y: bands[i].y1 });
+        rightInner.push({ x: bands[i + 1].rightX, y: bands[i].y1 });
+      }
+    }
+    const apply = (panel: PanelProposalBox, polygon: Pt[]) => {
+      panel.polygon = simplifyCollinearPolygon(polygon);
+      panel.box = bbox(panel.polygon);
+      panel.netAreaM2 = Math.abs(shoelace(panel.polygon)) / 1e6;
+      panel.lengthMm = panel.box.x1 - panel.box.x0;
+      panel.breadthMm = panel.box.y1 - panel.box.y0;
+      panel.visualBoundary = true;
+    };
+    apply(left, [{ x: left.box.x0, y: y0 }, ...leftInner, { x: left.box.x0, y: y1 }]);
+    apply(right, [{ x: right.box.x1, y: y0 }, ...rightInner, { x: right.box.x1, y: y1 }]);
+    used.add(left); used.add(right);
+  }
+}
+
+export function normalizeNearRectangularPanels(panels: PanelProposalBox[]): void {
+  for (const panel of panels) {
+    if (panel.polygon?.length !== 4 || panel.netAreaM2 === undefined) continue;
+    const rectAreaM2 = boxArea(panel.box) / 1e6;
+    const skewRatio = panel.visualBoundary ? 0.07 : 0.035;
+    const fillRatio = panel.visualBoundary ? 0.9 : 0.985;
+    const orthogonal = panel.polygon.every((point, index) => {
+      const next = panel.polygon![(index + 1) % panel.polygon!.length];
+      const dx = Math.abs(next.x - point.x), dy = Math.abs(next.y - point.y);
+      return Math.min(dx, dy) <= Math.max(80, Math.max(dx, dy) * skewRatio);
+    });
+    if (rectAreaM2 > 0 && orthogonal && panel.netAreaM2 / rectAreaM2 >= fillRatio) {
+      panel.polygon = [
+        { x: panel.box.x0, y: panel.box.y0 }, { x: panel.box.x1, y: panel.box.y0 },
+        { x: panel.box.x1, y: panel.box.y1 }, { x: panel.box.x0, y: panel.box.y1 },
+      ];
+      panel.netAreaM2 = rectAreaM2;
+    }
+  }
+}
+
+/** Apply one physical interpretation to mirrored bays in a symmetric plan. */
+export function normalizeMirroredPlanPanels(panels: PanelProposalBox[], axisX: number, planTop: number): void {
+  const used = new Set<PanelProposalBox>();
+  const eligible = panels.filter((panel) => !panel.polygon && panel.label === 'UNMARKED SLAB');
+  for (const left of eligible.filter((panel) => (panel.box.x0 + panel.box.x1) / 2 < axisX)) {
+    if (used.has(left)) continue;
+    const mirrored = { x0: 2 * axisX - left.box.x1, x1: 2 * axisX - left.box.x0 };
+    const right = eligible.filter((panel) => !used.has(panel)
+      && (panel.box.x0 + panel.box.x1) / 2 > axisX
+      && Math.abs(panel.box.x0 - mirrored.x0) <= 600
+      && Math.abs(panel.box.x1 - mirrored.x1) <= 600
+      && Math.abs((panel.box.y0 + panel.box.y1 - left.box.y0 - left.box.y1) / 2) <= 400)
+      .sort((a, b) => Math.abs(a.box.x0 - mirrored.x0) + Math.abs(a.box.x1 - mirrored.x1))[0];
+    if (!right) continue;
+    used.add(left); used.add(right);
+    const leftW = left.box.x1 - left.box.x0, leftH = left.box.y1 - left.box.y0;
+    const rightW = right.box.x1 - right.box.x0, rightH = right.box.y1 - right.box.y0;
+    // Long top-edge chajjas use the same projection on both wings. Snap the
+    // near-1600 CAD faces to the stated 1600 mm design width.
+    if (Math.min(leftW / Math.max(leftH, 1), rightW / Math.max(rightH, 1)) > 3
+      && Math.max(left.box.y1, right.box.y1) >= planTop - 1000) {
+      const depth = Math.round(Math.max(leftH, rightH) / 100) * 100;
+      const top = Math.max(left.box.y1, right.box.y1);
+      left.box.y0 = top - depth; left.box.y1 = top; left.breadthMm = depth;
+      right.box.y0 = top - depth; right.box.y1 = top; right.breadthMm = depth;
+      continue;
+    }
+    const widthMismatch = Math.abs(leftW - rightW) > Math.max(100, Math.min(leftW, rightW) * 0.04);
+    const heightMismatch = Math.abs(leftH - rightH) > Math.max(100, Math.min(leftH, rightH) * 0.04);
+    if (!widthMismatch && !heightMismatch) continue;
+    const source = boxArea(left.box) <= boxArea(right.box) ? left : right;
+    const target = source === left ? right : left;
+    if (source === left) {
+      target.box = { x0: 2 * axisX - source.box.x1, x1: 2 * axisX - source.box.x0,
+        y0: source.box.y0, y1: source.box.y1 };
+    } else {
+      target.box = { x0: 2 * axisX - source.box.x1, x1: 2 * axisX - source.box.x0,
+        y0: source.box.y0, y1: source.box.y1 };
+    }
+    target.lengthMm = source.lengthMm;
+    target.breadthMm = source.breadthMm;
+  }
+}
+
+/** Split an adjoining core/corridor bay out of a large fallback rectangle. */
+export function notchLargePanelsAtCornerOverlaps(panels: PanelProposalBox[]): void {
+  for (const panel of panels) {
+    if (panel.polygon || boxArea(panel.box) < 25_000_000) continue;
+    const b = panel.box;
+    const notch = panels.filter((other) => other !== panel && other.label === 'CANTILEVER')
+      .map((other) => ({ other, x0: Math.max(b.x0, other.box.x0), y0: Math.max(b.y0, other.box.y0),
+        x1: Math.min(b.x1, other.box.x1), y1: Math.min(b.y1, other.box.y1) }))
+      .filter((hit) => hit.x1 > hit.x0 && hit.y1 > hit.y0)
+      .map((hit) => ({ ...hit, area: (hit.x1 - hit.x0) * (hit.y1 - hit.y0) }))
+      .filter((hit) => hit.area >= 200_000 && hit.area <= boxArea(b) * 0.3
+        && Math.abs(hit.y1 - b.y1) <= 300
+        && (Math.abs(hit.x0 - b.x0) <= 300 || Math.abs(hit.x1 - b.x1) <= 300))
+      .sort((a, c) => c.area - a.area)[0];
+    if (!notch) continue;
+    const topLeft = Math.abs(notch.x0 - b.x0) <= 300;
+    panel.polygon = topLeft
+      ? [{ x: b.x0, y: b.y0 }, { x: b.x1, y: b.y0 }, { x: b.x1, y: b.y1 },
+        { x: notch.x1, y: b.y1 }, { x: notch.x1, y: notch.y0 }, { x: b.x0, y: notch.y0 }]
+      : [{ x: b.x0, y: b.y0 }, { x: b.x1, y: b.y0 }, { x: b.x1, y: notch.y0 },
+        { x: notch.x0, y: notch.y0 }, { x: notch.x0, y: b.y1 }, { x: b.x0, y: b.y1 }];
+    panel.netAreaM2 = (boxArea(b) - notch.area) / 1e6;
+    panel.visualBoundary = true;
+  }
+}
+
 // Distribute each cutout only across panels its geometry actually overlaps.
 // A nearby lift/shaft outside a panel must never become an unverified deduction.
 function assignCutouts(panels: PanelProposalBox[], cutouts: Cutout[]): void {
@@ -711,9 +1841,35 @@ function assignCutouts(panels: PanelProposalBox[], cutouts: Cutout[]): void {
     // Keep them out of the extracted opening column as well, so the browser,
     // Excel formula and total quantity all apply the same rule.
     if (c.areaM2 < 0.4) continue;
-    const overlaps = panels
-      .map((p) => ({ p, ov: p.polygon ? polygonRectIntersectionArea(p.polygon, c.box) / 1e6 : rectOverlap(c.box, p.box) }))
+    let overlaps = panels
+      .map((p) => ({ p, ov: p.polygonParts?.length
+        ? p.polygonParts.reduce((sum, part) => sum + polygonRectIntersectionArea(part, c.box) / 1e6, 0)
+        : p.polygon ? polygonRectIntersectionArea(p.polygon, c.box) / 1e6 : rectOverlap(c.box, p.box) }))
       .filter((o) => o.ov > 0);
+    if (c.inferredX) {
+      // An unlabelled pair of crossing diagonals is common in lift/stair voids,
+      // but also occurs in bracing, expansion joints and drawing details. Treat
+      // it as an opening only when the complete X-box is contained by one
+      // retained, explicitly S-coded slab panel.
+      overlaps = overlaps.filter(({ p }) => /^S\d+[A-Z]?$/i.test(p.label || ''));
+      const coveredBySlabs = overlaps.reduce((sum, { ov }) => sum + ov, 0);
+      // A shaft can cross the boundary between two adjacent slab proposals;
+      // containment therefore applies to their union, not to one panel alone.
+      if (coveredBySlabs / c.areaM2 < 0.9) continue;
+    }
+    if (!overlaps.length && c.explicitX) {
+      // In many framing plans the X is drawn inside a shaft bounded by beam or
+      // wall faces, leaving a narrow 200–300 mm gap to every extracted slab
+      // proposal. Associate that explicit CUT-layer void with the closest
+      // S-coded slab only when it is within one beam-width (500 mm). This is
+      // deliberately unavailable to generic/unlabelled crosses.
+      const nearby = panels
+        .filter((p) => /^S\d+[A-Z]?$/i.test(p.label || ''))
+        .map((p) => ({ p, gap: rectGap(c.box, p.box), capacity: capOf(p) - p.openingM2 }))
+        .filter(({ gap, capacity }) => gap <= 500 && capacity >= c.areaM2)
+        .sort((a, b) => a.gap - b.gap || b.capacity - a.capacity);
+      if (nearby.length) overlaps = [{ p: nearby[0].p, ov: c.areaM2 }];
+    }
     const totalOv = overlaps.reduce((s, o) => s + o.ov, 0);
     if (totalOv > 0) {
       for (const { p, ov } of overlaps) {
@@ -727,6 +1883,30 @@ function rectOverlap(a: { x0: number; y0: number; x1: number; y1: number }, b: {
   const ox = Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0));
   const oy = Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
   return (ox * oy) / 1e6;
+}
+function rectGap(a: { x0: number; y0: number; x1: number; y1: number }, b: { x0: number; y0: number; x1: number; y1: number }): number {
+  const dx = Math.max(0, Math.max(a.x0 - b.x1, b.x0 - a.x1));
+  const dy = Math.max(0, Math.max(a.y0 - b.y1, b.y0 - a.y1));
+  return Math.hypot(dx, dy);
+}
+
+function supportedVisualSides(box: PanelProposalBox['box'], runs: Segment[], tolerance = 300): number {
+  const horizontal = (y: number) => runs.some((line) => {
+    if (Math.abs(line.a.y - line.b.y) >= ALIGN_TOL) return false;
+    const ly = (line.a.y + line.b.y) / 2;
+    const overlap = Math.max(0, Math.min(box.x1, Math.max(line.a.x, line.b.x))
+      - Math.max(box.x0, Math.min(line.a.x, line.b.x)));
+    return Math.abs(ly - y) <= tolerance && overlap >= Math.max(500, (box.x1 - box.x0) * 0.55);
+  });
+  const vertical = (x: number) => runs.some((line) => {
+    if (Math.abs(line.a.x - line.b.x) >= ALIGN_TOL) return false;
+    const lx = (line.a.x + line.b.x) / 2;
+    const overlap = Math.max(0, Math.min(box.y1, Math.max(line.a.y, line.b.y))
+      - Math.max(box.y0, Math.min(line.a.y, line.b.y)));
+    return Math.abs(lx - x) <= tolerance && overlap >= Math.max(500, (box.y1 - box.y0) * 0.55);
+  });
+  return Number(horizontal(box.y0)) + Number(horizontal(box.y1))
+    + Number(vertical(box.x0)) + Number(vertical(box.x1));
 }
 
 // --- overlap gate: if two panels overlap materially, keep the smaller (true bay), flag the larger ---
@@ -824,7 +2004,14 @@ function overlapFrac(a: PanelProposalBox['box'], b: PanelProposalBox['box']): nu
 }
 
 // --- cutouts: cutout-layer polylines + X-crossed diagonal pairs ---
-interface Cutout { cx: number; cy: number; areaM2: number; box: { x0: number; y0: number; x1: number; y1: number }; }
+interface Cutout {
+  cx: number;
+  cy: number;
+  areaM2: number;
+  box: { x0: number; y0: number; x1: number; y1: number };
+  inferredX?: boolean;
+  explicitX?: boolean;
+}
 function extractCutouts(dwg: NormalizedDwg): Cutout[] {
   const out: Cutout[] = [];
   const voidNotes = dwg.texts.filter((t) => /\b(?:OPENING|VOID|LIFT|STAIR|SHAFT|DUCT|OTS)\b/i.test(t.text));
@@ -868,12 +2055,17 @@ function extractCutouts(dwg: NormalizedDwg): Cutout[] {
     const explicitVoidLayer = CUTOUT_LAYERS.test(s1.layer) || CUTOUT_LAYERS.test(s2.layer);
     const labelledVoid = voidNotes.some((note) => note.pos.x >= b.x0 - 1500 && note.pos.x <= b.x1 + 1500
       && note.pos.y >= b.y0 - 1500 && note.pos.y <= b.y1 + 1500);
-    // Cross bracing, expansion-joint symbols and detail-table cells also form
-    // an X. They are not openings without explicit CAD evidence.
-    if (!explicitVoidLayer && !labelledVoid) continue;
     const areaM2 = (w * h) / 1e6;
+    // Small X symbols are normally bracing/detail graphics. Large unlabelled
+    // candidates are retained provisionally and accepted by assignCutouts only
+    // when fully contained in an explicit S-coded slab panel.
+    const inferredX = !explicitVoidLayer && !labelledVoid;
+    const aspect = w / h;
+    if (inferredX && (areaM2 < 0.4 || aspect < 0.25 || aspect > 4)) continue;
     const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
-    if (!out.some((o) => Math.hypot(o.cx - cx, o.cy - cy) < 1500)) out.push({ cx, cy, areaM2, box: b });
+    if (!out.some((o) => Math.hypot(o.cx - cx, o.cy - cy) < 1500)) out.push({
+      cx, cy, areaM2, box: b, inferredX, explicitX: explicitVoidLayer || labelledVoid,
+    });
   }
   return out;
 }
@@ -918,8 +2110,9 @@ function simplifyCollinearPolygon(polygon: Pt[]): Pt[] {
 
 /** Join collinear beam-face fragments across columns/supports. CAD framing
  * plans commonly split one 40 m dotted face into many 3–8 m entities. */
-export function mergeAxisBeamSegments(segments: Segment[], bridge = 2000): Segment[] {
-  const source = segments.filter((s) => /beam|slab|chajja|edge/i.test(s.layer));
+function mergeAxisFragments(segments: Segment[], bridge: number,
+  include: (segment: Segment) => boolean, outputLayer: string): Segment[] {
+  const source = segments.filter(include);
   const items = source.map((s) => {
     const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
     const horizontal = Math.abs(dx) >= Math.abs(dy) * 4;
@@ -948,11 +2141,21 @@ export function mergeAxisBeamSegments(segments: Segment[], bridge = 2000): Segme
         else merged.push([...interval]);
       }
       for (const [lo, hi] of merged) if (hi - lo >= 600) out.push(horizontal
-        ? { layer: 'MERGED BEAM', lineType: dashed ? 'HIDDEN' : 'CONTINUOUS', a: { x: lo, y: line.coord }, b: { x: hi, y: line.coord } }
-        : { layer: 'MERGED BEAM', lineType: dashed ? 'HIDDEN' : 'CONTINUOUS', a: { x: line.coord, y: lo }, b: { x: line.coord, y: hi } });
+        ? { layer: outputLayer, lineType: dashed ? 'HIDDEN' : 'CONTINUOUS', a: { x: lo, y: line.coord }, b: { x: hi, y: line.coord } }
+        : { layer: outputLayer, lineType: dashed ? 'HIDDEN' : 'CONTINUOUS', a: { x: line.coord, y: lo }, b: { x: line.coord, y: hi } });
     }
   }
   return out;
+}
+
+export function mergeAxisBeamSegments(segments: Segment[], bridge = 2000): Segment[] {
+  return mergeAxisFragments(segments, bridge, (segment) => /beam|slab|chajja|edge/i.test(segment.layer), 'MERGED BEAM');
+}
+
+/** Drawing-wide visual preprocessing. Join only short gaps between collinear
+ * beam/wall/column/RCC faces; a larger opening remains open. */
+export function joinBrokenStructuralSegments(segments: Segment[], bridge = 80): Segment[] {
+  return mergeAxisFragments(segments, bridge, isStructuralBoundarySegment, 'VISUALLY JOINED STRUCTURE');
 }
 
 /** Long internal slab/corridor bounded by dotted beam faces. It is accepted
@@ -1031,7 +2234,10 @@ export function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[
   // structural beam layer. Admit only long, continuous, axis-aligned plan
   // edges here; A-GRID/CENTER lines remain excluded.
   const planEdges = segments.filter((s) => {
-    if (!/^A-PLNT$/i.test(s.layer) || /dash|hidden|center/i.test(s.lineType || '')) return false;
+    // Some consultants place the visible outer slab/chajja edge on an
+    // A-Comments layer. Geometry and structural closure—not the layer name—
+    // decide whether it is a usable plan boundary.
+    if (!/^A-(?:PLNT|Comments)$/i.test(s.layer) || /dash|hidden|center/i.test(s.lineType || '')) return false;
     const dx = Math.abs(s.b.x - s.a.x), dy = Math.abs(s.b.y - s.a.y);
     return Math.max(dx, dy) >= 3000 && (dx >= dy * 4 || dy >= dx * 4);
   });
@@ -1042,7 +2248,7 @@ export function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[
   const candidates = [...mergedAxis, ...planEdges, ...diagonal];
   const dashed = candidates.filter((s) => /dash|hidden|center/i.test(s.lineType || ''));
   const continuous = candidates.filter((s) => !/dash|hidden|center/i.test(s.lineType || ''));
-  const structuralBoundary = (s: Segment) => /beam|slab|chajja|edge/i.test(s.layer) || /^A-PLNT$/i.test(s.layer);
+  const structuralBoundary = (s: Segment) => /beam|slab|chajja|edge/i.test(s.layer) || /^A-(?:PLNT|Comments)$/i.test(s.layer);
   const out: PanelProposalBox[] = [];
   // Long exterior chajjas are often one continuous A-PLNT edge opposite a
   // dotted beam face split at every bay/column. The pieces can step by a few
@@ -1129,12 +2335,51 @@ export function detectClosedCantileverStrips(segments: Segment[], thks: ThkText[
     if (width < 800 || width > 8000) continue;
     const lo = Math.max(horizontal ? Math.min(dash.a.x, dash.b.x) : Math.min(dash.a.y, dash.b.y), horizontal ? Math.min(solid.a.x, solid.b.x) : Math.min(solid.a.y, solid.b.y));
     const hi = Math.min(horizontal ? Math.max(dash.a.x, dash.b.x) : Math.max(dash.a.y, dash.b.y), horizontal ? Math.max(solid.a.x, solid.b.x) : Math.max(solid.a.y, solid.b.y));
-    if (hi - lo < 600 || hi - lo > 60_000 || !closes(lo, Math.min(dc, sc), Math.max(dc, sc), horizontal) || !closes(hi, Math.min(dc, sc), Math.max(dc, sc), horizontal)) continue;
+    if (hi - lo < 600 || hi - lo > 100_000 || !closes(lo, Math.min(dc, sc), Math.max(dc, sc), horizontal) || !closes(hi, Math.min(dc, sc), Math.max(dc, sc), horizontal)) continue;
     const box = horizontal ? { x0: lo, y0: Math.min(dc, sc), x1: hi, y1: Math.max(dc, sc) } : { x0: Math.min(dc, sc), y0: lo, x1: Math.max(dc, sc), y1: hi };
     const c = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
     if (out.some((p) => Math.hypot((p.box.x0 + p.box.x1) / 2 - c.x, (p.box.y0 + p.box.y1) / 2 - c.y) < 500)) continue;
     out.push({ label: 'CANTILEVER', box, lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0, openingM2: 0,
       thicknessMm: panelThickness(box, c, thks), confident: false, duplicate: false, cantileverBoundary: true });
+  }
+
+  // A broken stepped wall may prevent endpoint-closure tests even though the
+  // slab-side hidden beam and the continuous visible outer edge are clear.
+  // Accept such a band only as a mirrored pair; this provides independent
+  // drawing-wide corroboration and avoids treating an isolated comment line
+  // as a slab boundary.
+  const commentBands: PanelProposalBox[] = [];
+  for (const dash of dashed) for (const solid of continuous.filter((s) => /^A-Comments$/i.test(s.layer))) {
+    if (!/beam|slab|chajja|edge/i.test(dash.layer)) continue;
+    const ddx = dash.b.x - dash.a.x, ddy = dash.b.y - dash.a.y;
+    const sdx = solid.b.x - solid.a.x, sdy = solid.b.y - solid.a.y;
+    const horizontal = Math.abs(ddx) >= Math.abs(ddy) * 4 && Math.abs(sdx) >= Math.abs(sdy) * 4;
+    const vertical = Math.abs(ddy) >= Math.abs(ddx) * 4 && Math.abs(sdy) >= Math.abs(sdx) * 4;
+    if (!horizontal && !vertical) continue;
+    const dc = horizontal ? (dash.a.y + dash.b.y) / 2 : (dash.a.x + dash.b.x) / 2;
+    const sc = horizontal ? (solid.a.y + solid.b.y) / 2 : (solid.a.x + solid.b.x) / 2;
+    const depth = Math.abs(dc - sc);
+    if (depth < 800 || depth > 8000) continue;
+    const lo = Math.max(horizontal ? Math.min(dash.a.x, dash.b.x) : Math.min(dash.a.y, dash.b.y),
+      horizontal ? Math.min(solid.a.x, solid.b.x) : Math.min(solid.a.y, solid.b.y));
+    const hi = Math.min(horizontal ? Math.max(dash.a.x, dash.b.x) : Math.max(dash.a.y, dash.b.y),
+      horizontal ? Math.max(solid.a.x, solid.b.x) : Math.max(solid.a.y, solid.b.y));
+    if (hi - lo < 1500 || hi - lo > 15_000) continue;
+    const box = horizontal ? { x0: lo, y0: Math.min(dc, sc), x1: hi, y1: Math.max(dc, sc) }
+      : { x0: Math.min(dc, sc), y0: lo, x1: Math.max(dc, sc), y1: hi };
+    const c = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
+    commentBands.push({ label: 'UNMARKED SLAB', box, lengthMm: box.x1 - box.x0,
+      breadthMm: box.y1 - box.y0, openingM2: 0, thicknessMm: panelThickness(box, c, thks),
+      confident: false, duplicate: false, visualBoundary: true, closedStructuralBoundary: true });
+  }
+  for (const band of commentBands) {
+    const w = band.box.x1 - band.box.x0, h = band.box.y1 - band.box.y0;
+    const mate = commentBands.find((other) => other !== band
+      && Math.abs((other.box.x1 - other.box.x0) - w) <= 300
+      && Math.abs((other.box.y1 - other.box.y0) - h) <= 300
+      && Math.abs((other.box.y0 + other.box.y1 - band.box.y0 - band.box.y1) / 2) <= 300
+      && Math.abs((other.box.x0 + other.box.x1 - band.box.x0 - band.box.x1) / 2) >= 5000);
+    if (mate) out.push(band);
   }
 
   // Diagonal/sloping chajja edges occur at the two external L-shaped corners

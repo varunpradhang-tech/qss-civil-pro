@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { projectFromJson, projectToJson, type StoredProject } from '../src/state/persistence.js';
+import { useStore } from '../src/state/store.js';
 import { emptyRow } from '../src/takeoff/rules.js';
 
 const project: StoredProject = {
@@ -22,5 +23,16 @@ describe('project JSON', () => {
 
   it('rejects non-project JSON', () => {
     expect(() => projectFromJson('{"foo":1}')).toThrow();
+  });
+
+  it('re-extracts old saved members after the slab geometry rules change', () => {
+    vi.useFakeTimers();
+    try {
+      useStore.getState().loadStoredProject({ ...project, extractionVersion: 11 });
+      expect(useStore.getState().members).toHaveLength(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 });

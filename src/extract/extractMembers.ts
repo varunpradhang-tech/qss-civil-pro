@@ -42,17 +42,31 @@ function compareBeamLabels(a: string, b: string): number {
 export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): NormalizedDwg {
   if (workGroup === 'slab') return [...dwgs].sort((a, b) => {
     const score = (d: NormalizedDwg) => {
-      const drawingText = `${d.fileName} ${d.texts.map((t) => t.text).join(' ')}`;
-      const isPlan = /(?:FRAMING|FORMWORK|STRUCTURAL|SLAB)\s+(?:LAYOUT|PLAN)|(?:LAYOUT|PLAN)\s+(?:AT|OF)?\s*\w*\s*(?:FLOOR|LEVEL)|FLOOR\s+(?:FRAMING|PLAN)/i.test(drawingText);
-      const isScheduleOrDetail = /SLAB\s+(?:REINFORCEMENT\s+)?SCHEDULE|BEAM\s+(?:DETAIL|SCHEDULE)|BAR\s+BENDING\s+SCHEDULE/i.test(drawingText);
+      const planWording = /(?:FRAMING|FORMWORK|STRUCTURAL|SLAB)\s+(?:LAYOUT|PLAN)|(?:LAYOUT|PLAN)\s+(?:AT|OF)?\s*\w*\s*(?:FLOOR|LEVEL)|FLOOR\s+(?:FRAMING|PLAN)/i;
+      const detailWording = /\b(?:DETAILS?|SECTIONS?|PROJECTION|ELEVATION|SCHEDULE)\b/i;
+      // Read drawing headings separately from the filename. A filename or
+      // detail heading such as "slab-plan-detail" must not outrank a sheet
+      // with actual bounded framing geometry.
+      const planTitle = d.texts.some((t) => planWording.test(t.text) && !detailWording.test(t.text));
+      const filenamePlan = planWording.test(d.fileName) && !detailWording.test(d.fileName);
+      const isScheduleOrDetail = detailWording.test(d.fileName)
+        || d.texts.some((t) => detailWording.test(t.text));
       const labels = d.texts.filter((t) => /slabs?\s*no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, ''))).length;
       const boundaries = d.segments.filter((s) => /beam|wall|col|pardi|rcc/i.test(s.layer)).length
         + d.polylines.filter((p) => /beam|wall|col|pardi|rcc/i.test(p.layer)).length
         + d.hatches.filter((h) => /beam|wall|col|pardi|rcc/i.test(h.layer)).length;
+      // Prefer a sheet that actually yields bounded slab panels. Drawing titles
+      // vary between consultants, while schedules/details can still contain
+      // misleading words such as "slab" or "plan".
+      const proposals = autoProposePanels(d).length;
       // A schedule may contain hundreds of S1/S2 cells and table borders. It is
       // reference data, never the geometry source when a framing plan is present.
-      const roleScore = isPlan ? 10_000_000 : isScheduleOrDetail ? -10_000_000 : 0;
-      return roleScore + labels * 1000 + boundaries;
+      // Sheet role must outrank the number of closed loops: a dense schedule
+      // or section can otherwise beat a sparse but genuine framing plan.
+      // A combined plan/schedule sheet remains a plan geometry source.
+      const roleScore = planTitle ? 1_000_000_000 : isScheduleOrDetail ? -1_000_000_000
+        : filenamePlan ? 500_000_000 : 0;
+      return roleScore + Math.min(proposals, 1000) * 100_000 + labels * 1000 + boundaries;
     };
     return score(b) - score(a);
   })[0];
@@ -68,11 +82,19 @@ export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): N
 function beamSchedule(dwgs: NormalizedDwg[]): Map<string, { widthMm: number; depthMm: number }> {
   const schedule = new Map<string, { widthMm: number; depthMm: number }>();
   for (const dwg of dwgs) {
+    const titles = dwg.texts.filter((t) => /BEAM\s+(?:DETAILS?|SCHEDULE)/i.test(t.text));
     for (const labelText of dwg.texts) {
       const label = beamLabel(labelText.text);
-      if (!label || !/table|schedule/i.test(labelText.layer)) continue;
-      const numbers = dwg.texts
-        .filter((t) => t.layer === labelText.layer && Math.abs(t.pos.y - labelText.pos.y) <= 120 && t.pos.x > labelText.pos.x + 300 && t.pos.x < labelText.pos.x + 5000 && /^\d{2,4}$/.test(t.text.trim()))
+      const inScheduleRegion = /table|schedule/i.test(labelText.layer) || titles.some((title) =>
+        Math.abs(labelText.pos.x - title.pos.x) <= 60_000 && Math.abs(labelText.pos.y - title.pos.y) <= 30_000);
+      if (!label || !inScheduleRegion) continue;
+      const sameRow = dwg.texts
+        .filter((t) => Math.abs(t.pos.y - labelText.pos.y) <= 160
+          && Math.abs(t.pos.x - labelText.pos.x) <= 12_000 && t !== labelText);
+      const inline = sameRow.map((t) => parseBeamSize(t.text)).find(Boolean);
+      if (inline) { schedule.set(label, inline); continue; }
+      const numbers = sameRow
+        .filter((t) => /^\d{2,4}$/.test(t.text.trim()))
         .sort((a, b) => a.pos.x - b.pos.x)
         .map((t) => Number(t.text.trim()));
       const widthMm = numbers[0], depthMm = numbers[1];
@@ -90,12 +112,20 @@ function slabSchedule(dwgs: NormalizedDwg[]): Map<string, number> {
       const code = label.text.replace(/\s/g, '').toUpperCase();
       if (!/^S\d+[A-Z]?$/.test(code)) continue;
       const inScheduleRegion = /table|schedule/i.test(label.layer) || titles.some((title) =>
-        label.pos.x >= title.pos.x - 5000 && label.pos.x <= title.pos.x + 60000
-        && label.pos.y <= title.pos.y + 3000 && label.pos.y >= title.pos.y - 25000);
+        Math.abs(label.pos.x - title.pos.x) <= 60_000 && Math.abs(label.pos.y - title.pos.y) <= 30_000);
       if (!inScheduleRegion) continue;
       const thickness = dwg.texts
-        .filter((t) => Math.abs(t.pos.y - label.pos.y) <= 200 && t.pos.x > label.pos.x + 100 && t.pos.x < label.pos.x + 10000 && /^\d{2,4}$/.test(t.text.trim()))
-        .sort((a, b) => a.pos.x - b.pos.x)
+        .filter((t) => Math.abs(t.pos.y - label.pos.y) <= 200
+          && Math.abs(t.pos.x - label.pos.x) > 100 && Math.abs(t.pos.x - label.pos.x) < 15000
+          && /^\d{2,4}$/.test(t.text.trim()))
+        // A schedule can have closely spaced rows (for example S1A at y=500
+        // and S6 at y=300). Prefer a value on the label's own row before
+        // considering its horizontal position, otherwise the preceding row's
+        // thickness can win merely because both values share the same x.
+        .sort((a, b) => {
+          const rowDistance = Math.abs(a.pos.y - label.pos.y) - Math.abs(b.pos.y - label.pos.y);
+          return rowDistance || a.pos.x - b.pos.x;
+        })
         .map((t) => Number(t.text.trim()))
         .find((n) => n >= 75 && n <= 500);
       if (thickness) schedule.set(code, thickness);
@@ -109,8 +139,13 @@ function slabSchedule(dwgs: NormalizedDwg[]): Map<string, number> {
 function slabUnoThickness(dwgs: NormalizedDwg[]): number | undefined {
   const parse = (text: string) => {
     const normalized = text.replace(/\\P|\r?\n/g, ' ').replace(/\s+/g, ' ');
-    if (!/ALL\s+SLAB\s+THICKNESS/i.test(normalized) || !/U\s*\.?\s*N\s*\.?\s*O/i.test(normalized)) return undefined;
-    const value = normalized.match(/ALL\s+SLAB\s+THICKNESS[\s\S]{0,100}?(\d{2,4})\s*(?:MM)?\s*(?:THK|THICK)/i)?.[1];
+    // Consultants commonly write either "ALL SLAB THICKNESS SHALL BE ..."
+    // or "FOR ALL SLAB SHALL BE ...".  Treat both as drawing-wide defaults,
+    // but only when U.N.O. is present so an unrelated note cannot override a
+    // locally marked S-code or numeric thickness.
+    const slabDefault = /(?:FOR\s+)?ALL\s+SLABS?(?:\s+THICKNESS)?\s+SHALL\s+BE/i;
+    if (!slabDefault.test(normalized) || !/U\s*\.?\s*N\s*\.?\s*O/i.test(normalized)) return undefined;
+    const value = normalized.match(/(?:FOR\s+)?ALL\s+SLABS?(?:\s+THICKNESS)?\s+SHALL\s+BE[\s\S]{0,100}?(\d{2,4})\s*(?:MM)?\s*(?:THK|THICK)/i)?.[1];
     const thickness = value ? Number(value) : 0;
     return thickness >= 75 && thickness <= 500 ? thickness : undefined;
   };
@@ -131,8 +166,11 @@ function slabUnoThickness(dwgs: NormalizedDwg[]): number | undefined {
 function beamUnoSize(dwgs: NormalizedDwg[]): { widthMm: number; depthMm: number } | undefined {
   const parse = (text: string) => {
     const normalized = text.replace(/\\P|\r?\n/g, ' ').replace(/\s+/g, ' ');
-    if (!/ALL\s+BEAM\s+SIZE/i.test(normalized) || !/U\s*\.?\s*N\s*\.?\s*O/i.test(normalized)) return undefined;
-    const match = normalized.match(/ALL\s+BEAM\s+SIZE[\s\S]{0,100}?(\d{2,4})\s*[xX×]\s*(\d{2,4})/i);
+    // Also accept note styles such as "FOR BEAM SIZE SHALL BE (300x550)
+    // U.N.O."; "ALL" is frequently omitted in consultant general notes.
+    const beamDefault = /(?:FOR\s+)?(?:ALL\s+)?BEAMS?\s+SIZE\s+SHALL\s+BE/i;
+    if (!beamDefault.test(normalized) || !/U\s*\.?\s*N\s*\.?\s*O/i.test(normalized)) return undefined;
+    const match = normalized.match(/(?:FOR\s+)?(?:ALL\s+)?BEAMS?\s+SIZE\s+SHALL\s+BE[\s\S]{0,100}?(\d{2,4})\s*[xX×]\s*(\d{2,4})/i);
     if (!match) return undefined;
     const widthMm = Number(match[1]), depthMm = Number(match[2]);
     return widthMm >= 150 && widthMm <= 1500 && depthMm >= 250 && depthMm <= 3000 ? { widthMm, depthMm } : undefined;
@@ -162,6 +200,11 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     else rows.push({ y: cy, panels: [panel] });
   }
   const ordered = rows.sort((a, b) => b.y - a.y).flatMap((row) => row.panels.sort((a, b) => (a.box.x0 + a.box.x1) - (b.box.x0 + b.box.x1)));
+  // When the framing region contains no panel marks, S1 is the conventional
+  // drawing default if it is explicitly defined by the slab schedule. The
+  // schedule supplies classification/thickness only; it never supplies panel
+  // geometry, so table cells cannot become quantities.
+  const scheduleDefaultCode = schedule.has('S1') ? 'S1' : schedule.size === 1 ? schedule.keys().next().value as string : undefined;
   return ordered.map((p, i) => {
     const r = emptyRow(nextId(), floor);
     r.member = `P${i + 1}${p.label ? ` (${p.label})` : ''}`;
@@ -171,9 +214,18 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     r.cadY0 = p.box.y0;
     r.cadX1 = p.box.x1;
     r.cadY1 = p.box.y1;
-    r.length = round3(p.lengthMm / 1000);
-    r.breadth = round3(p.breadthMm / 1000);
-    const slabCode = (p.inferredSlabCode || p.label)?.replace(/\s/g, '').toUpperCase();
+    const boundingAreaM2 = (p.lengthMm / 1000) * (p.breadthMm / 1000);
+    const irregularAreaOnly = !!p.polygon && p.netAreaM2 !== undefined
+      && ((p.polygonParts?.length || 0) > 1 || p.polygon.length !== 4
+        || boundingAreaM2 <= 0 || p.netAreaM2 / boundingAreaM2 < 0.985);
+    // A bounding rectangle is reference geometry, not a valid L × B
+    // measurement for a stepped/notched slab. Such panels are billed only by
+    // their exact polygonal net area.
+    r.length = irregularAreaOnly ? 0 : round3(p.lengthMm / 1000);
+    r.breadth = irregularAreaOnly ? 0 : round3(p.breadthMm / 1000);
+    const explicitCode = (p.inferredSlabCode || p.label)?.replace(/\s/g, '').toUpperCase();
+    const slabCode = explicitCode && /^S\d+[A-Z]?$/.test(explicitCode) ? explicitCode : scheduleDefaultCode;
+    if (!p.label && slabCode) r.member = `P${i + 1} (${slabCode})`;
     const thicknessMm = p.thicknessMm || (slabCode ? schedule.get(slabCode) : undefined) || unoThickness || 175;
     const missingThickness = !p.thicknessMm && !(slabCode && schedule.has(slabCode)) && !unoThickness;
     r.height = round3(thicknessMm / 1000); // slab thickness → concrete depth
@@ -181,10 +233,15 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     r.openings = round3(p.openingM2);
     if (p.netAreaM2 !== undefined) {
       r.netArea = round3(Math.max(p.netAreaM2 - p.openingM2, 0));
-      r.cadPolygon = p.polygon;
+      // Keep exact polygon geometry only for genuinely irregular panels.
+      // Near-rectangular visual candidates have already been normalized to
+      // their verified bounding rectangle and must render/export as such.
+      r.cadPolygon = irregularAreaOnly && !p.polygonParts?.length ? p.polygon : undefined;
+      r.cadPolygonParts = irregularAreaOnly && p.polygonParts?.length ? p.polygonParts : undefined;
     }
     r.nos = 1;
     const reviewReasons = [
+      p.visualBoundary ? 'recovered by on-device visual boundary detection' : '',
       p.duplicate ? 'overlaps a stronger panel' : '',
       !p.confident ? 'dimension/void uncertain' : '',
       missingThickness ? 'no slab thickness found in panel, schedule, or UNO general note; using 175 mm fallback' : '',
@@ -751,7 +808,7 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
     }
     row.measurementSource = spans.every((span) => span.measurementSource === 'marked dimension')
       ? 'marked dimension' : 'drawing geometry';
-    row.needsReview = spans.some((span) => span.needsReview);
+    row.needsReview = spans.some((span) => span.needsReview === true);
     row.reviewReason = [...new Set(spans.map((span) => span.reviewReason).filter(Boolean))].join('; ') || undefined;
     return row;
   });
@@ -763,7 +820,7 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
     const key = `${row.member}|${round3(row.length)}|${round3(row.breadth)}|${round3(row.height)}`;
     const prior = combined.get(key);
     if (prior) prior.nos += row.nos;
-    else combined.set(key, { ...row });
+    else combined.set(key, { ...row, needsReview: row.needsReview === true });
   }
   return [...combined.values()];
 }

@@ -41,6 +41,7 @@ export interface MemberRow {
   cadX1?: number;
   cadY1?: number;
   cadPolygon?: PtLike[];
+  cadPolygonParts?: PtLike[][];
 }
 
 interface PtLike { x: number; y: number; }

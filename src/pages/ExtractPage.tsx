@@ -89,6 +89,7 @@ export function ExtractPage() {
     if (!files.length) return;
     s.setParsing(true);
     const out: Sheet[] = [];
+    const visualMessages: string[] = [];
     try {
       // Keep untouched source bytes for reference exports regardless of which
       // parser is selected. Remote processing is disabled by default and
@@ -106,18 +107,29 @@ export function ExtractPage() {
           try {
             s.setStatus(`Rendering high-resolution visual review tiles for ${dwg.fileName}…`);
             const tiles = await renderDwgTiles(dwg);
-            const review = await requestGeminiSlabReview(tiles.map((tile) => ({ data: tile.data, mimeType: tile.mimeType })), `Drawing: ${dwg.fileName}. Tile coordinates are CAD millimetres: ${JSON.stringify(tiles.map(({ x0, y0, x1, y1 }) => ({ x0, y0, x1, y1 })))}.`);
-            const validated = validateReviewCandidates(review.panels.flatMap((panel) => {
-              const tile = tiles[panel.tile_index];
-              if (!tile) return [];
-              const polygon = tilePolygonToCad(panel.polygon, tile);
-              return polygon.length >= 3 ? [{ id: panel.id, type: panel.type, confidence: panel.confidence, polygon }] : [];
-            }), dwg.segments);
+            if (tiles.length > 16) throw new Error('Plan requires too many visual tiles; narrow the framing region');
+            const candidates = [] as Parameters<typeof validateReviewCandidates>[0];
+            const voids: Array<Array<{ x: number; y: number }>> = [];
+            for (let i = 0; i < tiles.length; i++) {
+              const tile = tiles[i];
+              s.setStatus(`Gemini reviewing framing-plan tile ${i + 1} of ${tiles.length}…`);
+              const review = await requestGeminiSlabReview([{ data: tile.data, mimeType: tile.mimeType }],
+                `Drawing: ${dwg.fileName}. This is framing-plan tile ${i + 1} of ${tiles.length}. Tile bounds in CAD mm: ${JSON.stringify({ x0: tile.x0, y0: tile.y0, x1: tile.x1, y1: tile.y1 })}.`);
+              for (const panel of review.panels) {
+                if (panel.tile_index !== 0) continue;
+                const polygon = tilePolygonToCad(panel.polygon, tile);
+                if (polygon.length < 3) continue;
+                if (panel.type === 'void') voids.push(polygon);
+                else if (panel.type !== 'uncertain') candidates.push({ id: `tile-${i}-${panel.id}`, type: panel.type, confidence: panel.confidence, polygon });
+              }
+            }
+            const beamFaces = dwg.segments.filter((segment) => /(?:^|[-_\s])beam(?:$|[-_\s])/i.test(segment.layer));
+            const validated = validateReviewCandidates(candidates, beamFaces, voids);
             const accepted = validated.filter((panel) => panel.accepted);
-            out[out.length - 1].visualPanels = accepted.map((panel) => ({ id: panel.id, polygon: panel.polygon, areaM2: panel.areaM2 }));
-            s.setStatus(`Gemini visual review returned ${review.panels.length} proposals; ${accepted.length} passed CAD validation for ${dwg.fileName}.`);
+            out[out.length - 1].visualPanels = accepted.map((panel) => ({ id: panel.id, polygon: panel.polygon, areaM2: panel.areaM2, confidence: panel.confidence }));
+            visualMessages.push(`${candidates.length} visual proposals; ${accepted.length} passed geometry checks for ${dwg.fileName}`);
           } catch (reviewError) {
-            s.setStatus(`Gemini review unavailable; continuing with the verified CAD parser. ${(reviewError as Error).message}`);
+            visualMessages.push(`Gemini review unavailable for ${dwg.fileName}: ${(reviewError as Error).message}`);
           }
         }
       }
@@ -125,6 +137,7 @@ export function ExtractPage() {
         ? `Processed ${out.length} drawing${out.length === 1 ? '' : 's'} with the QSS processing service.${parsed.warning ? ` ${parsed.warning}` : ''}`
         : `Parsed ${out.length} drawing${out.length === 1 ? '' : 's'} with the verified local engine.`);
       s.setSheets(out);
+      if (visualMessages.length) s.setStatus(visualMessages.join(' '));
     } catch (err) { s.setStatus(`Parse failed: ${(err as Error).message}`); } finally { s.setParsing(false); }
   }
   function exportCsv() { downloadBlob(membersToCsv(s.members, s.quantityKey, s.capMode), 'qss-takeoff.csv', 'text/csv;charset=utf-8'); }

@@ -4,10 +4,11 @@ import { MENU, RULES, emptyRow, type CapMode, type DrawingType, type MemberRow }
 import { extractMembers, selectGeometrySheet } from '../extract/extractMembers.js';
 import { autoProposePanels } from '../extract/panels.js';
 import { buildRuleEngineReviewQueue } from '../ai/review.js';
+import { appendVisualSlabMembers } from '../vision/visualPanelAdapter.js';
 import type { AiReviewDecision, AiReviewRecord } from '../ai/contracts.js';
 import { deleteProject, getProject, listProjects, projectFromJson, projectToJson, saveProject, type StoredProject } from './persistence.js';
 
-export interface Sheet { id: string; name: string; dwg: NormalizedDwg; slabDimCount: number; sourceBytes?: ArrayBuffer; visualPanels?: Array<{ id: string; polygon: { x: number; y: number }[]; areaM2: number }>; }
+export interface Sheet { id: string; name: string; dwg: NormalizedDwg; slabDimCount: number; sourceBytes?: ArrayBuffer; visualPanels?: Array<{ id: string; polygon: { x: number; y: number }[]; areaM2: number; confidence: number }>; }
 export type OutputType = 'total' | 'member' | 'floor';
 
 interface AppState {
@@ -122,16 +123,8 @@ export const useStore = create<AppState>((set, get) => ({
     const { dwg, workGroup, defaultFloor, quantityKey } = get();
     if (!dwg) { set({ members: [], aiReviewQueue: [] }); return; }
     const members = extractMembers(get().sheets.map((sheet) => sheet.dwg), workGroup, defaultFloor);
-    if (workGroup === 'slab') {
-      for (const sheet of get().sheets) for (const visual of sheet.visualPanels ?? []) {
-        const xs = visual.polygon.map((p) => p.x), ys = visual.polygon.map((p) => p.y);
-        const row = emptyRow(`visual-${sheet.id}-${visual.id}`, defaultFloor);
-        row.member = `AI-${visual.id}`; row.length = (Math.max(...xs) - Math.min(...xs)) / 1000; row.breadth = (Math.max(...ys) - Math.min(...ys)) / 1000;
-        row.netArea = visual.areaM2; row.cadPolygon = visual.polygon; row.cadX = (Math.min(...xs) + Math.max(...xs)) / 2; row.cadY = (Math.min(...ys) + Math.max(...ys)) / 2;
-        row.needsReview = true; row.reviewReason = 'visual proposal passed geometry validation; verify slab thickness and schedule'; row.measurementSource = 'drawing geometry';
-        if (!members.some((m) => m.cadX !== undefined && Math.abs((m.cadX ?? 0) - (row.cadX ?? 0)) < 10 && Math.abs((m.cadY ?? 0) - (row.cadY ?? 0)) < 10)) members.push(row);
-      }
-    }
+    if (workGroup === 'slab') for (const sheet of get().sheets)
+      appendVisualSlabMembers(members, sheet, defaultFloor);
     const aiReviewQueue = workGroup === 'slab' ? buildRuleEngineReviewQueue(members, dwg.fileName) : [];
     mseq = members.length + 1;
     const flagged = members.filter((m) => m.needsReview).length;

@@ -71,11 +71,20 @@ export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): N
     return score(b) - score(a);
   })[0];
   if (workGroup !== 'beam') return [...dwgs].sort((a, b) => b.dimensions.length - a.dimensions.length)[0];
-  return [...dwgs].sort((a, b) => {
-    const score = (d: NormalizedDwg) => d.texts.filter((t) => isBeamNumberLayer(t.layer) && beamLabel(t.text)).length * 1000
-      + d.segments.filter((s) => isBeamGeometryLayer(s.layer)).length;
-    return score(b) - score(a);
-  })[0];
+  const beamScore = (d: NormalizedDwg) => {
+    const planWording = /(?:FRAMING|FORMWORK|STRUCTURAL|BEAM)\s+(?:LAYOUT|PLAN)|(?:LAYOUT|PLAN)\s+(?:AT|OF)?\s*\w*\s*(?:FLOOR|LEVEL)/i;
+    const detailWording = /\b(?:DETAILS?|SECTIONS?|PROJECTION|ELEVATION|SCHEDULE)\b/i;
+    const planTitle = d.texts.some((t) => planWording.test(t.text) && !detailWording.test(t.text));
+    const filenamePlan = planWording.test(d.fileName) && !detailWording.test(d.fileName);
+    const detailSheet = detailWording.test(d.fileName) || d.texts.some((t) => detailWording.test(t.text));
+    const labels = d.texts.filter((t) => isBeamNumberLayer(t.layer) && beamLabel(t.text)).length;
+    const geometry = d.segments.filter((s) => isBeamGeometryLayer(s.layer)).length;
+    // Framing plans are the only valid beam-geometry source. Details and
+    // sections remain schedule evidence for size lookup, never beam rows.
+    const roleScore = planTitle ? 1_000_000_000 : detailSheet ? -1_000_000_000 : filenamePlan ? 500_000_000 : 0;
+    return roleScore + labels * 1000 + geometry;
+  };
+  return [...dwgs].sort((a, b) => beamScore(b) - beamScore(a))[0];
 }
 
 /** Read label-specific width/depth rows from beam schedule/detail drawings. */

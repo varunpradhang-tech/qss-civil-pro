@@ -3,7 +3,7 @@
 // Best-effort; low-confidence/duplicate proposals are flagged for review. Pure/headless.
 import type { NormalizedDwg, Pt, Segment } from '../domain/types.js';
 import { polygoniseCadFaces } from './topology.js';
-import { bayImageShowsFullX } from '../vision/bayImage.js';
+import { bayImageShowsFullX, mirroredBaySimilarity, segmentVisualBay, unionVisualPolygons } from '../vision/bayImage.js';
 
 export interface PanelProposalBox {
   label?: string;
@@ -1144,11 +1144,74 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         && panel.box.y0 >= footprint.y0 - 7000 && panel.box.y1 <= footprint.y1 + 7000;
     });
     const planAxis = (footprint.x0 + footprint.x1) / 2;
+    // Drawing-wide visual symmetry pass. CAD entities are rendered into a
+    // layer-independent structural image, the white bay around each proposal
+    // is segmented, and only visually corresponding left/right regions are
+    // allowed to repair one another. This is deliberately before numbering:
+    // every renderer/export receives the same final geometry.
+    const structuralImageSegments = [...visibleSource, ...localDotted];
+    const visuallyReconciled = new Set<PanelProposalBox>();
+    const mirrorPolygon = (polygon: Pt[]) => polygon.map((point) => ({ x: 2 * planAxis - point.x, y: point.y })).reverse();
+    const applyVisualRegion = (panel: PanelProposalBox, region: ReturnType<typeof segmentVisualBay>) => {
+      if (!region) return;
+      const gross = boxArea(panel.box) / 1e6;
+      if (region.areaM2 < Math.max(0.2, gross * 0.5) || region.areaM2 > gross * 1.05
+        || Math.abs(region.box.x0 - panel.box.x0) > 400 || Math.abs(region.box.x1 - panel.box.x1) > 400
+        || Math.abs(region.box.y0 - panel.box.y0) > 400 || Math.abs(region.box.y1 - panel.box.y1) > 400) return;
+      panel.box = region.box;
+      panel.lengthMm = region.box.x1 - region.box.x0; panel.breadthMm = region.box.y1 - region.box.y0;
+      if (region.rectangular) { panel.polygon = undefined; panel.netAreaM2 = undefined; }
+      else { panel.polygon = region.polygon; panel.netAreaM2 = region.areaM2; panel.visualBoundary = true; }
+      visuallyReconciled.add(panel);
+    };
+    const mirrorCandidates = planCandidates.filter((panel) => !/CANTILEVER|HATCH/i.test(panel.label || '')
+      && boxArea(panel.box) >= 1_500_000);
+    for (const left of mirrorCandidates.filter((panel) => (panel.box.x0 + panel.box.x1) / 2 < planAxis - 250)) {
+      if (visuallyReconciled.has(left)) continue;
+      const expected = { x0: 2 * planAxis - left.box.x1, x1: 2 * planAxis - left.box.x0 };
+      const right = mirrorCandidates.filter((panel) => panel !== left
+        && (panel.box.x0 + panel.box.x1) / 2 > planAxis + 250
+        && Math.abs((panel.box.y0 + panel.box.y1 - left.box.y0 - left.box.y1) / 2) <= 800
+        && Math.abs(panel.box.x0 - expected.x0) <= 1400 && Math.abs(panel.box.x1 - expected.x1) <= 1400)
+        .sort((a, b) => Math.abs(a.box.x0 - expected.x0) + Math.abs(a.box.x1 - expected.x1))[0];
+      if (!right) continue;
+      const similarity = mirroredBaySimilarity(structuralImageSegments, left.box, right.box);
+      if (similarity < 0.42) continue;
+      const regionFor = (panel: PanelProposalBox) => {
+        const pad = Math.min(1400, Math.max(500, Math.min(panel.lengthMm, panel.breadthMm) * 0.3));
+        const search = { x0: panel.box.x0 - pad, y0: panel.box.y0 - pad,
+          x1: panel.box.x1 + pad, y1: panel.box.y1 + pad };
+        return segmentVisualBay(structuralImageSegments,
+          { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 }, search);
+      };
+      const leftRegion = regionFor(left), rightRegion = regionFor(right);
+      applyVisualRegion(left, leftRegion); applyVisualRegion(right, rightRegion);
+      // When one side is visually closed but the mirrored side has a small
+      // drafting break, transfer the segmented outline only after the raster
+      // comparison has independently established that the two bays match.
+      if (leftRegion && !rightRegion && similarity >= 0.6) {
+        const polygon = mirrorPolygon(leftRegion.polygon), box = bbox(polygon);
+        applyVisualRegion(right, { polygon, box, areaM2: leftRegion.areaM2, rectangular: leftRegion.rectangular });
+      } else if (rightRegion && !leftRegion && similarity >= 0.6) {
+        const polygon = mirrorPolygon(rightRegion.polygon), box = bbox(polygon);
+        applyVisualRegion(left, { polygon, box, areaM2: rightRegion.areaM2, rectangular: rightRegion.rectangular });
+      }
+    }
+    // Centre-spanning slabs are never split into artificial mirrored halves.
+    // Segment them once around their own seed and retain the complete region.
+    for (const panel of mirrorCandidates.filter((candidate) => candidate.box.x0 < planAxis && candidate.box.x1 > planAxis)) {
+      const pad = Math.min(1200, Math.max(500, Math.min(panel.lengthMm, panel.breadthMm) * 0.3));
+      applyVisualRegion(panel, segmentVisualBay(structuralImageSegments,
+        { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 },
+        { x0: panel.box.x0 - pad, y0: panel.box.y0 - pad, x1: panel.box.x1 + pad, y1: panel.box.y1 + pad }));
+    }
     const recoveredMirrors: PanelProposalBox[] = [];
     for (const source of [...planCandidates]) {
-      if (source.polygon || source.label !== 'UNMARKED SLAB') continue;
+      if (source.polygon || source.label !== 'UNMARKED SLAB'
+        || (source.box.x0 < planAxis && source.box.x1 > planAxis)) continue;
       const box = { x0: 2 * planAxis - source.box.x1, x1: 2 * planAxis - source.box.x0,
         y0: source.box.y0, y1: source.box.y1 };
+      if (overlapFrac(source.box, box) > 0.05) continue;
       const insideAggregate = planCandidates.some((panel) => panel.polygon
         && polygonRectOverlapFrac(panel.polygon, box) > 0.5);
       const existingRectangle = planCandidates.some((panel) => !panel.polygon
@@ -1183,6 +1246,120 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         + polygonRectIntersectionArea(aggregate.polygon as Pt[], panel.box), 0);
       const aggregateArea = Math.abs(shoelace(aggregate.polygon));
       if (aggregateArea > 0 && covered / aggregateArea >= 0.72) planCandidates.splice(i, 1);
+    }
+    normalizeMirroredPlanPanels(planCandidates, planAxis, footprint.y1);
+    // Recover and assemble the continuous perimeter chajja. Long top/side
+    // bands and the connected bottom hatch are one physical slab, not a list
+    // of rectangles created by each CAD entity break. First use the visually
+    // mirrored side to restore a missing band; then union each building side
+    // into one exact irregular outline and one quantity row.
+    const perimeter = planCandidates.reduce((box, panel) => ({ x0: Math.min(box.x0, panel.box.x0),
+      y0: Math.min(box.y0, panel.box.y0), x1: Math.max(box.x1, panel.box.x1), y1: Math.max(box.y1, panel.box.y1) }),
+    { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+    const isPerimeterBand = (panel: PanelProposalBox) => {
+      const ratio = Math.max(panel.lengthMm, panel.breadthMm) / Math.max(1, Math.min(panel.lengthMm, panel.breadthMm));
+      const sideBand = (panel.box.x0 <= perimeter.x0 + 450 || panel.box.x1 >= perimeter.x1 - 450)
+        && panel.breadthMm >= panel.lengthMm * 2.5;
+      const endBand = (panel.box.y0 <= perimeter.y0 + 450 || panel.box.y1 >= perimeter.y1 - 450)
+        && panel.lengthMm >= panel.breadthMm * 2.5;
+      const touches = sideBand || endBand || (!!panel.polygon && (panel.box.x0 <= perimeter.x0 + 450
+        || panel.box.x1 >= perimeter.x1 - 450 || panel.box.y0 <= perimeter.y0 + 450 || panel.box.y1 >= perimeter.y1 - 450));
+      return touches && (ratio >= 2.5 || !!panel.polygon || /CANTILEVER/i.test(panel.label || ''));
+    };
+    const initialBands = planCandidates.filter(isPerimeterBand);
+    for (const source of initialBands.filter((panel) => (panel.box.x0 + panel.box.x1) / 2 < planAxis)) {
+      const box = { x0: 2 * planAxis - source.box.x1, x1: 2 * planAxis - source.box.x0,
+        y0: source.box.y0, y1: source.box.y1 };
+      if (planCandidates.some((panel) => overlapFrac(panel.box, box) > 0.55)) continue;
+      if (mirroredBaySimilarity(structuralImageSegments, source.box, box) < 0.35) continue;
+      const polygon = source.polygon ? mirrorPolygon(source.polygon) : undefined;
+      planCandidates.push({ ...source, box, polygon, netAreaM2: source.netAreaM2,
+        lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0, confident: false, duplicate: false,
+        visualBoundary: true });
+    }
+    const mergedChajjas: PanelProposalBox[] = [];
+    for (const side of [-1, 1] as const) {
+      const bands = planCandidates.filter((panel) => isPerimeterBand(panel)
+        && Math.sign((panel.box.x0 + panel.box.x1) / 2 - planAxis) === side);
+      if (bands.length < 3) continue;
+      const polygons: Pt[][] = bands.map((panel) => panel.polygon || [
+        { x: panel.box.x0, y: panel.box.y0 }, { x: panel.box.x1, y: panel.box.y0 },
+        { x: panel.box.x1, y: panel.box.y1 }, { x: panel.box.x0, y: panel.box.y1 },
+      ]);
+      // Tiny unmeasured breaks between collinear perimeter fragments are CAD
+      // drafting discontinuities. Bridge only along the same exterior side
+      // and only up to 2 m; expansion joints and opposite buildings remain
+      // separate because they are not collinear perimeter runs.
+      const vertical = bands.filter((panel) => side < 0
+        ? panel.box.x0 <= perimeter.x0 + 450 : panel.box.x1 >= perimeter.x1 - 450)
+        .sort((a, b) => a.box.y0 - b.box.y0);
+      for (let i = 0; i < vertical.length - 1; i++) {
+        const a = vertical[i], b = vertical[i + 1], gap = b.box.y0 - a.box.y1;
+        if (gap <= 0 || gap > 2000) continue;
+        const depth = Math.min(3000, Math.max(800, (Math.min(a.lengthMm, a.breadthMm)
+          + Math.min(b.lengthMm, b.breadthMm)) / 2));
+        const outer = side < 0 ? perimeter.x0 : perimeter.x1;
+        const inner = side < 0 ? outer + depth : outer - depth;
+        polygons.push([{ x: Math.min(outer, inner), y: a.box.y1 }, { x: Math.max(outer, inner), y: a.box.y1 },
+          { x: Math.max(outer, inner), y: b.box.y0 }, { x: Math.min(outer, inner), y: b.box.y0 }]);
+      }
+      const union = unionVisualPolygons(polygons);
+      if (!union || union.areaM2 < 5) continue;
+      for (let i = planCandidates.length - 1; i >= 0; i--) if (bands.includes(planCandidates[i])) planCandidates.splice(i, 1);
+      const merged: PanelProposalBox = { label: 'CANTILEVER CHAJJA', box: union.box, polygon: union.polygon,
+        netAreaM2: union.areaM2, lengthMm: union.box.x1 - union.box.x0, breadthMm: union.box.y1 - union.box.y0,
+        openingM2: bands.reduce((sum, panel) => sum + panel.openingM2, 0),
+        thicknessMm: Math.max(...bands.map((panel) => panel.thicknessMm)), confident: false, duplicate: false,
+        cantileverBoundary: true, visualBoundary: true, steppedBoundary: true };
+      planCandidates.push(merged); mergedChajjas.push(merged);
+    }
+    if (mergedChajjas.length === 2) {
+      const [a, b] = mergedChajjas;
+      const difference = Math.abs((a.netAreaM2 || 0) - (b.netAreaM2 || 0))
+        / Math.max(a.netAreaM2 || 1, b.netAreaM2 || 1);
+      if (difference <= 0.1) {
+        // Both rendered sides describe the same slab. Use the smaller exact
+        // outline as the conservative canonical interpretation and mirror it,
+        // eliminating entity-break noise without inflating quantity.
+        const canonical = (a.netAreaM2 || 0) <= (b.netAreaM2 || 0) ? a : b;
+        const counterpart = canonical === a ? b : a;
+        counterpart.polygon = mirrorPolygon(canonical.polygon as Pt[]);
+        counterpart.box = bbox(counterpart.polygon);
+        counterpart.netAreaM2 = canonical.netAreaM2;
+        counterpart.lengthMm = counterpart.box.x1 - counterpart.box.x0;
+        counterpart.breadthMm = counterpart.box.y1 - counterpart.box.y0;
+      }
+    }
+    // A recovered room rectangle must stop at the inner face of the merged
+    // chajja, not continue through the exterior slab to its free edge. Trim
+    // only a continuous overlap at the top/bottom of the rectangle; interior
+    // notches remain polygons and side contact remains harmless.
+    for (const panel of planCandidates) {
+      if (panel.polygon || panel.cantileverBoundary) continue;
+      const chajja = mergedChajjas.find((candidate) => candidate.polygon
+        && polygonRectOverlapFrac(candidate.polygon, panel.box) > 0.05);
+      if (!chajja?.polygon) continue;
+      const x = (panel.box.x0 + panel.box.x1) / 2, step = 25;
+      let low = panel.box.y0;
+      while (low < panel.box.y1 && pointInPolygon({ x, y: low + step / 2 }, chajja.polygon)) low += step;
+      let high = panel.box.y1;
+      while (high > low && pointInPolygon({ x, y: high - step / 2 }, chajja.polygon)) high -= step;
+      if (low - panel.box.y0 >= 100) panel.box.y0 = low;
+      if (panel.box.y1 - high >= 100) panel.box.y1 = high;
+      panel.lengthMm = panel.box.x1 - panel.box.x0; panel.breadthMm = panel.box.y1 - panel.box.y0;
+    }
+    for (const left of planCandidates.filter((panel) => !panel.polygon && !panel.cantileverBoundary
+      && (panel.box.x0 + panel.box.x1) / 2 < planAxis)) {
+      const mirrorX0 = 2 * planAxis - left.box.x1, mirrorX1 = 2 * planAxis - left.box.x0;
+      const right = planCandidates.find((panel) => !panel.polygon && !panel.cantileverBoundary
+        && (panel.box.x0 + panel.box.x1) / 2 > planAxis
+        && Math.abs(panel.box.x0 - mirrorX0) <= 600 && Math.abs(panel.box.x1 - mirrorX1) <= 600
+        && Math.abs(panel.box.y1 - left.box.y1) <= 250);
+      if (!right || Math.abs(right.breadthMm - left.breadthMm) < 250) continue;
+      const source = left.breadthMm <= right.breadthMm ? left : right, target = source === left ? right : left;
+      target.box = { x0: 2 * planAxis - source.box.x1, x1: 2 * planAxis - source.box.x0,
+        y0: source.box.y0, y1: source.box.y1 };
+      target.lengthMm = source.lengthMm; target.breadthMm = source.breadthMm;
     }
     normalizeMirroredPlanPanels(planCandidates, planAxis, footprint.y1);
     out.splice(0, out.length, ...planCandidates);
@@ -1226,11 +1403,13 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // A stair flight can also be bounded by beams/walls, but its repeated
     // treads are not a slab panel. Apply this at final verification so every
     // proposal path (dotted, mixed, hatch or visual) obeys the same rule.
-    const stairStrokes = allSegs.filter((segment) => /(?:^|[-_$\s])(?:stair|step|flight)(?:$|[-_$\s])/i.test(segment.layer)
-      && ((segment.a.x + segment.b.x) / 2) >= panel.box.x0
-      && ((segment.a.x + segment.b.x) / 2) <= panel.box.x1
-      && ((segment.a.y + segment.b.y) / 2) >= panel.box.y0
-      && ((segment.a.y + segment.b.y) / 2) <= panel.box.y1);
+    const stairStrokes = allSegs.filter((segment) => {
+      if (!/(?:^|[-_$\s])(?:stair|step|flight)(?:$|[-_$\s])/i.test(segment.layer)) return false;
+      const midpoint = { x: (segment.a.x + segment.b.x) / 2, y: (segment.a.y + segment.b.y) / 2 };
+      return panel.polygon ? pointInPolygon(midpoint, panel.polygon)
+        : midpoint.x >= panel.box.x0 && midpoint.x <= panel.box.x1
+          && midpoint.y >= panel.box.y0 && midpoint.y <= panel.box.y1;
+    });
     if (stairStrokes.length >= 4) return false;
     // Final sheet-level safeguard: later recovery passes (hatches, mixed
     // cantilever faces and closed-strip detection) must not re-introduce a
@@ -1245,16 +1424,17 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       && mark.pos.x <= panel.box.x1 && mark.pos.y >= panel.box.y0 && mark.pos.y <= panel.box.y1);
     // The raster pass also catches X strokes split into multiple CAD entities.
     // It does not create a slab or override an explicit S mark.
-    if (!explicitlyMarked && (hasFullBayX(panel.box)
+    if (!explicitlyMarked && !panel.cantileverBoundary && (hasFullBayX(panel.box)
       || bayImageShowsFullX(allSegs, panel.box))) return false;
-    const grossM2 = (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
-    const verifiedLongSlab = /^S\d+[A-Z]?$|^CANTILEVER$|^SLAB STRIP$|^HATCH-SLAB$/i.test(panel.label || '');
+    const grossM2 = panel.netAreaM2 ?? (panel.lengthMm / 1000) * (panel.breadthMm / 1000);
+    const verifiedLongSlab = /^S\d+[A-Z]?$|^CANTILEVER(?: CHAJJA)?$|^SLAB STRIP$|^HATCH-SLAB$/i.test(panel.label || '');
     const maxSpan = verifiedLongSlab ? Infinity : 30_000;
     const plausibleBay = panel.lengthMm >= 300 && panel.breadthMm >= 300
       && panel.lengthMm <= maxSpan && panel.breadthMm <= maxSpan
       && grossM2 <= 400;
-    const held = holdNotes.some((note) => note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
-      && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
+    const held = holdNotes.some((note) => panel.polygon ? pointInPolygon(note.pos, panel.polygon)
+      : note.pos.x >= panel.box.x0 && note.pos.x <= panel.box.x1
+        && note.pos.y >= panel.box.y0 && note.pos.y <= panel.box.y1);
     return plausibleBay && !held;
   });
   // Resolve physical panel duplicates before assigning openings. Otherwise a
@@ -1273,7 +1453,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   for (const panel of measurable) {
     const gross = panel.netAreaM2 ?? boxArea(panel.box) / 1e6;
     const openingRatio = gross > 0 ? panel.openingM2 / gross : 0;
-    if (!/^S\d+[A-Z]?$/i.test(panel.label || '') && gross > 0
+    if (!/^S\d+[A-Z]?$/i.test(panel.label || '') && !panel.cantileverBoundary && gross > 0
       && (openingRatio >= 0.5 || (panel.visualBoundary && openingRatio >= 0.35))) panel.duplicate = true;
   }
   // An L-shaped chajja is commonly drawn as two perpendicular strips. Deduct

@@ -17,7 +17,7 @@ import { buildSlabReferencePdf } from '../export/pdf.js';
 import { useUI, displayQuantity } from '../state/ui.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { PremiumBadge } from '../components/PremiumBadge.js';
-import { renderDwgTiles } from '../vision/renderDwg.js';
+import { framingPlanTileBounds, renderDwgTile } from '../vision/renderDwg.js';
 import { requestGeminiSlabReview } from '../vision/geminiReview.js';
 import { tilePolygonToCad } from '../vision/geometryTransform.js';
 import { validateReviewCandidates } from '../vision/validateReview.js';
@@ -108,14 +108,16 @@ export function ExtractPage() {
         if (import.meta.env.VITE_GEMINI_REVIEW === 'true' && dwg === framingDwg) {
           try {
             s.setStatus(`Rendering high-resolution visual review tiles for ${dwg.fileName}…`);
-            const tiles = await renderDwgTiles(dwg);
-            if (tiles.length > 16) throw new Error('Plan requires too many visual tiles; narrow the framing region');
+            const tileBounds = framingPlanTileBounds(dwg);
+            if (tileBounds.length > 16) throw new Error('Plan requires too many visual tiles; narrow the framing region');
             const candidates = [] as Parameters<typeof validateReviewCandidates>[0];
             const voids: Array<Array<{ x: number; y: number }>> = [];
             const failedTiles: number[] = [];
-            for (let i = 0; i < tiles.length; i++) {
-              const tile = tiles[i];
-              s.setStatus(`Gemini reviewing framing-plan tile ${i + 1} of ${tiles.length}…`);
+            for (let i = 0; i < tileBounds.length; i++) {
+              s.setStatus(`Gemini reviewing framing-plan tile ${i + 1} of ${tileBounds.length}…`);
+              // Render one tile at a time. Retaining every 2200 px base64 image
+              // during nine network calls can stall a browser on large DWGs.
+              const tile = await renderDwgTile(dwg, tileBounds[i]);
               let review;
               try {
                 const beamMarkContext = dwg.texts
@@ -126,7 +128,7 @@ export function ExtractPage() {
                   .map((text) => ({ mark: text.text.trim(), x: Math.round((text.pos.x - tile.x0) / (tile.x1 - tile.x0) * 1000),
                     y: Math.round((tile.y1 - text.pos.y) / (tile.y1 - tile.y0) * 1000) }));
                 review = await requestGeminiSlabReview([{ data: tile.data, mimeType: tile.mimeType }],
-                  `Drawing: ${dwg.fileName}. This is framing-plan tile ${i + 1} of ${tiles.length}. Return tile_index 0. Tile bounds in CAD mm: ${JSON.stringify({ x0: tile.x0, y0: tile.y0, x1: tile.x1, y1: tile.y1 })}. Beam number locations in 0-1000 tile coordinates: ${JSON.stringify(beamMarkContext)}. No slab polygon may contain a beam number location.`);
+                  `Drawing: ${dwg.fileName}. This is framing-plan tile ${i + 1} of ${tileBounds.length}. Return tile_index 0. Tile bounds in CAD mm: ${JSON.stringify({ x0: tile.x0, y0: tile.y0, x1: tile.x1, y1: tile.y1 })}. Beam number locations in 0-1000 tile coordinates: ${JSON.stringify(beamMarkContext)}. No slab polygon may contain a beam number location.`);
               } catch {
                 failedTiles.push(i + 1);
                 continue;
@@ -138,6 +140,7 @@ export function ExtractPage() {
                 if (panel.type === 'void') voids.push(polygon);
                 else if (panel.type !== 'uncertain') candidates.push({ id: `tile-${i}-${panel.id}`, type: panel.type, confidence: panel.confidence, polygon });
               }
+              await new Promise<void>((resolve) => setTimeout(resolve, 0));
             }
             const beamFaces = dwg.segments.filter((segment) => /(?:^|[-_\s])beam(?:$|[-_\s])/i.test(segment.layer));
             const beamMarks = dwg.texts.filter((text) => /^(?:T\d+)?M?B\d+[A-Z]?$/i.test(text.text.replace(/\s/g, '')))

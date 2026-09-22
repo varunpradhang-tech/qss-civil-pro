@@ -1593,6 +1593,20 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // numbering, Excel export, totals, and reference-file marking.
   const measurable = out.filter((panel) => {
     const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+    // A beam mark is positive evidence that its location belongs to a beam.
+    // Reject an inferred slab that encloses that mark in its interior; a mark
+    // on the shared beam boundary is allowed beside a real slab bay.
+    if (!/^S\d+[A-Z]?$/i.test(panel.label || '') && !panel.cantileverBoundary) {
+      const beamMarkInside = dwg.texts.some((text) => {
+        const mark = text.text.replace(/\s/g, '').toUpperCase();
+        if (!/^(?:T\d+)?M?B\d+[A-Z]?$/.test(mark)) return false;
+        const margin = Math.min(350, (panel.box.x1 - panel.box.x0) * 0.15,
+          (panel.box.y1 - panel.box.y0) * 0.15);
+        return text.pos.x > panel.box.x0 + margin && text.pos.x < panel.box.x1 - margin
+          && text.pos.y > panel.box.y0 + margin && text.pos.y < panel.box.y1 - margin;
+      });
+      if (beamMarkInside) return false;
+    }
     // A stair flight can also be bounded by beams/walls, but its repeated
     // treads are not a slab panel. Apply this at final verification so every
     // proposal path (dotted, mixed, hatch or visual) obeys the same rule.

@@ -1,6 +1,7 @@
 const API_VERSION = '2026-09-01';
 const MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 const FALLBACK_MODEL = 'gemini-3.5-flash-lite';
+const LAST_RESORT_MODEL = 'gemini-2.5-flash';
 
 const json = (statusCode, body) => ({
   statusCode,
@@ -64,19 +65,20 @@ export const handler = async (event) => {
       parts.push({ text: `Tile ${index}` });
       parts.push({ inline_data: { mime_type: image.mimeType, data: image.data.replace(/^data:[^;]+;base64,/, '') } });
     }
-    const requestBody = JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: 0, thinkingConfig: { thinkingLevel: 'minimal' }, responseMimeType: 'application/json', responseSchema: reviewSchema } });
     const callModel = (model) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-QSS-API-Version': API_VERSION },
-      body: requestBody,
-      signal: AbortSignal.timeout(13000),
+      body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: 0,
+        ...(model.startsWith('gemini-3.') ? { thinkingConfig: { thinkingLevel: 'minimal' } } : {}),
+        responseMimeType: 'application/json', responseSchema: reviewSchema } }),
+      signal: AbortSignal.timeout(9000),
     });
     let model = MODEL;
     let response;
-    try { response = await callModel(model); } catch { /* Retry once with the low-latency model. */ }
-    if ((!response || [429, 503].includes(response.status)) && model !== FALLBACK_MODEL) {
-      model = FALLBACK_MODEL;
-      response = await callModel(model);
+    for (const candidate of [...new Set([MODEL, FALLBACK_MODEL, LAST_RESORT_MODEL])]) {
+      model = candidate;
+      try { response = await callModel(model); } catch { response = undefined; }
+      if (response && ![429, 500, 502, 503, 504].includes(response.status)) break;
     }
     if (!response) return json(502, { error: 'Gemini request timed out' });
     const payload = await response.json();

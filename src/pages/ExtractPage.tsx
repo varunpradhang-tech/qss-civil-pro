@@ -112,11 +112,18 @@ export function ExtractPage() {
             if (tiles.length > 16) throw new Error('Plan requires too many visual tiles; narrow the framing region');
             const candidates = [] as Parameters<typeof validateReviewCandidates>[0];
             const voids: Array<Array<{ x: number; y: number }>> = [];
+            const failedTiles: number[] = [];
             for (let i = 0; i < tiles.length; i++) {
               const tile = tiles[i];
               s.setStatus(`Gemini reviewing framing-plan tile ${i + 1} of ${tiles.length}…`);
-              const review = await requestGeminiSlabReview([{ data: tile.data, mimeType: tile.mimeType }],
-                `Drawing: ${dwg.fileName}. This is framing-plan tile ${i + 1} of ${tiles.length}. Tile bounds in CAD mm: ${JSON.stringify({ x0: tile.x0, y0: tile.y0, x1: tile.x1, y1: tile.y1 })}.`);
+              let review;
+              try {
+                review = await requestGeminiSlabReview([{ data: tile.data, mimeType: tile.mimeType }],
+                  `Drawing: ${dwg.fileName}. This is framing-plan tile ${i + 1} of ${tiles.length}. Tile bounds in CAD mm: ${JSON.stringify({ x0: tile.x0, y0: tile.y0, x1: tile.x1, y1: tile.y1 })}.`);
+              } catch {
+                failedTiles.push(i + 1);
+                continue;
+              }
               for (const panel of review.panels) {
                 if (panel.tile_index !== 0) continue;
                 const polygon = tilePolygonToCad(panel.polygon, tile);
@@ -131,7 +138,7 @@ export function ExtractPage() {
             const validated = validateReviewCandidates(candidates, beamFaces, voids, beamMarks);
             const accepted = validated.filter((panel) => panel.accepted);
             out[out.length - 1].visualPanels = accepted.map((panel) => ({ id: panel.id, polygon: panel.polygon, areaM2: panel.areaM2, confidence: panel.confidence }));
-            visualMessages.push(`${candidates.length} visual proposals; ${accepted.length} passed geometry checks for ${dwg.fileName}`);
+            visualMessages.push(`${candidates.length} visual proposals; ${accepted.length} passed geometry checks for ${dwg.fileName}.${failedTiles.length ? ` Gemini tiles ${failedTiles.join(', ')} failed; visual review is partial.` : ''}`);
           } catch (reviewError) {
             visualMessages.push(`Gemini review unavailable for ${dwg.fileName}: ${(reviewError as Error).message}`);
           }

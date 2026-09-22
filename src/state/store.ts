@@ -3,9 +3,7 @@ import type { NormalizedDwg } from '../domain/types.js';
 import { MENU, RULES, emptyRow, type CapMode, type DrawingType, type MemberRow } from '../takeoff/rules.js';
 import { extractMembers, selectGeometrySheet } from '../extract/extractMembers.js';
 import { autoProposePanels } from '../extract/panels.js';
-import { buildRuleEngineReviewQueue } from '../ai/review.js';
 import { appendVisualSlabMembers } from '../vision/visualPanelAdapter.js';
-import type { AiReviewDecision, AiReviewRecord } from '../ai/contracts.js';
 import { deleteProject, getProject, listProjects, projectFromJson, projectToJson, saveProject, type StoredProject } from './persistence.js';
 
 export interface Sheet { id: string; name: string; dwg: NormalizedDwg; slabDimCount: number; sourceBytes?: ArrayBuffer; visualPanels?: Array<{ id: string; polygon: { x: number; y: number }[]; areaM2: number; confidence: number }>; }
@@ -25,7 +23,6 @@ interface AppState {
   outputType: OutputType;
   defaultFloor: string;
   members: MemberRow[];
-  aiReviewQueue: AiReviewRecord[];
 
   projectId: string | null;
   projectName: string;
@@ -46,7 +43,6 @@ interface AppState {
   duplicateMember: (id: string) => void;
   updateMember: (id: string, patch: Partial<MemberRow>) => void;
   deleteMember: (id: string) => void;
-  setAiReviewDecision: (id: string, decision: AiReviewDecision) => void;
 
   refreshProjects: () => Promise<void>;
   openProject: (id: string) => Promise<void>;
@@ -94,7 +90,6 @@ export const useStore = create<AppState>((set, get) => ({
   outputType: 'member',
   defaultFloor: 'Basement',
   members: [],
-  aiReviewQueue: [],
 
   projectId: null,
   projectName: 'Untitled project',
@@ -106,7 +101,7 @@ export const useStore = create<AppState>((set, get) => ({
   setSheets: (sheets) => {
     const active = [...sheets].sort((a, b) => b.slabDimCount - a.slabDimCount)[0];
     const name = (active?.name || 'Untitled project').replace(/\.[^.]+$/, '');
-    set({ sheets, activeSheetId: active?.id ?? null, dwg: active?.dwg ?? null, projectId: `proj-${Date.now()}`, projectName: name, members: [], aiReviewQueue: [] });
+    set({ sheets, activeSheetId: active?.id ?? null, dwg: active?.dwg ?? null, projectId: `proj-${Date.now()}`, projectName: name, members: [] });
     get().extractQuantity();
     autosave(get);
   },
@@ -121,14 +116,13 @@ export const useStore = create<AppState>((set, get) => ({
 
   extractQuantity: () => {
     const { dwg, workGroup, defaultFloor, quantityKey } = get();
-    if (!dwg) { set({ members: [], aiReviewQueue: [] }); return; }
+    if (!dwg) { set({ members: [] }); return; }
     const members = extractMembers(get().sheets.map((sheet) => sheet.dwg), workGroup, defaultFloor);
     if (workGroup === 'slab') {
       const selected = selectGeometrySheet(get().sheets.map((sheet) => sheet.dwg), 'slab');
       const sheet = get().sheets.find((candidate) => candidate.dwg === selected);
       if (sheet) appendVisualSlabMembers(members, sheet, defaultFloor);
     }
-    const aiReviewQueue = workGroup === 'slab' ? buildRuleEngineReviewQueue(members, dwg.fileName) : [];
     mseq = members.length + 1;
     const flagged = members.filter((m) => m.needsReview).length;
     const sourceSummary = workGroup === 'beam'
@@ -144,7 +138,6 @@ export const useStore = create<AppState>((set, get) => ({
       : '';
     set({
       members,
-      aiReviewQueue,
       status: members.length
         ? `Extracted ${members.length} ${workGroup} members for ${RULES[quantityKey].label}${sourceSummary}${flagged ? ` · ${flagged} need review` : ''}.`
         : `No ${workGroup} members auto-extracted — add rows manually.${diagnostic}`,
@@ -161,9 +154,6 @@ export const useStore = create<AppState>((set, get) => ({
   }),
   updateMember: (id, patch) => { set((s) => ({ members: s.members.map((m) => (m.id === id ? { ...m, ...patch } : m)) })); autosave(get); },
   deleteMember: (id) => { set((s) => ({ members: s.members.filter((m) => m.id !== id) })); autosave(get); },
-  setAiReviewDecision: (id, decision) => set((s) => ({
-    aiReviewQueue: s.aiReviewQueue.map((record) => record.proposal.id === id ? { ...record, decision } : record),
-  })),
 
   refreshProjects: async () => set({ savedProjects: await listProjects() }),
   openProject: async (id) => { const p = await getProject(id); if (p) get().loadStoredProject(p); },
@@ -176,7 +166,7 @@ export const useStore = create<AppState>((set, get) => ({
     mseq = (p.members?.length || 0) + 1;
     set({
       projectId: p.id, projectName: p.name, sheets: p.sheets, activeSheetId: p.activeSheetId, dwg: active?.dwg ?? null,
-      members: p.members ?? [], aiReviewQueue: [],
+      members: p.members ?? [],
       drawingType: st.drawingType ?? 'structural', workGroup: st.workGroup ?? 'slab', quantityKey: st.quantityKey ?? 'slab_shuttering',
       capMode: st.capMode ?? 'excluded', outputType: st.outputType ?? 'member', defaultFloor: st.defaultFloor ?? 'Basement',
       status: needsReextract

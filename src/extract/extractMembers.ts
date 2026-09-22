@@ -3,6 +3,7 @@
 import type { NormalizedDwg, Pt, Segment } from '../domain/types.js';
 import { autoProposePanels } from './panels.js';
 import { emptyRow, type MemberRow } from '../takeoff/rules.js';
+import { reconcileMarkedPanelCorrections } from './markedPanelCorrections.js';
 import { round3 } from '../lib/num.js';
 
 // Parse common CAD beam-size notation: 300X650 / 300x900 / 300×600.
@@ -198,7 +199,7 @@ function beamUnoSize(dwgs: NormalizedDwg[]): { widthMm: number; depthMm: number 
 
 // --- slab: reuse the label-anchored panel proposer ---
 function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, number>, unoThickness?: number): MemberRow[] {
-  const panels = autoProposePanels(dwg);
+  const panels = reconcileMarkedPanelCorrections(dwg, autoProposePanels(dwg));
   const heights = panels.map((p) => Math.max(p.box.y1 - p.box.y0, 0)).filter(Boolean).sort((a, b) => a - b);
   const rowTolerance = Math.max(500, (heights[Math.floor(heights.length / 2)] || 2000) * 0.35);
   const rows: { y: number; panels: typeof panels }[] = [];
@@ -261,6 +262,7 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     }
     r.nos = 1;
     const reviewReasons = [
+      p.markedBoundary ? 'user-marked CAD outline; verify snapped beam faces and dimensions' : '',
       p.visualBoundary ? 'recovered by on-device visual boundary detection' : '',
       p.duplicate ? 'overlaps a stronger panel' : '',
       !p.confident ? 'dimension/void uncertain' : '',

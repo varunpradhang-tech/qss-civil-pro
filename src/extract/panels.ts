@@ -27,6 +27,7 @@ export interface PanelProposalBox {
   thicknessMarkedBoundary?: boolean; // numeric slab-depth mark enclosed by four structural faces
   hatchConnectedBoundary?: boolean; // same-pattern slab hatch connected to a numeric depth mark
   visualBoundary?: boolean; // dotted beam face completed by beam/wall/column faces
+  markedBoundary?: boolean; // user-supplied CAD correction polyline; still requires review
 }
 
 interface ThkText { pos: Pt; mm: number; }

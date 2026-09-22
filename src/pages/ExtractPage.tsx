@@ -138,7 +138,9 @@ export function ExtractPage() {
             const validated = validateReviewCandidates(candidates, beamFaces, voids, beamMarks);
             const accepted = validated.filter((panel) => panel.accepted);
             out[out.length - 1].visualPanels = accepted.map((panel) => ({ id: panel.id, polygon: panel.polygon, areaM2: panel.areaM2, confidence: panel.confidence }));
-            visualMessages.push(`${candidates.length} visual proposals; ${accepted.length} passed geometry checks for ${dwg.fileName}.${failedTiles.length ? ` Gemini tiles ${failedTiles.join(', ')} failed; visual review is partial.` : ''}`);
+            const rejected = validated.flatMap((panel) => panel.reasons);
+            const rejectionSummary = [...new Set(rejected)].map((reason) => `${reason}: ${rejected.filter((item) => item === reason).length}`).join(', ');
+            visualMessages.push(`${candidates.length} visual proposals; ${accepted.length} passed geometry checks for ${dwg.fileName}.${rejectionSummary ? ` Rejected for ${rejectionSummary}.` : ''}${failedTiles.length ? ` Gemini tiles ${failedTiles.join(', ')} failed; visual review is partial.` : ''}`);
           } catch (reviewError) {
             visualMessages.push(`Gemini review unavailable for ${dwg.fileName}: ${(reviewError as Error).message}`);
           }

@@ -8,7 +8,7 @@ const rectangle = (x0: number, y0: number, x1: number, y1: number): Pt[] => [
 ];
 const drawn = (polygon: Pt[]) => ({ layer: 'A-HATCH', closed: false,
   pts: [...polygon, { x: polygon[0].x + 10, y: polygon[0].y }], lineType: 'Continuous' });
-const dwg = (polylines: ReturnType<typeof drawn>[]) => ({ polylines } as unknown as NormalizedDwg);
+const dwg = (polylines: ReturnType<typeof drawn>[]) => ({ polylines, texts: [] } as unknown as NormalizedDwg);
 const panel = (bounds: PanelProposalBox['box'], label = 'UNMARKED SLAB'): PanelProposalBox => ({
   label, box: bounds, lengthMm: bounds.x1 - bounds.x0, breadthMm: bounds.y1 - bounds.y0,
   openingM2: 0, thicknessMm: 150, confident: false, duplicate: false,

@@ -235,8 +235,8 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     r.cadX1 = p.box.x1;
     r.cadY1 = p.box.y1;
     const boundingAreaM2 = (p.lengthMm / 1000) * (p.breadthMm / 1000);
-    const irregularAreaOnly = !!p.polygon && p.netAreaM2 !== undefined
-      && ((p.polygonParts?.length || 0) > 1 || p.polygon.length !== 4
+    const irregularAreaOnly = (!!p.polygon || !!p.polygonParts?.length) && p.netAreaM2 !== undefined
+      && ((p.polygonParts?.length || 0) > 1 || (p.polygon?.length ?? 0) !== 4
         || boundingAreaM2 <= 0 || p.netAreaM2 / boundingAreaM2 < 0.985);
     // A bounding rectangle is reference geometry, not a valid L × B
     // measurement for a stepped/notched slab. Such panels are billed only by

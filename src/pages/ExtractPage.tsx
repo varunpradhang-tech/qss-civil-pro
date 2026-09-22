@@ -20,6 +20,9 @@ import { framingPlanTileBounds, renderDwgTile } from '../vision/renderDwg.js';
 import { requestGeminiSlabReview } from '../vision/geminiReview.js';
 import { tilePolygonToCad } from '../vision/geometryTransform.js';
 import { validateReviewCandidates } from '../vision/validateReview.js';
+import { assessVisualRepair } from '../vision/visualRepair.js';
+import { autoProposePanels } from '../extract/panels.js';
+import { uncoveredReviewBounds } from '../vision/reviewGaps.js';
 
 const REQUIREMENTS = [
   'Grid lines are shown on the drawing',
@@ -110,6 +113,7 @@ export function ExtractPage() {
             const tileBounds = framingPlanTileBounds(dwg);
             if (tileBounds.length > 16) throw new Error('Plan requires too many visual tiles; narrow the framing region');
             const candidates = [] as Parameters<typeof validateReviewCandidates>[0];
+            const cadProposals = autoProposePanels(dwg);
             const voids: Array<Array<{ x: number; y: number }>> = [];
             const failedTiles: number[] = [];
             for (let i = 0; i < tileBounds.length; i++) {
@@ -126,8 +130,16 @@ export function ExtractPage() {
                   .slice(0, 60)
                   .map((text) => ({ mark: text.text.trim(), x: Math.round((text.pos.x - tile.x0) / (tile.x1 - tile.x0) * 1000),
                     y: Math.round((tile.y1 - text.pos.y) / (tile.y1 - tile.y0) * 1000) }));
+                const knownBays = cadProposals.filter((panel) => panel.box.x1 >= tile.x0 && panel.box.x0 <= tile.x1
+                  && panel.box.y1 >= tile.y0 && panel.box.y0 <= tile.y1).slice(0, 45)
+                  .map((panel) => ({ box: [
+                    Math.round((panel.box.x0 - tile.x0) / (tile.x1 - tile.x0) * 1000),
+                    Math.round((tile.y1 - panel.box.y1) / (tile.y1 - tile.y0) * 1000),
+                    Math.round((panel.box.x1 - tile.x0) / (tile.x1 - tile.x0) * 1000),
+                    Math.round((tile.y1 - panel.box.y0) / (tile.y1 - tile.y0) * 1000),
+                  ], shape: panel.polygon ? 'irregular' : 'rectangle' }));
                 review = await requestGeminiSlabReview([{ data: tile.data, mimeType: tile.mimeType }],
-                  `Drawing: ${dwg.fileName}. This is framing-plan tile ${i + 1} of ${tileBounds.length}. Return tile_index 0. Tile bounds in CAD mm: ${JSON.stringify({ x0: tile.x0, y0: tile.y0, x1: tile.x1, y1: tile.y1 })}. Beam number locations in 0-1000 tile coordinates: ${JSON.stringify(beamMarkContext)}. No slab polygon may contain a beam number location.`);
+                  `Drawing: ${dwg.fileName}. This is framing-plan tile ${i + 1} of ${tileBounds.length}. Return tile_index 0. Tile bounds in CAD mm: ${JSON.stringify({ x0: tile.x0, y0: tile.y0, x1: tile.x1, y1: tile.y1 })}. Beam number locations in 0-1000 tile coordinates: ${JSON.stringify(beamMarkContext)}. Existing provisional CAD bays (x0,y0,x1,y1 in 0-1000 tile coordinates): ${JSON.stringify(knownBays)}. Find missing bays and incorrectly rectangular/fragmented bays. A beam number on a boundary is allowed; a number deep inside a slab is not.`);
               } catch {
                 failedTiles.push(i + 1);
                 continue;
@@ -141,15 +153,64 @@ export function ExtractPage() {
               }
               await new Promise<void>((resolve) => setTimeout(resolve, 0));
             }
+            const gapCrops = uncoveredReviewBounds(dwg, cadProposals, 3);
+            for (let i = 0; i < gapCrops.length; i++) {
+              s.setStatus(`Gemini checking uncovered structural bay ${i + 1} of ${gapCrops.length} at high resolution…`);
+              try {
+                const crop = await renderDwgTile(dwg, gapCrops[i]);
+                const focused = await requestGeminiSlabReview([{ data: crop.data, mimeType: crop.mimeType }],
+                  `This crop was selected because beam/wall/column faces surround an area that CAD extraction did not measure. Identify only genuinely missing slab panels or a wrongly rectangular/split panel near the centre of this crop. Trace the exact beam-face contour including steps. A beam label is not a slab. If a complete side cannot be verified, return uncertain. Return tile_index 0. Crop CAD bounds in mm: ${JSON.stringify(gapCrops[i])}.`);
+                for (const panel of focused.panels) {
+                  if (panel.tile_index !== 0 || panel.type === 'void' || panel.type === 'uncertain') continue;
+                  const polygon = tilePolygonToCad(panel.polygon, crop);
+                  if (polygon.length >= 3) candidates.push({ id: `gap-${i}-${panel.id}`,
+                    type: panel.type, confidence: panel.confidence, polygon });
+                }
+              } catch { failedTiles.push(tileBounds.length + i + 1); }
+            }
             const beamFaces = dwg.segments.filter((segment) => /(?:^|[-_\s])beam(?:$|[-_\s])/i.test(segment.layer));
             const beamMarks = dwg.texts.filter((text) => /^(?:T\d+)?M?B\d+[A-Z]?$/i.test(text.text.replace(/\s/g, '')))
               .map((text) => text.pos);
-            const validated = validateReviewCandidates(candidates, beamFaces, voids, beamMarks);
+            // The full-plan tiles establish context. Reinspect at most three
+            // ambiguous bays at finer scale, instead of asking the model to
+            // redraw every room or trusting its first coarse polygon.
+            const firstPass = validateReviewCandidates(candidates, beamFaces, voids, beamMarks);
+            const retryAreas: Array<{ x0: number; y0: number; x1: number; y1: number }> = [];
+            const planLimits = { x0: Math.min(...tileBounds.map((b) => b.x0)), y0: Math.min(...tileBounds.map((b) => b.y0)),
+              x1: Math.max(...tileBounds.map((b) => b.x1)), y1: Math.max(...tileBounds.map((b) => b.y1)) };
+            for (const rejected of firstPass.filter((panel) => !panel.accepted && panel.confidence >= 0.75
+              && panel.areaM2 >= 2 && panel.areaM2 <= 120).sort((a, b) => b.confidence - a.confidence)) {
+              if (retryAreas.length >= 1) break;
+              const xs = rejected.polygon.map((p) => p.x), ys = rejected.polygon.map((p) => p.y);
+              const bounds = { x0: Math.max(planLimits.x0, Math.min(...xs) - 1300),
+                y0: Math.max(planLimits.y0, Math.min(...ys) - 1300),
+                x1: Math.min(planLimits.x1, Math.max(...xs) + 1300),
+                y1: Math.min(planLimits.y1, Math.max(...ys) + 1300) };
+              if (bounds.x1 - bounds.x0 < 1800 || bounds.y1 - bounds.y0 < 1800
+                || retryAreas.some((prior) => Math.max(0, Math.min(prior.x1, bounds.x1) - Math.max(prior.x0, bounds.x0))
+                  * Math.max(0, Math.min(prior.y1, bounds.y1) - Math.max(prior.y0, bounds.y0))
+                  > (bounds.x1 - bounds.x0) * (bounds.y1 - bounds.y0) * 0.4)) continue;
+              retryAreas.push(bounds);
+              s.setStatus('Rechecking one ambiguous CAD bay at higher resolution…');
+              try {
+                const crop = await renderDwgTile(dwg, bounds);
+                const focused = await requestGeminiSlabReview([{ data: crop.data, mimeType: crop.mimeType }],
+                  `This is a high-resolution recheck of one ambiguous framing-plan bay. Return only the slab or chajja in this crop, or uncertain if its beam/wall boundary cannot be traced. Prior full-plan candidate was rejected for ${rejected.reasons.join(', ')}. Do not repeat that polygon without correcting its contour. CAD bounds in mm: ${JSON.stringify(bounds)}. Beam labels denote beams, not slabs.`);
+                for (const panel of focused.panels) {
+                  if (panel.tile_index !== 0 || panel.type === 'void' || panel.type === 'uncertain') continue;
+                  const polygon = tilePolygonToCad(panel.polygon, crop);
+                  if (polygon.length >= 3) candidates.push({ id: `repair-${retryAreas.length}-${panel.id}`,
+                    type: panel.type, confidence: panel.confidence, polygon });
+                }
+              } catch { /* The ordinary CAD extraction must remain available. */ }
+            }
+            const cadSupported = candidates.filter((panel) => assessVisualRepair(dwg, panel.polygon).accepted);
+            const validated = validateReviewCandidates(cadSupported, beamFaces, voids, beamMarks);
             const accepted = validated.filter((panel) => panel.accepted);
-            out[out.length - 1].visualPanels = accepted.map((panel) => ({ id: panel.id, polygon: panel.polygon, areaM2: panel.areaM2, confidence: panel.confidence }));
-            const rejected = validated.flatMap((panel) => panel.reasons);
+            out[out.length - 1].visualPanels = accepted.map((panel) => ({ id: panel.id, polygon: panel.polygon, areaM2: panel.areaM2, confidence: panel.confidence, type: panel.type }));
+            const rejected = [...firstPass, ...validated].flatMap((panel) => panel.reasons);
             const rejectionSummary = [...new Set(rejected)].map((reason) => `${reason}: ${rejected.filter((item) => item === reason).length}`).join(', ');
-            visualMessages.push(`${candidates.length} visual proposals; ${accepted.length} passed geometry checks for ${dwg.fileName}.${rejectionSummary ? ` Rejected for ${rejectionSummary}.` : ''}${failedTiles.length ? ` Gemini tiles ${failedTiles.join(', ')} failed; visual review is partial.` : ''}`);
+            visualMessages.push(`${candidates.length} visual proposals; ${accepted.length} passed both beam-label and CAD-edge checks for ${dwg.fileName}.${rejectionSummary ? ` Rejected for ${rejectionSummary}.` : ''}${failedTiles.length ? ` Gemini tiles ${failedTiles.join(', ')} failed; visual review is partial.` : ''}`);
           } catch (reviewError) {
             visualMessages.push(`Gemini review unavailable for ${dwg.fileName}: ${(reviewError as Error).message}`);
           }

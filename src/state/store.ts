@@ -6,7 +6,7 @@ import { autoProposePanels } from '../extract/panels.js';
 import { appendVisualSlabMembers } from '../vision/visualPanelAdapter.js';
 import { deleteProject, getProject, listProjects, projectFromJson, projectToJson, saveProject, type StoredProject } from './persistence.js';
 
-export interface Sheet { id: string; name: string; dwg: NormalizedDwg; slabDimCount: number; sourceBytes?: ArrayBuffer; visualPanels?: Array<{ id: string; polygon: { x: number; y: number }[]; areaM2: number; confidence: number }>; }
+export interface Sheet { id: string; name: string; dwg: NormalizedDwg; slabDimCount: number; sourceBytes?: ArrayBuffer; visualPanels?: Array<{ id: string; polygon: { x: number; y: number }[]; areaM2: number; confidence: number; type?: string }>; }
 export type OutputType = 'total' | 'member' | 'floor';
 
 interface AppState {
@@ -58,7 +58,7 @@ const mid = () => `m${mseq++}`;
 
 // Increment whenever extraction or quantity rules change in a way that makes
 // previously saved member rows stale. Drawings are then re-extracted on open.
-const EXTRACTION_VERSION = 19;
+const EXTRACTION_VERSION = 20;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function snapshot(s: AppState): StoredProject | null {

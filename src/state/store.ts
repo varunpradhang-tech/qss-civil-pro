@@ -62,7 +62,7 @@ const mid = () => `m${mseq++}`;
 
 // Increment whenever extraction or quantity rules change in a way that makes
 // previously saved member rows stale. Drawings are then re-extracted on open.
-const EXTRACTION_VERSION = 17;
+const EXTRACTION_VERSION = 18;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function snapshot(s: AppState): StoredProject | null {
@@ -123,8 +123,11 @@ export const useStore = create<AppState>((set, get) => ({
     const { dwg, workGroup, defaultFloor, quantityKey } = get();
     if (!dwg) { set({ members: [], aiReviewQueue: [] }); return; }
     const members = extractMembers(get().sheets.map((sheet) => sheet.dwg), workGroup, defaultFloor);
-    if (workGroup === 'slab') for (const sheet of get().sheets)
-      appendVisualSlabMembers(members, sheet, defaultFloor);
+    if (workGroup === 'slab') {
+      const selected = selectGeometrySheet(get().sheets.map((sheet) => sheet.dwg), 'slab');
+      const sheet = get().sheets.find((candidate) => candidate.dwg === selected);
+      if (sheet) appendVisualSlabMembers(members, sheet, defaultFloor);
+    }
     const aiReviewQueue = workGroup === 'slab' ? buildRuleEngineReviewQueue(members, dwg.fileName) : [];
     mseq = members.length + 1;
     const flagged = members.filter((m) => m.needsReview).length;

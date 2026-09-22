@@ -42,7 +42,7 @@ const reviewSchema = {
   required: ['panels', 'warnings'],
 };
 
-const instruction = `Review this structural framing plan as a visual assistant only. Return polygon vertices normalized from 0 to 1000 within the tile, and set tile_index to the supplied tile number. Read beam numbers and use beam faces as boundaries. Include irregular panels as polygons, keep cantilever chajjas separate unless the drawing clearly shows one continuous panel, identify voids, and compare mirrored regions when visible. Do not infer hidden boundaries, do not cross a beam, and do not merge expansion joints. These are proposals only: a CAD validator will snap and reject geometry before quantities are calculated.`;
+const instruction = `Review this structural framing plan as a visual assistant only. Return polygon vertices normalized from 0 to 1000 within the tile, and set tile_index to 0 because this request contains one tile. B, MB, and tower-prefixed B numbers identify beams, never slab panels. Their locations are supplied with the image. A slab polygon must not enclose a beam number or cross a beam face; trace the clear slab area between beam faces. If a beam label is placed ambiguously or the slab boundary is unclear, return type uncertain instead of a slab. Include irregular panels as polygons, keep cantilever chajjas separate unless the drawing clearly shows one continuous panel, identify voids, and compare mirrored regions when visible. Do not infer hidden boundaries or merge expansion joints. These are proposals only: a CAD validator will reject invalid geometry before quantities are calculated.`;
 
 export const handler = async (event) => {
   if (!sameOrigin(event)) return json(403, { error: 'Available only from this app' });

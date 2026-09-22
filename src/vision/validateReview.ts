@@ -9,6 +9,11 @@ const crosses = (a: Pt, b: Pt, c: Pt, d: Pt) => orient(a,b,c) * orient(a,b,d) < 
 const overlaps = (a: Pt[], b: Pt[]) => a.some((point) => pointInPolygon(point, b))
   || b.some((point) => pointInPolygon(point, a))
   || a.some((point, i) => b.some((other, j) => crosses(point, a[(i + 1) % a.length], other, b[(j + 1) % b.length])));
+const edgeDistance = (point: Pt, polygon: Pt[]) => Math.min(...polygon.map((a, index) => {
+  const b = polygon[(index + 1) % polygon.length], dx = b.x - a.x, dy = b.y - a.y;
+  const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+  return Math.hypot(point.x - a.x - t * dx, point.y - a.y - t * dy);
+}));
 
 /** Deterministic gate for visual proposals; accepted results still require normal CAD panel matching. */
 export function validateReviewCandidates(candidates: ReviewCandidate[], beams: Segment[], voids: Pt[][] = [], beamMarks: Pt[] = []): ReviewValidation[] {
@@ -18,9 +23,17 @@ export function validateReviewCandidates(candidates: ReviewCandidate[], beams: S
     if (candidate.polygon.length < 3) reasons.push('polygon has fewer than three vertices');
     if (candidate.confidence < 0.6) reasons.push('confidence below review threshold');
     const edges = candidate.polygon.map((a, i) => [a, candidate.polygon[(i + 1) % candidate.polygon.length]] as const);
-    if (edges.some(([a,b]) => beams.some((beam) => crosses(a,b,beam.a,beam.b)))) reasons.push('boundary crosses a beam');
+    // CAD beam faces often terminate at a slab edge. A topological crossing
+    // alone rejects legitimate panels; only beam ink deep inside the proposed
+    // slab is a contradiction. Final CAD edge-support is checked separately.
+    if (beams.some((beam) => {
+      const midpoint = { x: (beam.a.x + beam.b.x) / 2, y: (beam.a.y + beam.b.y) / 2 };
+      return pointInPolygon(midpoint, candidate.polygon) && edgeDistance(midpoint, candidate.polygon) > 450
+        && edges.some(([a,b]) => crosses(a,b,beam.a,beam.b));
+    })) reasons.push('boundary crosses a beam');
     if (voids.some((voidPolygon) => overlaps(candidate.polygon, voidPolygon))) reasons.push('candidate overlaps a void');
-    if (beamMarks.some((mark) => pointInPolygon(mark, candidate.polygon))) reasons.push('candidate contains a beam number');
+    if (beamMarks.some((mark) => pointInPolygon(mark, candidate.polygon)
+      && edgeDistance(mark, candidate.polygon) > 450)) reasons.push('candidate contains a beam number');
     const areaM2 = candidate.polygon.length >= 3 ? area(candidate.polygon) : 0;
     if (areaM2 < 0.2 || areaM2 > 400) reasons.push('area outside slab limits');
     if (accepted.some((other) => overlaps(candidate.polygon, other.polygon))) reasons.push('candidate overlaps an accepted candidate');

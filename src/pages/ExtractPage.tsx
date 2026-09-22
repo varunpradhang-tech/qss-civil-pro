@@ -23,6 +23,7 @@ import { validateReviewCandidates } from '../vision/validateReview.js';
 import { assessVisualRepair } from '../vision/visualRepair.js';
 import { autoProposePanels } from '../extract/panels.js';
 import { uncoveredReviewBounds } from '../vision/reviewGaps.js';
+import { buildStructuralBayQuestions } from '../vision/structuralMap.js';
 
 const REQUIREMENTS = [
   'Grid lines are shown on the drawing',
@@ -157,12 +158,38 @@ export function ExtractPage() {
               await new Promise<void>((resolve) => setTimeout(resolve, 0));
             }
             const gapCrops = uncoveredReviewBounds(dwg, cadProposals, 3);
+            const workingMap = buildStructuralBayQuestions(dwg, cadProposals, gapCrops);
             for (let i = 0; i < gapCrops.length; i++) {
+              // A repaired CAD face can stand without Gemini only when an
+              // actual slab-depth mark is inside it and original CAD ink
+              // supports every side. No model availability is assumed.
+              for (const choice of workingMap[i].alternatives) {
+                if (choice.repairedGaps > 1 || choice.gapMm > 160) continue;
+                const marked = dwg.texts.some((text) => /slab\s*(?:thk|thickness|depth)/i.test(text.layer)
+                  && /^\d{2,3}(?:\s*mm)?$/i.test(text.text.trim())
+                  && (() => { let hit = false; const shape = choice.polygon;
+                    for (let a = 0, b = shape.length - 1; a < shape.length; b = a++) {
+                      const p = shape[a], q = shape[b];
+                      if ((p.y > text.pos.y) !== (q.y > text.pos.y)
+                        && text.pos.x < (q.x - p.x) * (text.pos.y - p.y) / (q.y - p.y) + p.x) hit = !hit;
+                    } return hit; })());
+                if (marked && assessVisualRepair(dwg, choice.polygon).accepted)
+                  candidates.push({ id: `cad-repair-${i}`, type: 'irregular_slab', confidence: 0.8,
+                    polygon: choice.polygon });
+              }
               s.setStatus(`Gemini checking uncovered structural bay ${i + 1} of ${gapCrops.length} at high resolution…`);
               try {
                 const crop = await renderDwgTile(dwg, gapCrops[i]);
+                const question = workingMap[i];
+                const alternatives = question.alternatives.map((choice) => ({
+                  polygon: choice.polygon.map((point) => [
+                    Math.round((point.x - crop.x0) / (crop.x1 - crop.x0) * 1000),
+                    Math.round((crop.y1 - point.y) / (crop.y1 - crop.y0) * 1000),
+                  ]), areaM2: Math.round(choice.areaM2 * 1000) / 1000,
+                  repairedGaps: choice.repairedGaps, gapMm: Math.round(choice.gapMm),
+                }));
                 const focused = await requestGeminiSlabReview([{ data: crop.data, mimeType: crop.mimeType }],
-                  `This crop was selected because beam/wall/column faces surround an area that CAD extraction did not measure. Identify only genuinely missing slab panels or a wrongly rectangular/split panel near the centre of this crop. Trace the exact beam-face contour including steps. A beam label is not a slab. If a complete side cannot be verified, return uncertain. Return tile_index 0. Crop CAD bounds in mm: ${JSON.stringify(gapCrops[i])}.`);
+                  `This is a separate working structural map; the source DWG is unchanged. The centre bay was not measured. The original graph had ${question.originalFaces} closed faces at its centre. CAD tested only short collinear drafting-gap repairs and generated these alternative contours (0-1000 image coordinates): ${JSON.stringify(alternatives)}. Nearby beam labels: ${JSON.stringify(question.beamMarks.map((mark) => ({ label: mark.label, x: Math.round((mark.point.x - crop.x0) / (crop.x1 - crop.x0) * 1000), y: Math.round((crop.y1 - mark.point.y) / (crop.y1 - crop.y0) * 1000) })))}. Decide whether one contour is a genuine slab bounded by beam/wall/column faces, whether it needs a corrected stepped outline, or whether the apparent gap is a real opening. Return a polygon only with visible evidence; otherwise return uncertain. Do not include a beam label deep inside a slab. Do not infer a mirror as fact. Return tile_index 0. Crop CAD bounds in mm: ${JSON.stringify(gapCrops[i])}.`);
                 for (const panel of focused.panels) {
                   if (panel.tile_index !== 0 || panel.type === 'void' || panel.type === 'uncertain') continue;
                   const polygon = tilePolygonToCad(panel.polygon, crop);

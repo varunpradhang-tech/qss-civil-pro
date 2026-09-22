@@ -3,6 +3,7 @@
 import type { NormalizedDwg, Pt, Segment } from '../domain/types.js';
 import { autoProposePanels } from './panels.js';
 import { emptyRow, type MemberRow } from '../takeoff/rules.js';
+import { reconcileMarkedPanelCorrections } from './markedPanelCorrections.js';
 import { round3 } from '../lib/num.js';
 
 // Parse common CAD beam-size notation: 300X650 / 300x900 / 300×600.
@@ -71,11 +72,20 @@ export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): N
     return score(b) - score(a);
   })[0];
   if (workGroup !== 'beam') return [...dwgs].sort((a, b) => b.dimensions.length - a.dimensions.length)[0];
-  return [...dwgs].sort((a, b) => {
-    const score = (d: NormalizedDwg) => d.texts.filter((t) => isBeamNumberLayer(t.layer) && beamLabel(t.text)).length * 1000
-      + d.segments.filter((s) => isBeamGeometryLayer(s.layer)).length;
-    return score(b) - score(a);
-  })[0];
+  const beamScore = (d: NormalizedDwg) => {
+    const planWording = /(?:FRAMING|FORMWORK|STRUCTURAL|BEAM)\s+(?:LAYOUT|PLAN)|(?:LAYOUT|PLAN)\s+(?:AT|OF)?\s*\w*\s*(?:FLOOR|LEVEL)/i;
+    const detailWording = /\b(?:DETAILS?|SECTIONS?|PROJECTION|ELEVATION|SCHEDULE)\b/i;
+    const planTitle = d.texts.some((t) => planWording.test(t.text) && !detailWording.test(t.text));
+    const filenamePlan = planWording.test(d.fileName) && !detailWording.test(d.fileName);
+    const detailSheet = detailWording.test(d.fileName) || d.texts.some((t) => detailWording.test(t.text));
+    const labels = d.texts.filter((t) => isBeamNumberLayer(t.layer) && beamLabel(t.text)).length;
+    const geometry = d.segments.filter((s) => isBeamGeometryLayer(s.layer)).length;
+    // Framing plans are the only valid beam-geometry source. Details and
+    // sections remain schedule evidence for size lookup, never beam rows.
+    const roleScore = planTitle ? 1_000_000_000 : detailSheet ? -1_000_000_000 : filenamePlan ? 500_000_000 : 0;
+    return roleScore + labels * 1000 + geometry;
+  };
+  return [...dwgs].sort((a, b) => beamScore(b) - beamScore(a))[0];
 }
 
 /** Read label-specific width/depth rows from beam schedule/detail drawings. */
@@ -189,7 +199,7 @@ function beamUnoSize(dwgs: NormalizedDwg[]): { widthMm: number; depthMm: number 
 
 // --- slab: reuse the label-anchored panel proposer ---
 function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, number>, unoThickness?: number): MemberRow[] {
-  const panels = autoProposePanels(dwg);
+  const panels = reconcileMarkedPanelCorrections(dwg, autoProposePanels(dwg));
   const heights = panels.map((p) => Math.max(p.box.y1 - p.box.y0, 0)).filter(Boolean).sort((a, b) => a - b);
   const rowTolerance = Math.max(500, (heights[Math.floor(heights.length / 2)] || 2000) * 0.35);
   const rows: { y: number; panels: typeof panels }[] = [];
@@ -210,13 +220,24 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     r.member = `P${i + 1}${p.label ? ` (${p.label})` : ''}`;
     r.cadX = (p.box.x0 + p.box.x1) / 2;
     r.cadY = (p.box.y0 + p.box.y1) / 2;
+    // A perimeter chajja's bounding-box centre is usually inside a room slab.
+    // Place its mark on the largest actual polygon part instead.
+    if (p.polygonParts?.length) {
+      const area = (points: { x: number; y: number }[]) => Math.abs(points.reduce((sum, point, index) => {
+        const next = points[(index + 1) % points.length];
+        return sum + point.x * next.y - next.x * point.y;
+      }, 0)) / 2;
+      const part = [...p.polygonParts].sort((a, b) => area(b) - area(a))[0];
+      r.cadX = (Math.min(...part.map((point) => point.x)) + Math.max(...part.map((point) => point.x))) / 2;
+      r.cadY = (Math.min(...part.map((point) => point.y)) + Math.max(...part.map((point) => point.y))) / 2;
+    }
     r.cadX0 = p.box.x0;
     r.cadY0 = p.box.y0;
     r.cadX1 = p.box.x1;
     r.cadY1 = p.box.y1;
     const boundingAreaM2 = (p.lengthMm / 1000) * (p.breadthMm / 1000);
-    const irregularAreaOnly = !!p.polygon && p.netAreaM2 !== undefined
-      && ((p.polygonParts?.length || 0) > 1 || p.polygon.length !== 4
+    const irregularAreaOnly = (!!p.polygon || !!p.polygonParts?.length) && p.netAreaM2 !== undefined
+      && ((p.polygonParts?.length || 0) > 1 || (p.polygon?.length ?? 0) !== 4
         || boundingAreaM2 <= 0 || p.netAreaM2 / boundingAreaM2 < 0.985);
     // A bounding rectangle is reference geometry, not a valid L × B
     // measurement for a stepped/notched slab. Such panels are billed only by
@@ -241,6 +262,7 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     }
     r.nos = 1;
     const reviewReasons = [
+      p.markedBoundary ? 'user-marked CAD outline; verify snapped beam faces and dimensions' : '',
       p.visualBoundary ? 'recovered by on-device visual boundary detection' : '',
       p.duplicate ? 'overlaps a stronger panel' : '',
       !p.confident ? 'dimension/void uncertain' : '',
@@ -411,8 +433,12 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       r.slabThickness = 0.175;
       r.slabCodeSide1 = side1?.code;
       r.slabCodeSide2 = side2?.code;
-      r.slabThicknessSide1 = side1 ? round3((slabThicknesses.get(side1.code) ?? 0) / 1000) : 0;
-      r.slabThicknessSide2 = side2 ? round3((slabThicknesses.get(side2.code) ?? 0) / 1000) : 0;
+      // Slab thickness is a universal beam-side deduction. A missing/ambiguous
+      // slab mark must not silently turn the exposed beam side into full depth;
+      // use the standard 175 mm slab fallback and keep the row reviewable.
+      const defaultSlabThickness = 175;
+      r.slabThicknessSide1 = side1 ? round3((slabThicknesses.get(side1.code) ?? defaultSlabThickness) / 1000) : 0;
+      r.slabThicknessSide2 = side2 ? round3((slabThicknesses.get(side2.code) ?? defaultSlabThickness) / 1000) : 0;
       r.innerSideCount = Number(!!r.slabThicknessSide1) + Number(!!r.slabThicknessSide2);
       r.nos = 1;
       const sourceA = useMarkedDimension ? markedDimension.dimension.p1 : nearest?.a;

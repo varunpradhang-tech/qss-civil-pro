@@ -1,5 +1,7 @@
 const API_VERSION = '2026-09-01';
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+const FALLBACK_MODEL = 'gemini-3.5-flash-lite';
+const LAST_RESORT_MODEL = 'gemini-2.5-flash';
 
 const json = (statusCode, body) => ({
   statusCode,
@@ -9,9 +11,11 @@ const json = (statusCode, body) => ({
 
 const sameOrigin = (event) => {
   const origin = event.headers?.origin;
+  const requestHost = event.headers?.host || event.headers?.Host;
   const hosts = [process.env.URL, process.env.DEPLOY_PRIME_URL]
     .filter(Boolean)
     .map((url) => new URL(url).host);
+  if (requestHost) hosts.push(requestHost);
   return !origin || !hosts.length || hosts.includes(new URL(origin).host);
 };
 
@@ -24,13 +28,14 @@ const reviewSchema = {
         type: 'object',
         properties: {
           id: { type: 'string' },
+          tile_index: { type: 'number' },
           type: { type: 'string', enum: ['rectangle', 'irregular_slab', 'cantilever_chajja', 'void', 'uncertain'] },
           polygon: { type: 'array', items: { type: 'array', items: { type: 'number' } } },
           beam_refs: { type: 'array', items: { type: 'string' } },
           confidence: { type: 'number' },
           evidence: { type: 'array', items: { type: 'string' } },
         },
-        required: ['id', 'type', 'polygon', 'beam_refs', 'confidence', 'evidence'],
+        required: ['id', 'tile_index', 'type', 'polygon', 'beam_refs', 'confidence', 'evidence'],
       },
     },
     warnings: { type: 'array', items: { type: 'string' } },
@@ -38,7 +43,7 @@ const reviewSchema = {
   required: ['panels', 'warnings'],
 };
 
-const instruction = `Review this structural framing plan as a visual assistant only. Identify candidate slab regions and return polygon vertices in the supplied image coordinate system. Read beam numbers and use beam faces as boundaries. Include irregular panels as polygons, keep cantilever chajjas separate unless the drawing clearly shows one continuous panel, identify voids, and compare mirrored regions when visible. Do not infer hidden boundaries, do not cross a beam, and do not merge expansion joints. These are proposals only: a CAD validator will snap and reject geometry before quantities are calculated.`;
+const instruction = `Review this structural framing plan as a visual assistant only. Return polygon vertices normalized from 0 to 1000 within the tile, and set tile_index to 0 because this request contains one tile. Read the beam, wall and column faces as possible slab boundaries even when a layer name or a short face segment is missing. B, MB, and tower-prefixed B numbers identify beams, never slab panels. A beam number on a boundary is possible; a number clearly inside an alleged slab is contradictory. Focus on missing bays and incorrectly rectangular or split provisional CAD bays supplied in context. Trace the actual clear slab contour, including notches and re-entrant corners; do not replace an irregular outline with its bounding rectangle. Keep a perimeter chajja separate from adjacent room slabs and do not infer an unsupported free outer edge. If a bay needs an invented full side, return uncertain with evidence explaining that missing side. Identify voids and compare mirrored regions only as corroboration, never as sole proof. Do not merge through a beam, wall, column or expansion joint. These are proposals only: original CAD edges will be checked before quantities are calculated.`;
 
 export const handler = async (event) => {
   if (!sameOrigin(event)) return json(403, { error: 'Available only from this app' });
@@ -51,25 +56,38 @@ export const handler = async (event) => {
     const images = Array.isArray(input.images) ? input.images : [];
     if (!images.length || images.length > 12) return json(400, { error: 'Provide between 1 and 12 images' });
     const parts = [{ text: `${instruction}\nAdditional drawing context: ${String(input.context || '').slice(0, 8000)}` }];
-    for (const image of images) {
+    for (let index = 0; index < images.length; index++) {
+      const image = images[index];
       if (!image || typeof image.data !== 'string' || !/^image\/(png|jpeg|webp)$/.test(image.mimeType || '')) {
         return json(400, { error: 'Each image must contain base64 data and PNG, JPEG, or WEBP mimeType' });
       }
       if (image.data.length > 15_000_000) return json(413, { error: 'Image is too large' });
+      parts.push({ text: `Tile ${index}` });
       parts.push({ inline_data: { mime_type: image.mimeType, data: image.data.replace(/^data:[^;]+;base64,/, '') } });
     }
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
+    const callModel = (model) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-QSS-API-Version': API_VERSION },
-      body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: 0, responseMimeType: 'application/json', responseSchema: reviewSchema } }),
+      body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: 0,
+        ...(model.startsWith('gemini-3.') ? { thinkingConfig: { thinkingLevel: 'minimal' } } : {}),
+        responseMimeType: 'application/json', responseSchema: reviewSchema } }),
+      signal: AbortSignal.timeout(9000),
     });
+    let model = MODEL;
+    let response;
+    for (const candidate of [...new Set([MODEL, FALLBACK_MODEL, LAST_RESORT_MODEL])]) {
+      model = candidate;
+      try { response = await callModel(model); } catch { response = undefined; }
+      if (response && ![429, 500, 502, 503, 504].includes(response.status)) break;
+    }
+    if (!response) return json(502, { error: 'Gemini request timed out' });
     const payload = await response.json();
     if (!response.ok) return json(response.status >= 500 ? 502 : response.status, { error: payload.error?.message || 'Gemini request failed' });
     const text = payload.candidates?.[0]?.content?.parts?.find((part) => part.text)?.text;
     if (!text) return json(502, { error: 'Gemini returned no structured review' });
     let review;
     try { review = JSON.parse(text); } catch { return json(502, { error: 'Gemini returned invalid JSON' }); }
-    return json(200, { model: MODEL, review, authoritative: false });
+    return json(200, { model, review, authoritative: false });
   } catch (error) {
     return json(400, { error: error instanceof Error ? error.message : 'Invalid review request' });
   }

@@ -83,7 +83,20 @@ export function buildSlabReferenceDxf(dwgs: NormalizedDwg[], members: MemberRow[
     const panelNo = m.member.match(/^P\d+/i)?.[0] ?? m.member;
     const exactPolygons = irregularPanelPolygons(m);
     for (const exactPolygon of exactPolygons) {
-      for (let i = 0; i < exactPolygon.length; i++) entities += line({ layer: 'QSS_PANEL_BOUNDARY', a: exactPolygon[i], b: exactPolygon[(i + 1) % exactPolygon.length] }, 'QSS_PANEL_BOUNDARY', 3);
+      for (let i = 0; i < exactPolygon.length; i++) {
+        const a = exactPolygon[i], b = exactPolygon[(i + 1) % exactPolygon.length];
+        entities += line({ layer: 'QSS_PANEL_BOUNDARY', a, b }, 'QSS_PANEL_BOUNDARY', 3);
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const length = Math.hypot(dx, dy);
+        // Irregular area is billed from the polygon, but the reference plan
+        // still needs the measured lengths of its real outline segments.
+        if (length >= 500) {
+          const rotation = Math.abs(dy) > Math.abs(dx) ? 90 : 0;
+          const label = { x: (a.x + b.x) / 2 + (rotation ? 85 : 0),
+            y: (a.y + b.y) / 2 + (rotation ? 0 : 85) };
+          entities += dimensionText(label, String(Math.round(length)), 100, rotation);
+        }
+      }
     }
     if (!exactPolygons.length && [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
       const x0 = m.cadX0 as number, y0 = m.cadY0 as number, x1 = m.cadX1 as number, y1 = m.cadY1 as number;

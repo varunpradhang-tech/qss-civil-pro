@@ -56,6 +56,15 @@ export function buildSlabReferencePdf(dwgs: NormalizedDwg[], members: MemberRow[
       stream += `0 0.65 0 RG 0.8 w ${n(polygon[0].x)} ${n(polygon[0].y)} m `;
       for (let i = 1; i < polygon.length; i++) stream += `${n(polygon[i].x)} ${n(polygon[i].y)} l `;
       stream += 'h S\n';
+      for (let i = 0; i < exactPolygon.length; i++) {
+        const a = exactPolygon[i], b = exactPolygon[(i + 1) % exactPolygon.length];
+        const edgeMm = Math.hypot(b.x - a.x, b.y - a.y);
+        if (edgeMm < 500) continue;
+        const mid = map({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+        const label = String(Math.round(edgeMm));
+        const fontSize = Math.max(2.5, Math.min(5, panelRadius * 0.7));
+        stream += `0 0.55 0 rg BT /F1 ${n(fontSize)} Tf ${n(mid.x - label.length * fontSize * 0.25)} ${n(mid.y + fontSize)} Td (${label}) Tj ET\n0 0.65 0 RG\n`;
+      }
     }
     if (!exactPolygons.length && [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {
       const x0 = m.cadX0 as number, y0 = m.cadY0 as number, x1 = m.cadX1 as number, y1 = m.cadY1 as number;
@@ -135,6 +144,15 @@ export async function overlayPanelNumbersOnPdf(source: ArrayBuffer, dwg: Normali
         const a = exactPolygon[i], b = exactPolygon[(i + 1) % exactPolygon.length];
         page.drawLine({ start: { x: ox + (a.x - min.x) * scale, y: oy + (a.y - min.y) * scale },
           end: { x: ox + (b.x - min.x) * scale, y: oy + (b.y - min.y) * scale }, color: rgb(0, 0.72, 0), thickness: 0.65 });
+        const edgeMm = Math.hypot(b.x - a.x, b.y - a.y);
+        if (edgeMm >= 500) {
+          const edgeText = String(Math.round(edgeMm));
+          const edgeSize = Math.max(4, Math.min(7, radius * 0.45));
+          const midX = ox + ((a.x + b.x) / 2 - min.x) * scale;
+          const midY = oy + ((a.y + b.y) / 2 - min.y) * scale;
+          page.drawText(edgeText, { x: midX - font.widthOfTextAtSize(edgeText, edgeSize) / 2,
+            y: midY + edgeSize, size: edgeSize, font, color: rgb(0, 0.55, 0) });
+        }
       }
     }
     if (!exactPolygons.length && [m.cadX0, m.cadY0, m.cadX1, m.cadY1].every(Number.isFinite)) {

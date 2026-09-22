@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { useStore, type Sheet } from '../state/store.js';
 import { parseDrawingsWithFallback } from '../workers/parseClient.js';
+import { selectGeometrySheet } from '../extract/extractMembers.js';
 import { MENU, RULES, RULE_FIELDS, FIELD_LABEL, type MemberRow } from '../takeoff/rules.js';
 import { downloadBlob } from '../export/download.js';
 import { membersToCsv } from '../export/mb.js';
@@ -99,11 +100,12 @@ export function ExtractPage() {
       }, s.setStatus);
       const sources = new Map<string, ArrayBuffer>();
       for (const file of files) sources.set(file.name, await file.arrayBuffer());
+      const framingDwg = s.workGroup === 'slab' ? selectGeometrySheet(parsed.drawings, 'slab') : null;
       for (const dwg of parsed.drawings) {
         const source = sources.get(dwg.fileName);
         out.push({ id: dwg.fileName, name: dwg.fileName, dwg, sourceBytes: source,
           slabDimCount: dwg.dimensions.filter((d) => /slabs no/i.test(d.layer)).length });
-        if (import.meta.env.VITE_GEMINI_REVIEW === 'true') {
+        if (import.meta.env.VITE_GEMINI_REVIEW === 'true' && dwg === framingDwg) {
           try {
             s.setStatus(`Rendering high-resolution visual review tiles for ${dwg.fileName}…`);
             const tiles = await renderDwgTiles(dwg);
@@ -124,7 +126,9 @@ export function ExtractPage() {
               }
             }
             const beamFaces = dwg.segments.filter((segment) => /(?:^|[-_\s])beam(?:$|[-_\s])/i.test(segment.layer));
-            const validated = validateReviewCandidates(candidates, beamFaces, voids);
+            const beamMarks = dwg.texts.filter((text) => /^(?:T\d+)?M?B\d+[A-Z]?$/i.test(text.text.replace(/\s/g, '')))
+              .map((text) => text.pos);
+            const validated = validateReviewCandidates(candidates, beamFaces, voids, beamMarks);
             const accepted = validated.filter((panel) => panel.accepted);
             out[out.length - 1].visualPanels = accepted.map((panel) => ({ id: panel.id, polygon: panel.polygon, areaM2: panel.areaM2, confidence: panel.confidence }));
             visualMessages.push(`${candidates.length} visual proposals; ${accepted.length} passed geometry checks for ${dwg.fileName}`);

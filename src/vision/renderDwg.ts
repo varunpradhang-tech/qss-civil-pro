@@ -3,6 +3,21 @@ import type { NormalizedDwg, Pt } from '../domain/types.js';
 export type RenderTile = { data: string; mimeType: 'image/png'; x0: number; y0: number; x1: number; y1: number };
 export type PlanBounds = { x0: number; y0: number; x1: number; y1: number };
 
+export function framingPlanTileBounds(dwg: NormalizedDwg, tileMm = 18000, overlapMm = 2000): PlanBounds[] {
+  const bounds = framingPlanBounds(dwg);
+  if (overlapMm >= tileMm) throw new Error('Tile overlap must be smaller than tile size');
+  const tiles: PlanBounds[] = [];
+  for (let y0 = bounds.y0; y0 < bounds.y1; y0 += tileMm - overlapMm) {
+    for (let x0 = bounds.x0; x0 < bounds.x1; x0 += tileMm - overlapMm) {
+      const x1 = Math.min(bounds.x1, x0 + tileMm), y1 = Math.min(bounds.y1, y0 + tileMm);
+      tiles.push({ x0, y0, x1, y1 });
+      if (x1 === bounds.x1) break;
+    }
+    if (Math.min(bounds.y1, y0 + tileMm) === bounds.y1) break;
+  }
+  return tiles;
+}
+
 /** Limit visual review to the slab plan when a sheet also contains details and sections. */
 export function framingPlanBounds(dwg: NormalizedDwg): PlanBounds {
   const slabMarks = dwg.texts.filter((t) => /slab\s*(?:thk|thickness|depth)/i.test(t.layer)
@@ -44,13 +59,12 @@ async function svgToPng(svg: string): Promise<string> {
 }
 
 /** Render overlapping, high-resolution plan tiles for visual review. */
+export async function renderDwgTile(dwg: NormalizedDwg, bounds: PlanBounds, pixels = 2200): Promise<RenderTile> {
+  return { ...bounds, data: await svgToPng(svgFor(dwg, bounds.x0, bounds.y0, bounds.x1, bounds.y1, pixels)), mimeType: 'image/png' };
+}
+
 export async function renderDwgTiles(dwg: NormalizedDwg, tileMm = 18000, overlapMm = 2000, pixels = 2200): Promise<RenderTile[]> {
-  const bounds = framingPlanBounds(dwg); const tiles: RenderTile[] = [];
-  if (overlapMm >= tileMm) throw new Error('Tile overlap must be smaller than tile size');
-  for (let y0 = bounds.y0; y0 < bounds.y1; y0 += tileMm - overlapMm) for (let x0 = bounds.x0; x0 < bounds.x1; x0 += tileMm - overlapMm) {
-    const x1 = Math.min(bounds.x1, x0 + tileMm), y1 = Math.min(bounds.y1, y0 + tileMm);
-    tiles.push({ data: await svgToPng(svgFor(dwg, x0, y0, x1, y1, pixels)), mimeType: 'image/png', x0, y0, x1, y1 });
-    if (x1 === bounds.x1) break;
-  }
+  const tiles: RenderTile[] = [];
+  for (const bounds of framingPlanTileBounds(dwg, tileMm, overlapMm)) tiles.push(await renderDwgTile(dwg, bounds, pixels));
   return tiles;
 }

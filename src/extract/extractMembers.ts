@@ -219,6 +219,17 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
     r.member = `P${i + 1}${p.label ? ` (${p.label})` : ''}`;
     r.cadX = (p.box.x0 + p.box.x1) / 2;
     r.cadY = (p.box.y0 + p.box.y1) / 2;
+    // A perimeter chajja's bounding-box centre is usually inside a room slab.
+    // Place its mark on the largest actual polygon part instead.
+    if (p.polygonParts?.length) {
+      const area = (points: { x: number; y: number }[]) => Math.abs(points.reduce((sum, point, index) => {
+        const next = points[(index + 1) % points.length];
+        return sum + point.x * next.y - next.x * point.y;
+      }, 0)) / 2;
+      const part = [...p.polygonParts].sort((a, b) => area(b) - area(a))[0];
+      r.cadX = (Math.min(...part.map((point) => point.x)) + Math.max(...part.map((point) => point.x))) / 2;
+      r.cadY = (Math.min(...part.map((point) => point.y)) + Math.max(...part.map((point) => point.y))) / 2;
+    }
     r.cadX0 = p.box.x0;
     r.cadY0 = p.box.y0;
     r.cadX1 = p.box.x1;

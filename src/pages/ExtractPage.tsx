@@ -116,6 +116,7 @@ export function ExtractPage() {
             const cadProposals = autoProposePanels(dwg);
             const voids: Array<Array<{ x: number; y: number }>> = [];
             const failedTiles: number[] = [];
+            const reviewErrors: string[] = [];
             for (let i = 0; i < tileBounds.length; i++) {
               s.setStatus(`Gemini reviewing framing-plan tile ${i + 1} of ${tileBounds.length}…`);
               // Render one tile at a time. Retaining every 2200 px base64 image
@@ -140,8 +141,10 @@ export function ExtractPage() {
                   ], shape: panel.polygon ? 'irregular' : 'rectangle' }));
                 review = await requestGeminiSlabReview([{ data: tile.data, mimeType: tile.mimeType }],
                   `Drawing: ${dwg.fileName}. This is framing-plan tile ${i + 1} of ${tileBounds.length}. Return tile_index 0. Tile bounds in CAD mm: ${JSON.stringify({ x0: tile.x0, y0: tile.y0, x1: tile.x1, y1: tile.y1 })}. Beam number locations in 0-1000 tile coordinates: ${JSON.stringify(beamMarkContext)}. Existing provisional CAD bays (x0,y0,x1,y1 in 0-1000 tile coordinates): ${JSON.stringify(knownBays)}. Find missing bays and incorrectly rectangular/fragmented bays. A beam number on a boundary is allowed; a number deep inside a slab is not.`);
-              } catch {
+              } catch (error) {
                 failedTiles.push(i + 1);
+                reviewErrors.push((error as Error).message);
+                if (failedTiles.length >= 2 && reviewErrors[0] === reviewErrors[1]) break;
                 continue;
               }
               for (const panel of review.panels) {
@@ -166,7 +169,7 @@ export function ExtractPage() {
                   if (polygon.length >= 3) candidates.push({ id: `gap-${i}-${panel.id}`,
                     type: panel.type, confidence: panel.confidence, polygon });
                 }
-              } catch { failedTiles.push(tileBounds.length + i + 1); }
+              } catch (error) { failedTiles.push(tileBounds.length + i + 1); reviewErrors.push((error as Error).message); }
             }
             const beamFaces = dwg.segments.filter((segment) => /(?:^|[-_\s])beam(?:$|[-_\s])/i.test(segment.layer));
             const beamMarks = dwg.texts.filter((text) => /^(?:T\d+)?M?B\d+[A-Z]?$/i.test(text.text.replace(/\s/g, '')))
@@ -210,7 +213,7 @@ export function ExtractPage() {
             out[out.length - 1].visualPanels = accepted.map((panel) => ({ id: panel.id, polygon: panel.polygon, areaM2: panel.areaM2, confidence: panel.confidence, type: panel.type }));
             const rejected = [...firstPass, ...validated].flatMap((panel) => panel.reasons);
             const rejectionSummary = [...new Set(rejected)].map((reason) => `${reason}: ${rejected.filter((item) => item === reason).length}`).join(', ');
-            visualMessages.push(`${candidates.length} visual proposals; ${accepted.length} passed both beam-label and CAD-edge checks for ${dwg.fileName}.${rejectionSummary ? ` Rejected for ${rejectionSummary}.` : ''}${failedTiles.length ? ` Gemini tiles ${failedTiles.join(', ')} failed; visual review is partial.` : ''}`);
+            visualMessages.push(`${candidates.length} visual proposals; ${accepted.length} passed both beam-label and CAD-edge checks for ${dwg.fileName}.${rejectionSummary ? ` Rejected for ${rejectionSummary}.` : ''}${failedTiles.length ? ` Gemini tiles ${failedTiles.join(', ')} failed; visual review is partial. ${[...new Set(reviewErrors)].join('; ')}` : ''}`);
           } catch (reviewError) {
             visualMessages.push(`Gemini review unavailable for ${dwg.fileName}: ${(reviewError as Error).message}`);
           }

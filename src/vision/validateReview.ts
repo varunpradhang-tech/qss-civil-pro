@@ -11,7 +11,7 @@ const overlaps = (a: Pt[], b: Pt[]) => a.some((point) => pointInPolygon(point, b
   || a.some((point, i) => b.some((other, j) => crosses(point, a[(i + 1) % a.length], other, b[(j + 1) % b.length])));
 
 /** Deterministic gate for visual proposals; accepted results still require normal CAD panel matching. */
-export function validateReviewCandidates(candidates: ReviewCandidate[], beams: Segment[], voids: Pt[][] = []): ReviewValidation[] {
+export function validateReviewCandidates(candidates: ReviewCandidate[], beams: Segment[], voids: Pt[][] = [], beamMarks: Pt[] = []): ReviewValidation[] {
   const accepted: ReviewCandidate[] = [];
   return [...candidates].sort((a, b) => b.confidence - a.confidence).map((candidate) => {
     const reasons: string[] = [];
@@ -20,6 +20,7 @@ export function validateReviewCandidates(candidates: ReviewCandidate[], beams: S
     const edges = candidate.polygon.map((a, i) => [a, candidate.polygon[(i + 1) % candidate.polygon.length]] as const);
     if (edges.some(([a,b]) => beams.some((beam) => crosses(a,b,beam.a,beam.b)))) reasons.push('boundary crosses a beam');
     if (voids.some((voidPolygon) => overlaps(candidate.polygon, voidPolygon))) reasons.push('candidate overlaps a void');
+    if (beamMarks.some((mark) => pointInPolygon(mark, candidate.polygon))) reasons.push('candidate contains a beam number');
     const areaM2 = candidate.polygon.length >= 3 ? area(candidate.polygon) : 0;
     if (areaM2 < 0.2 || areaM2 > 400) reasons.push('area outside slab limits');
     if (accepted.some((other) => overlaps(candidate.polygon, other.polygon))) reasons.push('candidate overlaps an accepted candidate');

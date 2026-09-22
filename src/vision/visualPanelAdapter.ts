@@ -22,6 +22,11 @@ export function appendVisualSlabMembers(members: MemberRow[], sheet: Sheet, floo
   let added = 0;
   for (const visual of sheet.visualPanels ?? []) {
     if (visual.confidence < 0.9 || visual.polygon.length < 3) continue;
+    // Recheck persisted visual proposals as well as fresh Gemini responses.
+    // Older saved projects may contain a proposal made before beam-mark
+    // validation was introduced.
+    if (sheet.dwg.texts.some((text) => /^(?:T\d+)?M?B\d+[A-Z]?$/i.test(text.text.replace(/\s/g, ''))
+      && contains(text.pos, visual.polygon))) continue;
     const xs = visual.polygon.map((p) => p.x), ys = visual.polygon.map((p) => p.y);
     const box = { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
     const boxArea = (box.x1 - box.x0) * (box.y1 - box.y0);

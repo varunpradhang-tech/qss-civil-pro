@@ -118,8 +118,15 @@ export function ExtractPage() {
               s.setStatus(`Gemini reviewing framing-plan tile ${i + 1} of ${tiles.length}…`);
               let review;
               try {
+                const beamMarkContext = dwg.texts
+                  .filter((text) => /^(?:T\d+)?M?B\d+[A-Z]?$/i.test(text.text.replace(/\s/g, ''))
+                    && text.pos.x >= tile.x0 && text.pos.x <= tile.x1
+                    && text.pos.y >= tile.y0 && text.pos.y <= tile.y1)
+                  .slice(0, 60)
+                  .map((text) => ({ mark: text.text.trim(), x: Math.round((text.pos.x - tile.x0) / (tile.x1 - tile.x0) * 1000),
+                    y: Math.round((tile.y1 - text.pos.y) / (tile.y1 - tile.y0) * 1000) }));
                 review = await requestGeminiSlabReview([{ data: tile.data, mimeType: tile.mimeType }],
-                  `Drawing: ${dwg.fileName}. This is framing-plan tile ${i + 1} of ${tiles.length}. Tile bounds in CAD mm: ${JSON.stringify({ x0: tile.x0, y0: tile.y0, x1: tile.x1, y1: tile.y1 })}.`);
+                  `Drawing: ${dwg.fileName}. This is framing-plan tile ${i + 1} of ${tiles.length}. Return tile_index 0. Tile bounds in CAD mm: ${JSON.stringify({ x0: tile.x0, y0: tile.y0, x1: tile.x1, y1: tile.y1 })}. Beam number locations in 0-1000 tile coordinates: ${JSON.stringify(beamMarkContext)}. No slab polygon may contain a beam number location.`);
               } catch {
                 failedTiles.push(i + 1);
                 continue;

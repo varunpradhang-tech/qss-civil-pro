@@ -84,6 +84,40 @@ function symmetryAxis(polygons: Pt[][]): number | undefined {
   return axes[Math.floor(axes.length / 2)];
 }
 
+/** Select dimensions that describe the marked outline itself, rather than a
+ * room/detail merely enclosed by a large irregular outline.  Endpoint span is
+ * used only for association; the displayed CAD measurement remains the
+ * authoritative value. */
+function markedDimensions(dwg: NormalizedDwg, bounds: Box) {
+  const width = bounds.x1 - bounds.x0, height = bounds.y1 - bounds.y0;
+  const choose = (dir: 'H' | 'V') => {
+    const lo = dir === 'H' ? bounds.x0 : bounds.y0;
+    const hi = dir === 'H' ? bounds.x1 : bounds.y1;
+    const target = hi - lo;
+    const crossLo = dir === 'H' ? bounds.y0 : bounds.x0;
+    const crossHi = dir === 'H' ? bounds.y1 : bounds.x1;
+    const tolerance = Math.max(600, Math.min(width, height) * 0.3);
+    return dwg.dimensions.filter((dimension) => dimension.dir === dir
+      && dimension.measurement >= 200 && dimension.measurement <= 60_000)
+      .map((dimension) => {
+        const a = dir === 'H' ? dimension.p1.x : dimension.p1.y;
+        const b = dir === 'H' ? dimension.p2.x : dimension.p2.y;
+        const d0 = Math.min(a, b), d1 = Math.max(a, b), geometricSpan = d1 - d0;
+        const overlapSpan = Math.max(0, Math.min(hi, d1) - Math.max(lo, d0));
+        const coverage = overlapSpan / Math.max(target, 1);
+        const cross = dir === 'H' ? dimension.mid.y : dimension.mid.x;
+        const crossDistance = cross < crossLo ? crossLo - cross : cross > crossHi ? cross - crossHi : 0;
+        const endpointError = (Math.abs(d0 - lo) + Math.abs(d1 - hi)) / Math.max(target, 1);
+        const spanError = Math.abs(geometricSpan - target) / Math.max(target, 1);
+        return { dimension, coverage, crossDistance,
+          score: endpointError + spanError + crossDistance / Math.max(tolerance, 1) };
+      }).filter((candidate) => candidate.coverage >= 0.65
+        && candidate.crossDistance <= tolerance && candidate.score <= 1.1)
+      .sort((a, b) => a.score - b.score)[0]?.dimension;
+  };
+  return { horizontal: choose('H'), vertical: choose('V') };
+}
+
 /** Explicit CAD correction outlines supersede overlapping inferred bays.
  * This is a general opt-in correction path; an ordinary unmarked DWG is unchanged. */
 export function reconcileMarkedPanelCorrections(dwg: NormalizedDwg, panels: PanelProposalBox[]): PanelProposalBox[] {
@@ -108,6 +142,14 @@ export function reconcileMarkedPanelCorrections(dwg: NormalizedDwg, panels: Pane
   const corrected: PanelProposalBox[] = outlines.map((polygon) => {
     const bounds = box(polygon), gross = area(polygon) / 1e6;
     const irregular = chajja(polygon) || gross < boxArea(bounds) / 1e6 * 0.985;
+    const dimensions = markedDimensions(dwg, bounds);
+    const lengthMm = dimensions.horizontal?.measurement || bounds.x1 - bounds.x0;
+    const breadthMm = dimensions.vertical?.measurement || bounds.y1 - bounds.y0;
+    // For an irregular outline, preserve its exact shape and calibrate each
+    // axis from explicit dimensions. This makes a dimensioned polyline the
+    // primary measurement source without pretending its bounding box is area.
+    const scaleX = dimensions.horizontal ? lengthMm / Math.max(bounds.x1 - bounds.x0, 1) : 1;
+    const scaleY = dimensions.vertical ? breadthMm / Math.max(bounds.y1 - bounds.y0, 1) : 1;
     const matching = panels.filter((panel) => chajja(polygon) === /CHAJJA/i.test(panel.label || ''))
       .map((panel) => ({ panel, intersection: chajja(polygon) ? overlap(bounds, panel.box)
         : polygonRectArea(polygon, panel.box) }))
@@ -116,11 +158,13 @@ export function reconcileMarkedPanelCorrections(dwg: NormalizedDwg, panels: Pane
       && /^\d{2,3}(?:\s*mm)?$/i.test(text.text.trim()) && contains(text.pos, polygon));
     const depthMm = depth ? Number.parseInt(depth.text, 10) : 0;
     return { label: chajja(polygon) ? 'CANTILEVER CHAJJA' : 'UNMARKED SLAB',
-      box: bounds, lengthMm: bounds.x1 - bounds.x0, breadthMm: bounds.y1 - bounds.y0,
+      box: bounds, lengthMm, breadthMm,
       openingM2: 0, thicknessMm: depthMm || (matching?.intersection > 200_000 ? matching.panel.thicknessMm : 0),
-      confident: false, duplicate: false, markedBoundary: true,
+      confident: !!dimensions.horizontal && !!dimensions.vertical,
+      duplicate: false, markedBoundary: true,
+      dimensionBounded: !!dimensions.horizontal || !!dimensions.vertical,
       polygon: irregular ? polygon : undefined,
-      netAreaM2: irregular ? gross : undefined };
+      netAreaM2: irregular ? gross * scaleX * scaleY : undefined };
   });
   const retained = panels.filter((panel) => !corrected.some((mark) => {
     if (/CHAJJA/i.test(panel.label || '') && /CHAJJA/i.test(mark.label || ''))

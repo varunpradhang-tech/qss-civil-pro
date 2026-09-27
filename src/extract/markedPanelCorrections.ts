@@ -179,5 +179,28 @@ export function reconcileMarkedPanelCorrections(dwg: NormalizedDwg, panels: Pane
     const panelArea = panel.netAreaM2 ? panel.netAreaM2 * 1e6 : boxArea(panel.box);
     return panelArea > 0 && intersection / panelArea > 0.35;
   }));
-  return [...retained, ...corrected];
+  const result = [...retained, ...corrected];
+  // A consultant often dimensions both symmetric bays but draws a manual
+  // correction outline around only one of them.  Recover the counterpart only
+  // when the reflected bay has its own complete H/V dimension pair; symmetry
+  // alone is never sufficient measurement evidence.
+  if (axis != null) for (const sourcePanel of [...result]) {
+    if (!sourcePanel.confident || (!sourcePanel.markedBoundary && !sourcePanel.dimensionBounded)) continue;
+    const reflectedBox = { x0: 2 * axis - sourcePanel.box.x1, x1: 2 * axis - sourcePanel.box.x0,
+      y0: sourcePanel.box.y0, y1: sourcePanel.box.y1 };
+    if (Math.abs((sourcePanel.box.x0 + sourcePanel.box.x1) / 2 - axis) < 500) continue;
+    if (result.some((candidate) => overlap(candidate.box, reflectedBox)
+      / Math.max(1, Math.min(boxArea(candidate.box), boxArea(reflectedBox))) > 0.72)) continue;
+    const dimensions = markedDimensions(dwg, reflectedBox);
+    if (!dimensions.horizontal || !dimensions.vertical) continue;
+    const polygon = sourcePanel.polygon?.map((point) => ({ x: 2 * axis - point.x, y: point.y })).reverse();
+    const reflectedArea = sourcePanel.netAreaM2 ?? boxArea(reflectedBox) / 1e6;
+    result.push({ ...sourcePanel, label: sourcePanel.label || 'UNMARKED SLAB', box: reflectedBox,
+      lengthMm: dimensions.horizontal.measurement, breadthMm: dimensions.vertical.measurement,
+      polygon, netAreaM2: polygon ? reflectedArea : dimensions.horizontal.measurement
+        * dimensions.vertical.measurement / 1e6,
+      markedBoundary: false, dimensionBounded: true, measurementBasis: 'marked dimensions',
+      confident: true, duplicate: false });
+  }
+  return result;
 }

@@ -84,6 +84,10 @@ function symmetryAxis(polygons: Pt[][]): number | undefined {
   return axes[Math.floor(axes.length / 2)];
 }
 
+export function hasMarkedPanelCorrections(dwg: NormalizedDwg): boolean {
+  return markedPolygons(dwg).length > 0;
+}
+
 /** Select dimensions that describe the marked outline itself, rather than a
  * room/detail merely enclosed by a large irregular outline.  Endpoint span is
  * used only for association; the displayed CAD measurement remains the

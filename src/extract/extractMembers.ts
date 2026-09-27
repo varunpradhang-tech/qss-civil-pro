@@ -3,7 +3,7 @@
 import type { NormalizedDwg, Pt, Segment } from '../domain/types.js';
 import { autoProposePanels } from './panels.js';
 import { emptyRow, type MemberRow } from '../takeoff/rules.js';
-import { reconcileMarkedPanelCorrections } from './markedPanelCorrections.js';
+import { hasMarkedPanelCorrections, reconcileMarkedPanelCorrections } from './markedPanelCorrections.js';
 import { applyPanelMeasurementPriority } from './panelMeasurement.js';
 import { round3 } from '../lib/num.js';
 
@@ -20,7 +20,11 @@ export function extractMembers(input: NormalizedDwg | NormalizedDwg[], workGroup
   seq = 1;
   const dwgs = Array.isArray(input) ? input : [input];
   const dwg = selectGeometrySheet(dwgs, workGroup);
-  if (workGroup === 'slab') return slabMembers(dwg, floor, slabSchedule(dwgs), slabUnoThickness(dwgs));
+  if (workGroup === 'slab') {
+    const teacher = dwgs.filter((candidate) => candidate !== dwg && hasMarkedPanelCorrections(candidate)
+      && samePlanGeometry(dwg, candidate)).sort((a, b) => b.dimensions.length - a.dimensions.length)[0];
+    return slabMembers(dwg, floor, slabSchedule(dwgs), slabUnoThickness(dwgs), teacher);
+  }
   if (workGroup === 'beam') return beamMembers(dwg, floor, beamSchedule(dwgs), slabSchedule(dwgs), beamUnoSize(dwgs));
   return []; // column/raft/wall/floor: start empty, user adds (auto-extraction not reliable on this data)
 }
@@ -42,7 +46,15 @@ function compareBeamLabels(a: string, b: string): number {
 }
 
 export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): NormalizedDwg {
-  if (workGroup === 'slab') return [...dwgs].sort((a, b) => {
+  if (workGroup === 'slab') {
+    const marked = dwgs.filter(hasMarkedPanelCorrections);
+    const unmarked = dwgs.filter((candidate) => !hasMarkedPanelCorrections(candidate));
+    // When the user supplies the original and a marked copy of the same plan,
+    // retain the untouched original as geometry source and use the marked copy
+    // only as a teacher/reference overlay.
+    const candidates = marked.length && unmarked.some((plain) => marked.some((reference) => samePlanGeometry(plain, reference)))
+      ? unmarked : dwgs;
+    return [...candidates].sort((a, b) => {
     const score = (d: NormalizedDwg) => {
       const planWording = /(?:FRAMING|FORMWORK|STRUCTURAL|SLAB)\s+(?:LAYOUT|PLAN)|(?:LAYOUT|PLAN)\s+(?:AT|OF)?\s*\w*\s*(?:FLOOR|LEVEL)|FLOOR\s+(?:FRAMING|PLAN)/i;
       const detailWording = /\b(?:DETAILS?|SECTIONS?|PROJECTION|ELEVATION|SCHEDULE)\b/i;
@@ -70,8 +82,9 @@ export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): N
         : filenamePlan ? 500_000_000 : 0;
       return roleScore + Math.min(proposals, 1000) * 100_000 + labels * 1000 + boundaries;
     };
-    return score(b) - score(a);
-  })[0];
+      return score(b) - score(a);
+    })[0];
+  }
   if (workGroup !== 'beam') return [...dwgs].sort((a, b) => b.dimensions.length - a.dimensions.length)[0];
   const beamScore = (d: NormalizedDwg) => {
     const planWording = /(?:FRAMING|FORMWORK|STRUCTURAL|BEAM)\s+(?:LAYOUT|PLAN)|(?:LAYOUT|PLAN)\s+(?:AT|OF)?\s*\w*\s*(?:FLOOR|LEVEL)/i;
@@ -87,6 +100,17 @@ export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): N
     return roleScore + labels * 1000 + geometry;
   };
   return [...dwgs].sort((a, b) => beamScore(b) - beamScore(a))[0];
+}
+
+function samePlanGeometry(a: NormalizedDwg, b: NormalizedDwg): boolean {
+  const aw = a.extents.max.x - a.extents.min.x, ah = a.extents.max.y - a.extents.min.y;
+  const bw = b.extents.max.x - b.extents.min.x, bh = b.extents.max.y - b.extents.min.y;
+  if (aw <= 0 || ah <= 0 || bw <= 0 || bh <= 0) return false;
+  const spanMatch = Math.abs(aw - bw) / Math.max(aw, bw) <= 0.03
+    && Math.abs(ah - bh) / Math.max(ah, bh) <= 0.03;
+  const entityA = a.segments.length + a.texts.length, entityB = b.segments.length + b.texts.length;
+  const entityMatch = Math.abs(entityA - entityB) / Math.max(entityA, entityB, 1) <= 0.08;
+  return spanMatch && entityMatch;
 }
 
 /** Read label-specific width/depth rows from beam schedule/detail drawings. */
@@ -199,9 +223,11 @@ function beamUnoSize(dwgs: NormalizedDwg[]): { widthMm: number; depthMm: number 
 }
 
 // --- slab: reuse the label-anchored panel proposer ---
-function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, number>, unoThickness?: number): MemberRow[] {
-  const panels = applyPanelMeasurementPriority(dwg,
-    reconcileMarkedPanelCorrections(dwg, autoProposePanels(dwg)));
+function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, number>, unoThickness?: number,
+  markedTeacher?: NormalizedDwg): MemberRow[] {
+  const measurementDwg = markedTeacher || dwg;
+  const panels = applyPanelMeasurementPriority(measurementDwg,
+    reconcileMarkedPanelCorrections(measurementDwg, autoProposePanels(dwg)));
   const heights = panels.map((p) => Math.max(p.box.y1 - p.box.y0, 0)).filter(Boolean).sort((a, b) => a - b);
   const rowTolerance = Math.max(500, (heights[Math.floor(heights.length / 2)] || 2000) * 0.35);
   const rows: { y: number; panels: typeof panels }[] = [];

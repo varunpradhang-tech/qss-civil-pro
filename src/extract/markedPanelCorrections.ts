@@ -223,8 +223,9 @@ export function reconcileMarkedPanelCorrections(dwg: NormalizedDwg, panels: Pane
     if (result.some((candidate) => overlap(candidate.box, reflectedBox)
       / Math.max(1, Math.min(boxArea(candidate.box), boxArea(reflectedBox))) > 0.72)) continue;
     const direct = markedDimensions(dwg, reflectedBox);
-    const recovered = direct.horizontal && direct.vertical ? { box: reflectedBox,
-      horizontal: direct.horizontal, vertical: direct.vertical } : nearbyDimensionBox(dwg, reflectedBox);
+    const recovered = nearbyDimensionBox(dwg, reflectedBox)
+      ?? (direct.horizontal && direct.vertical ? { box: reflectedBox,
+        horizontal: direct.horizontal, vertical: direct.vertical } : undefined);
     if (!recovered) continue;
     const measuredBox = recovered.box;
     const polygon = sourcePanel.polygon?.map((point) => ({ x: 2 * axis - point.x, y: point.y })).reverse();

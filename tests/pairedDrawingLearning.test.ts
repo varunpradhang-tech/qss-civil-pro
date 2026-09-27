@@ -31,6 +31,7 @@ describe('paired marked/unmarked drawing learning', () => {
   it('does not transfer marks between geometrically different drawings', () => {
     const plain = base(), teacher = marked();
     teacher.extents.max.x = 80_000;
-    expect(extractMembers([teacher, plain], 'slab')).toHaveLength(0);
+    expect(selectGeometrySheet([plain, teacher], 'slab')).toBe(plain);
+    expect(extractMembers([plain, teacher], 'slab')).toHaveLength(0);
   });
 });

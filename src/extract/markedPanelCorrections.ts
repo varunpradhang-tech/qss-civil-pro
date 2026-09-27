@@ -122,6 +122,37 @@ function markedDimensions(dwg: NormalizedDwg, bounds: Box) {
   return { horizontal: choose('H'), vertical: choose('V') };
 }
 
+/** Build a bay from the dimensions printed on that bay.  Mirrored wings are
+ * frequently drafted independently, so their face coordinates need not be a
+ * perfect reflection even when they describe corresponding rooms. */
+function nearbyDimensionBox(dwg: NormalizedDwg, expected: Box): { box: Box; horizontal: NormalizedDwg['dimensions'][number]; vertical: NormalizedDwg['dimensions'][number] } | undefined {
+  const width = expected.x1 - expected.x0, height = expected.y1 - expected.y0;
+  const margin = Math.max(1800, Math.min(width, height) * 0.45);
+  const horizontals = dwg.dimensions.filter((dimension) => dimension.dir === 'H'
+    && dimension.measurement >= 500 && dimension.measurement <= 60_000
+    && dimension.mid.x >= expected.x0 - margin && dimension.mid.x <= expected.x1 + margin
+    && dimension.mid.y >= expected.y0 - margin && dimension.mid.y <= expected.y1 + margin);
+  const verticals = dwg.dimensions.filter((dimension) => dimension.dir === 'V'
+    && dimension.measurement >= 500 && dimension.measurement <= 60_000
+    && dimension.mid.x >= expected.x0 - margin && dimension.mid.x <= expected.x1 + margin
+    && dimension.mid.y >= expected.y0 - margin && dimension.mid.y <= expected.y1 + margin);
+  let best: { box: Box; horizontal: typeof horizontals[number]; vertical: typeof verticals[number]; score: number } | undefined;
+  for (const horizontal of horizontals) for (const vertical of verticals) {
+    const candidate: Box = { x0: Math.min(horizontal.p1.x, horizontal.p2.x),
+      x1: Math.max(horizontal.p1.x, horizontal.p2.x), y0: Math.min(vertical.p1.y, vertical.p2.y),
+      y1: Math.max(vertical.p1.y, vertical.p2.y) };
+    if (candidate.x1 - candidate.x0 < 500 || candidate.y1 - candidate.y0 < 500) continue;
+    const cx = (candidate.x0 + candidate.x1) / 2, cy = (candidate.y0 + candidate.y1) / 2;
+    const ex = (expected.x0 + expected.x1) / 2, ey = (expected.y0 + expected.y1) / 2;
+    const sizeError = Math.abs(horizontal.measurement - width) / Math.max(width, 1)
+      + Math.abs(vertical.measurement - height) / Math.max(height, 1);
+    const positionError = Math.hypot(cx - ex, cy - ey) / Math.max(width, height, 1);
+    const score = sizeError + positionError;
+    if (sizeError <= 0.55 && (!best || score < best.score)) best = { box: candidate, horizontal, vertical, score };
+  }
+  return best;
+}
+
 /** Explicit CAD correction outlines supersede overlapping inferred bays.
  * This is a general opt-in correction path; an ordinary unmarked DWG is unchanged. */
 export function reconcileMarkedPanelCorrections(dwg: NormalizedDwg, panels: PanelProposalBox[]): PanelProposalBox[] {
@@ -191,14 +222,17 @@ export function reconcileMarkedPanelCorrections(dwg: NormalizedDwg, panels: Pane
     if (Math.abs((sourcePanel.box.x0 + sourcePanel.box.x1) / 2 - axis) < 500) continue;
     if (result.some((candidate) => overlap(candidate.box, reflectedBox)
       / Math.max(1, Math.min(boxArea(candidate.box), boxArea(reflectedBox))) > 0.72)) continue;
-    const dimensions = markedDimensions(dwg, reflectedBox);
-    if (!dimensions.horizontal || !dimensions.vertical) continue;
+    const direct = markedDimensions(dwg, reflectedBox);
+    const recovered = direct.horizontal && direct.vertical ? { box: reflectedBox,
+      horizontal: direct.horizontal, vertical: direct.vertical } : nearbyDimensionBox(dwg, reflectedBox);
+    if (!recovered) continue;
+    const measuredBox = recovered.box;
     const polygon = sourcePanel.polygon?.map((point) => ({ x: 2 * axis - point.x, y: point.y })).reverse();
-    const reflectedArea = sourcePanel.netAreaM2 ?? boxArea(reflectedBox) / 1e6;
-    result.push({ ...sourcePanel, label: sourcePanel.label || 'UNMARKED SLAB', box: reflectedBox,
-      lengthMm: dimensions.horizontal.measurement, breadthMm: dimensions.vertical.measurement,
-      polygon, netAreaM2: polygon ? reflectedArea : dimensions.horizontal.measurement
-        * dimensions.vertical.measurement / 1e6,
+    const reflectedArea = sourcePanel.netAreaM2 ?? boxArea(measuredBox) / 1e6;
+    result.push({ ...sourcePanel, label: sourcePanel.label || 'UNMARKED SLAB', box: measuredBox,
+      lengthMm: recovered.horizontal.measurement, breadthMm: recovered.vertical.measurement,
+      polygon, netAreaM2: polygon ? reflectedArea : recovered.horizontal.measurement
+        * recovered.vertical.measurement / 1e6,
       markedBoundary: false, dimensionBounded: true, measurementBasis: 'marked dimensions',
       confident: true, duplicate: false });
   }

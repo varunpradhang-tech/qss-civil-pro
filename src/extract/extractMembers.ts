@@ -222,6 +222,36 @@ function beamUnoSize(dwgs: NormalizedDwg[]): { widthMm: number; depthMm: number 
   return undefined;
 }
 
+function polygonLabelPoint(points: { x: number; y: number }[]): { x: number; y: number } {
+  const minX = Math.min(...points.map((point) => point.x)), maxX = Math.max(...points.map((point) => point.x));
+  const minY = Math.min(...points.map((point) => point.y)), maxY = Math.max(...points.map((point) => point.y));
+  const inside = (point: { x: number; y: number }) => {
+    let contained = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+      const a = points[i], b = points[j];
+      if ((a.y > point.y) !== (b.y > point.y)
+        && point.x < (b.x - a.x) * (point.y - a.y) / ((b.y - a.y) || 1e-9) + a.x) contained = !contained;
+    }
+    return contained;
+  };
+  const distance = (point: { x: number; y: number }) => Math.min(...points.map((a, index) => {
+    const b = points[(index + 1) % points.length];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+    return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
+  }));
+  let best = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }, bestDistance = inside(best) ? distance(best) : -1;
+  // A compact polylabel-style search keeps a chajja mark on its actual strip,
+  // never at the centre of its much larger bounding rectangle.
+  for (let yi = 1; yi < 20; yi++) for (let xi = 1; xi < 20; xi++) {
+    const candidate = { x: minX + (maxX - minX) * xi / 20, y: minY + (maxY - minY) * yi / 20 };
+    if (!inside(candidate)) continue;
+    const clearance = distance(candidate);
+    if (clearance > bestDistance) { best = candidate; bestDistance = clearance; }
+  }
+  return bestDistance >= 0 ? best : points[0];
+}
+
 // --- slab: reuse the label-anchored panel proposer ---
 function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, number>, unoThickness?: number,
   markedTeacher?: NormalizedDwg): MemberRow[] {
@@ -256,8 +286,11 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
         return sum + point.x * next.y - next.x * point.y;
       }, 0)) / 2;
       const part = [...p.polygonParts].sort((a, b) => area(b) - area(a))[0];
-      r.cadX = (Math.min(...part.map((point) => point.x)) + Math.max(...part.map((point) => point.x))) / 2;
-      r.cadY = (Math.min(...part.map((point) => point.y)) + Math.max(...part.map((point) => point.y))) / 2;
+      const labelPoint = polygonLabelPoint(part);
+      r.cadX = labelPoint.x; r.cadY = labelPoint.y;
+    } else if (p.polygon?.length) {
+      const labelPoint = polygonLabelPoint(p.polygon);
+      r.cadX = labelPoint.x; r.cadY = labelPoint.y;
     }
     r.cadX0 = p.box.x0;
     r.cadY0 = p.box.y0;

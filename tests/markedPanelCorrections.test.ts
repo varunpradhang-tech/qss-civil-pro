@@ -110,4 +110,25 @@ describe('CAD-marked slab corrections', () => {
       && candidate.lengthMm === 6250 && candidate.breadthMm === 5725
       && candidate.measurementBasis === 'marked dimensions')).toBe(true);
   });
+
+  it('uses independently drafted opposite-side dimensions when reflection is offset', () => {
+    const lines = [
+      drawn(rectangle(1000, 9000, 3500, 10500)), drawn(rectangle(16500, 9000, 19000, 10500)),
+      drawn(rectangle(1000, 12000, 3500, 13500)), drawn(rectangle(16500, 12000, 19000, 13500)),
+      drawn(rectangle(1000, 15000, 3500, 16500)), drawn(rectangle(16500, 15000, 19000, 16500)),
+    ];
+    const dimensions: NormalizedDwg['dimensions'] = [
+      { dir: 'H', measurement: 6250, p1: { x: 1200, y: 1100 }, p2: { x: 7450, y: 1100 },
+        mid: { x: 4325, y: 900 }, layer: 'DIM' },
+      { dir: 'V', measurement: 5817, p1: { x: 1200, y: 1100 }, p2: { x: 1200, y: 6917 },
+        mid: { x: 950, y: 4008 }, layer: 'DIM' },
+    ];
+    const right = { ...panel({ x0: 13000, y0: 1000, x1: 19000, y1: 6800 }),
+      confident: true, dimensionBounded: true, measurementBasis: 'marked dimensions' as const };
+    const result = reconcileMarkedPanelCorrections(dwg(lines, dimensions), [right]);
+    expect(result).toEqual(expect.arrayContaining([expect.objectContaining({
+      box: { x0: 1200, y0: 1100, x1: 7450, y1: 6917 }, lengthMm: 6250, breadthMm: 5817,
+      measurementBasis: 'marked dimensions',
+    })]));
+  });
 });

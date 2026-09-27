@@ -3,6 +3,7 @@
 // Best-effort; low-confidence/duplicate proposals are flagged for review. Pure/headless.
 import type { NormalizedDwg, Pt, Segment } from '../domain/types.js';
 import { polygoniseCadFaces } from './topology.js';
+import { applyPanelMeasurementPriority } from './panelMeasurement.js';
 import { bayImageShowsFullX, mirroredBaySimilarity, segmentVisualBay, unionVisualPolygons } from '../vision/bayImage.js';
 
 export interface PanelProposalBox {
@@ -27,6 +28,8 @@ export interface PanelProposalBox {
   thicknessMarkedBoundary?: boolean; // numeric slab-depth mark enclosed by four structural faces
   hatchConnectedBoundary?: boolean; // same-pattern slab hatch connected to a numeric depth mark
   visualBoundary?: boolean; // dotted beam face completed by beam/wall/column faces
+  markedBoundary?: boolean; // user-supplied CAD correction polyline; still requires review
+  measurementBasis?: 'marked dimensions' | 'exact polygon' | 'drawing geometry';
 }
 
 interface ThkText { pos: Pt; mm: number; }
@@ -1593,6 +1596,20 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // numbering, Excel export, totals, and reference-file marking.
   const measurable = out.filter((panel) => {
     const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+    // A beam mark is positive evidence that its location belongs to a beam.
+    // Reject an inferred slab that encloses that mark in its interior; a mark
+    // on the shared beam boundary is allowed beside a real slab bay.
+    if (!/^S\d+[A-Z]?$/i.test(panel.label || '') && !panel.cantileverBoundary) {
+      const beamMarkInside = dwg.texts.some((text) => {
+        const mark = text.text.replace(/\s/g, '').toUpperCase();
+        if (!/^(?:T\d+)?M?B\d+[A-Z]?$/.test(mark)) return false;
+        const margin = Math.min(350, (panel.box.x1 - panel.box.x0) * 0.15,
+          (panel.box.y1 - panel.box.y0) * 0.15);
+        return text.pos.x > panel.box.x0 + margin && text.pos.x < panel.box.x1 - margin
+          && text.pos.y > panel.box.y0 + margin && text.pos.y < panel.box.y1 - margin;
+      });
+      if (beamMarkInside) return false;
+    }
     // A stair flight can also be bounded by beams/walls, but its repeated
     // treads are not a slab panel. Apply this at final verification so every
     // proposal path (dotted, mixed, hatch or visual) obeys the same rule.
@@ -1664,7 +1681,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   }
   // A duplicate proposal represents the same physical bay and must never be
   // billed as an additional slab panel.
-  return measurable.filter((panel) => !panel.duplicate);
+  return applyPanelMeasurementPriority(dwg, measurable.filter((panel) => !panel.duplicate));
 }
 
 /** Resolve mirrored slab candidates that both claim the central RCC core.

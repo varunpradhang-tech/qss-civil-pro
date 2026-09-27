@@ -3,6 +3,7 @@ export type GeminiReviewImage = { data: string; mimeType: 'image/png' | 'image/j
 export type GeminiReview = {
   panels: Array<{
     id: string;
+    tile_index: number;
     type: 'rectangle' | 'irregular_slab' | 'cantilever_chajja' | 'void' | 'uncertain';
     polygon: number[][];
     beam_refs: string[];

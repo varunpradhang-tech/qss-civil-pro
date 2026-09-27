@@ -52,7 +52,9 @@ export function applyPanelMeasurementPriority(dwg: NormalizedDwg, panels: PanelP
       netAreaM2 *= sx * sy;
     }
     return { ...panel, lengthMm, breadthMm, netAreaM2,
-      dimensionBounded: true, confident: panel.confident || (!!horizontal && !!vertical),
+      // Dimensions certify measurement, not an automatically inferred open
+      // boundary. Preserve the geometry engine's confidence decision.
+      dimensionBounded: true, confident: panel.confident,
       measurementBasis: 'marked dimensions' };
   });
 }

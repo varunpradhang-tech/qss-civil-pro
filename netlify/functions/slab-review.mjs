@@ -1,7 +1,7 @@
 const API_VERSION = '2026-09-01';
 const MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 const FALLBACK_MODEL = 'gemini-3.5-flash-lite';
-const LAST_RESORT_MODEL = 'gemini-2.5-flash';
+const LAST_RESORT_MODEL = 'gemini-3.1-flash-lite';
 
 const json = (statusCode, body) => ({
   statusCode,

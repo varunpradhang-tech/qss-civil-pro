@@ -28,6 +28,7 @@ export interface PanelProposalBox {
   hatchConnectedBoundary?: boolean; // same-pattern slab hatch connected to a numeric depth mark
   visualBoundary?: boolean; // dotted beam face completed by beam/wall/column faces
   markedBoundary?: boolean; // user-supplied CAD correction polyline; still requires review
+  measurementBasis?: 'marked dimensions' | 'exact polygon' | 'drawing geometry';
 }
 
 interface ThkText { pos: Pt; mm: number; }

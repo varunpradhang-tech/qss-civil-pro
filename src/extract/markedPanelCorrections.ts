@@ -163,6 +163,7 @@ export function reconcileMarkedPanelCorrections(dwg: NormalizedDwg, panels: Pane
       confident: !!dimensions.horizontal && !!dimensions.vertical,
       duplicate: false, markedBoundary: true,
       dimensionBounded: !!dimensions.horizontal || !!dimensions.vertical,
+      measurementBasis: dimensions.horizontal || dimensions.vertical ? 'marked dimensions' : 'exact polygon',
       polygon: irregular ? polygon : undefined,
       netAreaM2: irregular ? gross * scaleX * scaleY : undefined };
   });

@@ -2,6 +2,7 @@ import type { Pt } from '../domain/types.js';
 import type { Sheet } from '../state/store.js';
 import { emptyRow, type MemberRow } from '../takeoff/rules.js';
 import { assessVisualRepair } from './visualRepair.js';
+import { applyPanelMeasurementPriority } from '../extract/panelMeasurement.js';
 
 function contains(point: Pt, polygon: Pt[]): boolean {
   let inside = false;
@@ -33,6 +34,13 @@ export function appendVisualSlabMembers(members: MemberRow[], sheet: Sheet, floo
     const box = { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
     const boxArea = (box.x1 - box.x0) * (box.y1 - box.y0);
     if (boxArea <= 0 || visual.areaM2 < 0.2) continue;
+    const [measured] = applyPanelMeasurementPriority(sheet.dwg, [{
+      box, polygon: visual.polygon, netAreaM2: visual.areaM2,
+      lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0,
+      openingM2: 0, thicknessMm: 0, confident: visual.confidence >= 0.9, duplicate: false,
+      visualBoundary: true,
+    }]);
+    const measuredAreaM2 = measured.netAreaM2 ?? visual.areaM2;
     const overlaps = members.filter((member) => member.cadX0 != null && member.cadY0 != null
       && member.cadX1 != null && member.cadY1 != null
       && intersectionArea(box, { x0: Math.min(member.cadX0, member.cadX1), y0: Math.min(member.cadY0, member.cadY1),
@@ -54,23 +62,28 @@ export function appendVisualSlabMembers(members: MemberRow[], sheet: Sheet, floo
       existing.cadPolygon = visual.polygon;
       existing.cadX0 = box.x0; existing.cadY0 = box.y0; existing.cadX1 = box.x1; existing.cadY1 = box.y1;
       existing.cadX = (box.x0 + box.x1) / 2; existing.cadY = (box.y0 + box.y1) / 2;
-      existing.length = 0; existing.breadth = 0; existing.netArea = visual.areaM2;
+      existing.length = 0; existing.breadth = 0; existing.netArea = measuredAreaM2;
       existing.needsReview = true;
-      existing.reviewReason = 'Gemini contour repaired against CAD beam/wall faces; verify panel boundary and area';
+      existing.measurementSource = measured.measurementBasis === 'marked dimensions' ? 'marked dimension' : 'drawing geometry';
+      existing.reviewReason = measured.measurementBasis === 'marked dimensions'
+        ? 'Gemini contour repaired against CAD faces; area calibrated from associated dimensions'
+        : 'Gemini contour repaired against CAD beam/wall faces; verify panel boundary and area';
       added++;
       continue;
     }
     if (thicknessMm == null || thicknessMm < 75 || thicknessMm > 600) continue;
     const row = emptyRow(`visual-${sheet.id}-${visual.id}`, floor);
     row.member = `AI-${visual.id}`;
-    row.length = 0; row.breadth = 0; row.netArea = visual.areaM2;
+    row.length = 0; row.breadth = 0; row.netArea = measuredAreaM2;
     row.height = thicknessMm / 1000; row.slabThickness = row.height;
     row.cadX = (box.x0 + box.x1) / 2; row.cadY = (box.y0 + box.y1) / 2;
     row.cadX0 = box.x0; row.cadY0 = box.y0; row.cadX1 = box.x1; row.cadY1 = box.y1;
     row.cadPolygon = visual.polygon;
     row.needsReview = true;
-    row.reviewReason = 'Gemini visual panel corroborated by CAD beam/wall faces; verify area';
-    row.measurementSource = 'drawing geometry';
+    row.reviewReason = measured.measurementBasis === 'marked dimensions'
+      ? 'Gemini classification corroborated by CAD faces; area calibrated from associated dimensions'
+      : 'Gemini visual panel corroborated by CAD beam/wall faces; verify area';
+    row.measurementSource = measured.measurementBasis === 'marked dimensions' ? 'marked dimension' : 'drawing geometry';
     members.push(row);
     added++;
   }

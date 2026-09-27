@@ -24,8 +24,8 @@ function associatedDimension(dwg: NormalizedDwg, box: Box, dir: 'H' | 'V'): Dime
       const geometricError = Math.abs((d1 - d0) - span) / span;
       return { dimension, covered, crossDistance,
         score: endpointError + geometricError + crossDistance / crossTolerance };
-    }).filter((candidate) => candidate.covered >= 0.65
-      && candidate.crossDistance <= crossTolerance && candidate.score <= 1.1)
+    }).filter((candidate) => candidate.covered >= 0.55
+      && candidate.crossDistance <= crossTolerance && candidate.score <= 1.5)
     .sort((a, b) => a.score - b.score)[0]?.dimension;
 }
 
@@ -34,7 +34,7 @@ function associatedDimension(dwg: NormalizedDwg, box: Box, dir: 'H' | 'V'): Dime
  * therefore marked and unmarked panels may safely coexist on one drawing. */
 export function applyPanelMeasurementPriority(dwg: NormalizedDwg, panels: PanelProposalBox[]): PanelProposalBox[] {
   return panels.map((panel) => {
-    if (panel.markedBoundary && panel.dimensionBounded) return panel;
+    if (panel.dimensionBounded && panel.measurementBasis === 'marked dimensions') return panel;
     const width = panel.box.x1 - panel.box.x0, height = panel.box.y1 - panel.box.y0;
     if (width <= 0 || height <= 0) return panel;
     const horizontal = associatedDimension(dwg, panel.box, 'H');

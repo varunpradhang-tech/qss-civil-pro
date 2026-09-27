@@ -3,6 +3,7 @@
 // Best-effort; low-confidence/duplicate proposals are flagged for review. Pure/headless.
 import type { NormalizedDwg, Pt, Segment } from '../domain/types.js';
 import { polygoniseCadFaces } from './topology.js';
+import { applyPanelMeasurementPriority } from './panelMeasurement.js';
 import { bayImageShowsFullX, mirroredBaySimilarity, segmentVisualBay, unionVisualPolygons } from '../vision/bayImage.js';
 
 export interface PanelProposalBox {
@@ -1680,7 +1681,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   }
   // A duplicate proposal represents the same physical bay and must never be
   // billed as an additional slab panel.
-  return measurable.filter((panel) => !panel.duplicate);
+  return applyPanelMeasurementPriority(dwg, measurable.filter((panel) => !panel.duplicate));
 }
 
 /** Resolve mirrored slab candidates that both claim the central RCC core.

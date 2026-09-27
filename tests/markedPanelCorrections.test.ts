@@ -8,7 +8,8 @@ const rectangle = (x0: number, y0: number, x1: number, y1: number): Pt[] => [
 ];
 const drawn = (polygon: Pt[]) => ({ layer: 'A-HATCH', closed: false,
   pts: [...polygon, { x: polygon[0].x + 10, y: polygon[0].y }], lineType: 'Continuous' });
-const dwg = (polylines: ReturnType<typeof drawn>[]) => ({ polylines, texts: [] } as unknown as NormalizedDwg);
+const dwg = (polylines: ReturnType<typeof drawn>[], dimensions: NormalizedDwg['dimensions'] = []) =>
+  ({ polylines, texts: [], dimensions } as unknown as NormalizedDwg);
 const panel = (bounds: PanelProposalBox['box'], label = 'UNMARKED SLAB'): PanelProposalBox => ({
   label, box: bounds, lengthMm: bounds.x1 - bounds.x0, breadthMm: bounds.y1 - bounds.y0,
   openingM2: 0, thicknessMm: 150, confident: false, duplicate: false,
@@ -53,5 +54,40 @@ describe('CAD-marked slab corrections', () => {
     expect(result).toContain(room);
     expect(result.some((candidate) => candidate.label === 'CANTILEVER CHAJJA'
       && candidate.netAreaM2 === 41)).toBe(true);
+  });
+
+  it('uses explicit CAD measurements instead of deriving rectangle dimensions from coordinates', () => {
+    const lines = Array.from({ length: 7 }, (_, index) =>
+      drawn(rectangle(index * 6000, 0, index * 6000 + 4000, 3000)));
+    const dimensions: NormalizedDwg['dimensions'] = [
+      { dir: 'H', measurement: 4400, p1: { x: 0, y: 0 }, p2: { x: 4000, y: 0 },
+        mid: { x: 2000, y: -300 }, layer: 'DIM' },
+      { dir: 'V', measurement: 3250, p1: { x: 0, y: 0 }, p2: { x: 0, y: 3000 },
+        mid: { x: -300, y: 1500 }, layer: 'DIM' },
+    ];
+    const measured = reconcileMarkedPanelCorrections(dwg(lines, dimensions), [])
+      .find((candidate) => candidate.box.x0 === 0)!;
+    expect(measured.lengthMm).toBe(4400);
+    expect(measured.breadthMm).toBe(3250);
+    expect(measured.dimensionBounded).toBe(true);
+    expect(measured.confident).toBe(true);
+  });
+
+  it('calibrates an irregular marked area from its explicit horizontal and vertical dimensions', () => {
+    const irregular: Pt[] = [
+      { x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 1500 },
+      { x: 3000, y: 1500 }, { x: 3000, y: 3000 }, { x: 0, y: 3000 },
+    ];
+    const lines = [drawn(irregular), ...Array.from({ length: 6 }, (_, index) =>
+      drawn(rectangle(8000 + index * 5000, 0, 11000 + index * 5000, 2000)))];
+    const dimensions: NormalizedDwg['dimensions'] = [
+      { dir: 'H', measurement: 4400, p1: { x: 0, y: 0 }, p2: { x: 4000, y: 0 },
+        mid: { x: 2000, y: -250 }, layer: 'DIM' },
+      { dir: 'V', measurement: 3300, p1: { x: 0, y: 0 }, p2: { x: 0, y: 3000 },
+        mid: { x: -250, y: 1500 }, layer: 'DIM' },
+    ];
+    const measured = reconcileMarkedPanelCorrections(dwg(lines, dimensions), [])
+      .find((candidate) => candidate.box.x0 === 0)!;
+    expect(measured.netAreaM2).toBeCloseTo(12.705, 3);
   });
 });

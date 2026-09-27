@@ -1,10 +1,12 @@
 import { create } from 'zustand';
 import type { NormalizedDwg } from '../domain/types.js';
 import { MENU, RULES, emptyRow, type CapMode, type DrawingType, type MemberRow } from '../takeoff/rules.js';
-import { extractMembers, selectGeometrySheet } from '../extract/extractMembers.js';
+import { extractMembers, samePlanGeometry, selectGeometrySheet } from '../extract/extractMembers.js';
+import { hasMarkedPanelCorrections } from '../extract/markedPanelCorrections.js';
 import { autoProposePanels } from '../extract/panels.js';
 import { appendVisualSlabMembers } from '../vision/visualPanelAdapter.js';
 import { deleteProject, getProject, listProjects, projectFromJson, projectToJson, saveProject, type StoredProject } from './persistence.js';
+import { loadDraftingProfile, saveDraftingProfile } from './draftingProfiles.js';
 
 export interface Sheet { id: string; name: string; dwg: NormalizedDwg; slabDimCount: number; sourceBytes?: ArrayBuffer; visualPanels?: Array<{ id: string; polygon: { x: number; y: number }[]; areaM2: number; confidence: number; type?: string }>; }
 export type OutputType = 'total' | 'member' | 'floor';
@@ -58,7 +60,7 @@ const mid = () => `m${mseq++}`;
 
 // Increment whenever extraction or quantity rules change in a way that makes
 // previously saved member rows stale. Drawings are then re-extracted on open.
-const EXTRACTION_VERSION = 20;
+const EXTRACTION_VERSION = 21;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function snapshot(s: AppState): StoredProject | null {
@@ -117,7 +119,22 @@ export const useStore = create<AppState>((set, get) => ({
   extractQuantity: () => {
     const { dwg, workGroup, defaultFloor, quantityKey } = get();
     if (!dwg) { set({ members: [] }); return; }
-    const members = extractMembers(get().sheets.map((sheet) => sheet.dwg), workGroup, defaultFloor);
+    const drawings = get().sheets.map((sheet) => sheet.dwg);
+    let profileNote = '';
+    let learnedTeacher: NormalizedDwg | undefined;
+    if (workGroup === 'slab') {
+      const base = selectGeometrySheet(drawings, 'slab');
+      const pairedTeacher = drawings.filter((candidate) => candidate !== base
+        && hasMarkedPanelCorrections(candidate) && samePlanGeometry(base, candidate))
+        .sort((a, b) => b.dimensions.length - a.dimensions.length)[0];
+      if (pairedTeacher) {
+        if (saveDraftingProfile(base, pairedTeacher)) profileNote = ' · drafting profile saved';
+      } else {
+        learnedTeacher = loadDraftingProfile(base);
+        if (learnedTeacher) profileNote = ' · saved drafting profile applied';
+      }
+    }
+    const members = extractMembers(drawings, workGroup, defaultFloor, learnedTeacher);
     if (workGroup === 'slab') {
       const selected = selectGeometrySheet(get().sheets.map((sheet) => sheet.dwg), 'slab');
       const sheet = get().sheets.find((candidate) => candidate.dwg === selected);
@@ -130,7 +147,6 @@ export const useStore = create<AppState>((set, get) => ({
       : '';
     const diagnostic = members.length === 0 && workGroup === 'slab'
       ? (() => {
-          const drawings = get().sheets.map((sheet) => sheet.dwg);
           const selected = selectGeometrySheet(drawings, workGroup);
           const proposals = autoProposePanels(selected);
           return ` Selected ${selected.fileName}: ${selected.texts.length} texts, ${selected.segments.length} segments, ${selected.dimensions.length} dimensions, ${selected.polylines.length} polylines, ${selected.hatches.length} hatches, ${proposals.length} panel proposals.`;
@@ -139,7 +155,7 @@ export const useStore = create<AppState>((set, get) => ({
     set({
       members,
       status: members.length
-        ? `Extracted ${members.length} ${workGroup} members for ${RULES[quantityKey].label}${sourceSummary}${flagged ? ` · ${flagged} need review` : ''}.`
+        ? `Extracted ${members.length} ${workGroup} members for ${RULES[quantityKey].label}${sourceSummary}${profileNote}${flagged ? ` · ${flagged} need review` : ''}.`
         : `No ${workGroup} members auto-extracted — add rows manually.${diagnostic}`,
     });
     autosave(get);

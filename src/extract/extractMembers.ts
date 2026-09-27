@@ -16,13 +16,13 @@ function parseBeamSize(text: string): { widthMm: number; depthMm: number } | nul
 let seq = 1;
 const nextId = () => `m${seq++}`;
 
-export function extractMembers(input: NormalizedDwg | NormalizedDwg[], workGroup: string, floor = 'Basement'): MemberRow[] {
+export function extractMembers(input: NormalizedDwg | NormalizedDwg[], workGroup: string, floor = 'Basement', learnedTeacher?: NormalizedDwg): MemberRow[] {
   seq = 1;
   const dwgs = Array.isArray(input) ? input : [input];
   const dwg = selectGeometrySheet(dwgs, workGroup);
   if (workGroup === 'slab') {
     const teacher = dwgs.filter((candidate) => candidate !== dwg && hasMarkedPanelCorrections(candidate)
-      && samePlanGeometry(dwg, candidate)).sort((a, b) => b.dimensions.length - a.dimensions.length)[0];
+      && samePlanGeometry(dwg, candidate)).sort((a, b) => b.dimensions.length - a.dimensions.length)[0] ?? learnedTeacher;
     return slabMembers(dwg, floor, slabSchedule(dwgs), slabUnoThickness(dwgs), teacher);
   }
   if (workGroup === 'beam') return beamMembers(dwg, floor, beamSchedule(dwgs), slabSchedule(dwgs), beamUnoSize(dwgs));
@@ -102,7 +102,7 @@ export function selectGeometrySheet(dwgs: NormalizedDwg[], workGroup: string): N
   return [...dwgs].sort((a, b) => beamScore(b) - beamScore(a))[0];
 }
 
-function samePlanGeometry(a: NormalizedDwg, b: NormalizedDwg): boolean {
+export function samePlanGeometry(a: NormalizedDwg, b: NormalizedDwg): boolean {
   const aw = a.extents.max.x - a.extents.min.x, ah = a.extents.max.y - a.extents.min.y;
   const bw = b.extents.max.x - b.extents.min.x, bh = b.extents.max.y - b.extents.min.y;
   if (aw <= 0 || ah <= 0 || bw <= 0 || bh <= 0) return false;

@@ -251,7 +251,19 @@ export function ExtractPage() {
         : `Parsed ${out.length} drawing${out.length === 1 ? '' : 's'} with the verified local engine.`);
       s.setSheets(out);
       if (visualMessages.length) s.setStatus(visualMessages.join(' '));
-    } catch (err) { s.setStatus(`Parse failed: ${(err as Error).message}`); } finally { s.setParsing(false); }
+    } catch (err) {
+      const message = (err as Error).message;
+      // Visual review is an optional enhancement. If a model/network failure
+      // escapes an inner tile handler after CAD parsing has already produced
+      // sheets, preserve those sheets and continue with the deterministic CAD
+      // engine instead of presenting the whole upload as a parse failure.
+      if (out.length && /gemini|visual review|slab review/i.test(message)) {
+        s.setSheets(out);
+        s.setStatus(`Parsed ${out.length} drawing${out.length === 1 ? '' : 's'} with the verified CAD engine. Gemini visual review was unavailable; CAD quantities remain available.`);
+      } else {
+        s.setStatus(`Parse failed: ${message}`);
+      }
+    } finally { s.setParsing(false); }
   }
   function exportCsv() { downloadBlob(membersToCsv(s.members, s.quantityKey, s.capMode), 'qss-takeoff.csv', 'text/csv;charset=utf-8'); }
   async function exportXlsx() { downloadBlob(await buildMbXlsx(s.members, s.quantityKey, s.capMode, s.projectName, s.sheets.map((sheet) => sheet.dwg)), 'qss-mb.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }

@@ -90,4 +90,24 @@ describe('CAD-marked slab corrections', () => {
       .find((candidate) => candidate.box.x0 === 0)!;
     expect(measured.netAreaM2).toBeCloseTo(12.705, 3);
   });
+
+  it('recovers a missing mirrored bay when that side has its own written dimensions', () => {
+    const lines = [
+      drawn(rectangle(1000, 8000, 3500, 9500)), drawn(rectangle(16500, 8000, 19000, 9500)),
+      drawn(rectangle(1000, 11000, 3500, 12500)), drawn(rectangle(16500, 11000, 19000, 12500)),
+      drawn(rectangle(1000, 14000, 3500, 15500)), drawn(rectangle(16500, 14000, 19000, 15500)),
+    ];
+    const dimensions: NormalizedDwg['dimensions'] = [
+      { dir: 'H', measurement: 6250, p1: { x: 1000, y: 1000 }, p2: { x: 7250, y: 1000 },
+        mid: { x: 4125, y: 800 }, layer: 'DIM' },
+      { dir: 'V', measurement: 5725, p1: { x: 1000, y: 1000 }, p2: { x: 1000, y: 6725 },
+        mid: { x: 800, y: 3862.5 }, layer: 'DIM' },
+    ];
+    const right = { ...panel({ x0: 12750, y0: 1000, x1: 19000, y1: 6725 }),
+      confident: true, dimensionBounded: true, measurementBasis: 'marked dimensions' as const };
+    const result = reconcileMarkedPanelCorrections(dwg(lines, dimensions), [right]);
+    expect(result.some((candidate) => candidate.box.x0 === 1000 && candidate.box.x1 === 7250
+      && candidate.lengthMm === 6250 && candidate.breadthMm === 5725
+      && candidate.measurementBasis === 'marked dimensions')).toBe(true);
+  });
 });

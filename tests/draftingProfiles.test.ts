@@ -33,7 +33,7 @@ describe('persistent drafting profiles', () => {
 
   it('reuses marked corrections on a later unmarked-only extraction', () => {
     const plain = base();
-    expect(saveDraftingProfile(plain, marked())).toBe(true);
+    expect(saveDraftingProfile(plain, marked()).saved).toBe(true);
     const learned = loadDraftingProfile({ ...plain, fileName: 'uploaded-again.dwg' });
     expect(learned).toBeDefined();
     const rows = extractMembers([plain], 'slab', 'Typical floor', learned);

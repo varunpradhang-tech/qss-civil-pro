@@ -47,24 +47,37 @@ function readProfiles(): SavedProfile[] {
 }
 
 function compactTeacher(dwg: NormalizedDwg): NormalizedDwg {
+  const marked = dwg.polylines.filter((line) => /^(?:A-HATCH|QSS[_ -].*OUTLINE.*)$/i.test(line.layer));
+  const boxes = marked.map((line) => ({
+    x0: Math.min(...line.pts.map((point) => point.x)) - 2500,
+    y0: Math.min(...line.pts.map((point) => point.y)) - 2500,
+    x1: Math.max(...line.pts.map((point) => point.x)) + 2500,
+    y1: Math.max(...line.pts.map((point) => point.y)) + 2500,
+  }));
   return {
     ...dwg,
     layers: [], entityCountsByType: {}, segments: [], hatches: [],
-    polylines: dwg.polylines.filter((line) => /^(?:A-HATCH|QSS[_ -].*OUTLINE.*)$/i.test(line.layer)),
+    polylines: marked,
+    dimensions: dwg.dimensions.filter((dimension) => !boxes.length || boxes.some((box) =>
+      dimension.mid.x >= box.x0 && dimension.mid.x <= box.x1 && dimension.mid.y >= box.y0 && dimension.mid.y <= box.y1)),
     // Marked dimensions supply the verified side lengths. Thickness notes are
     // the only teacher text required by the correction pass.
     texts: dwg.texts.filter((text) => /slab|thk|thickness|depth/i.test(`${text.layer} ${text.text}`)),
   };
 }
 
-export function saveDraftingProfile(base: NormalizedDwg, teacher: NormalizedDwg): boolean {
+export function saveDraftingProfile(base: NormalizedDwg, teacher: NormalizedDwg): { saved: boolean; reason?: string } {
   const target = storage();
-  if (!target) return false;
+  if (!target) return { saved: false, reason: 'browser storage unavailable' };
   const fingerprint = drawingFingerprint(base);
   const profile: SavedProfile = { version: 1, fingerprint, updatedAt: Date.now(), teacher: compactTeacher(teacher) };
   const profiles = [profile, ...readProfiles().filter((item) => item.fingerprint !== fingerprint)]
     .slice(0, MAX_PROFILES);
-  try { target.setItem(STORAGE_KEY, JSON.stringify(profiles)); return true; } catch { return false; }
+  try { target.setItem(STORAGE_KEY, JSON.stringify(profiles)); return { saved: true }; } catch {
+    try { target.setItem(STORAGE_KEY, JSON.stringify([profile])); return { saved: true }; } catch {
+      return { saved: false, reason: 'browser storage quota exceeded' };
+    }
+  }
 }
 
 export function loadDraftingProfile(base: NormalizedDwg): NormalizedDwg | undefined {

@@ -60,7 +60,7 @@ const mid = () => `m${mseq++}`;
 
 // Increment whenever extraction or quantity rules change in a way that makes
 // previously saved member rows stale. Drawings are then re-extracted on open.
-const EXTRACTION_VERSION = 22;
+const EXTRACTION_VERSION = 23;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function snapshot(s: AppState): StoredProject | null {
@@ -128,7 +128,9 @@ export const useStore = create<AppState>((set, get) => ({
         && hasMarkedPanelCorrections(candidate) && samePlanGeometry(base, candidate))
         .sort((a, b) => b.dimensions.length - a.dimensions.length)[0];
       if (pairedTeacher) {
-        if (saveDraftingProfile(base, pairedTeacher)) profileNote = ' · drafting profile saved';
+        const result = saveDraftingProfile(base, pairedTeacher);
+        profileNote = result.saved ? ' · drafting profile saved'
+          : ` · drafting profile NOT saved (${result.reason ?? 'unknown storage error'})`;
       } else {
         learnedTeacher = loadDraftingProfile(base);
         if (learnedTeacher) profileNote = ' · saved drafting profile applied';

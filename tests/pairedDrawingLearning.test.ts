@@ -34,4 +34,17 @@ describe('paired marked/unmarked drawing learning', () => {
     expect(selectGeometrySheet([plain, teacher], 'slab')).toBe(plain);
     expect(extractMembers([plain, teacher], 'slab')).toHaveLength(0);
   });
+
+  it('pairs a marked copy even when annotations increase its entity count beyond eight percent', () => {
+    const plain = base(), teacher = marked();
+    plain.segments = Array.from({ length: 100 }, (_, index) => ({
+      layer: 'STRUCTURE', a: { x: index * 100, y: 0 }, b: { x: index * 100, y: 10_000 },
+    }));
+    teacher.segments = [...plain.segments, ...Array.from({ length: 40 }, (_, index) => ({
+      layer: 'MARKUP', a: { x: index * 100, y: 20_000 }, b: { x: index * 100 + 50, y: 20_050 },
+    }))];
+    teacher.texts = Array.from({ length: 40 }, (_, index) => ({ layer: 'DIM', text: `${index}`, pos: { x: index, y: 0 } }));
+    expect(selectGeometrySheet([teacher, plain], 'slab')).toBe(plain);
+    expect(extractMembers([teacher, plain], 'slab')).toHaveLength(6);
+  });
 });

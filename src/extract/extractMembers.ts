@@ -108,9 +108,25 @@ export function samePlanGeometry(a: NormalizedDwg, b: NormalizedDwg): boolean {
   if (aw <= 0 || ah <= 0 || bw <= 0 || bh <= 0) return false;
   const spanMatch = Math.abs(aw - bw) / Math.max(aw, bw) <= 0.03
     && Math.abs(ah - bh) / Math.max(ah, bh) <= 0.03;
+  if (!spanMatch) return false;
+  const key = (dwg: NormalizedDwg, segment: Segment) => {
+    const ox = dwg.extents.min.x, oy = dwg.extents.min.y;
+    const p1 = [Math.round((segment.a.x - ox) / 10), Math.round((segment.a.y - oy) / 10)];
+    const p2 = [Math.round((segment.b.x - ox) / 10), Math.round((segment.b.y - oy) / 10)];
+    const ordered = p1[0] < p2[0] || (p1[0] === p2[0] && p1[1] <= p2[1]) ? [p1, p2] : [p2, p1];
+    return `${ordered[0][0]},${ordered[0][1]}:${ordered[1][0]},${ordered[1][1]}`;
+  };
+  const keysA = new Set(a.segments.map((segment) => key(a, segment)));
+  const keysB = new Set(b.segments.map((segment) => key(b, segment)));
+  const smaller = keysA.size <= keysB.size ? keysA : keysB;
+  const larger = smaller === keysA ? keysB : keysA;
+  const shared = [...smaller].filter((value) => larger.has(value)).length;
+  // Marked copies legitimately contain many extra dimensions, texts and
+  // coloured outline entities. Match their unchanged base linework rather
+  // than rejecting the pair because annotation counts differ.
+  if (smaller.size >= 20) return shared / smaller.size >= 0.82;
   const entityA = a.segments.length + a.texts.length, entityB = b.segments.length + b.texts.length;
-  const entityMatch = Math.abs(entityA - entityB) / Math.max(entityA, entityB, 1) <= 0.08;
-  return spanMatch && entityMatch;
+  return Math.abs(entityA - entityB) / Math.max(entityA, entityB, 1) <= 0.08;
 }
 
 /** Read label-specific width/depth rows from beam schedule/detail drawings. */

@@ -1133,7 +1133,9 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
   // using Nos. Different length or size (such as the two B12 beams) stay as
   // separate rows.
   const combined = new Map<string, MemberRow>();
-  for (const row of consolidated.filter((candidate) => candidate.length > 0 && candidate.breadth > 0 && candidate.height > 0)) {
+  // Keep traced beams with an unresolved size as explicit review rows. Only a
+  // zero-length trace is non-measurable geometry and must be excluded.
+  for (const row of consolidated.filter((candidate) => candidate.length > 0)) {
     const key = `${row.member}|${round3(row.length)}|${round3(row.breadth)}|${round3(row.height)}`;
     const prior = combined.get(key);
     if (prior) prior.nos += row.nos;

@@ -25,7 +25,7 @@ export function extractMembers(input: NormalizedDwg | NormalizedDwg[], workGroup
       && samePlanGeometry(dwg, candidate)).sort((a, b) => b.dimensions.length - a.dimensions.length)[0] ?? learnedTeacher;
     return slabMembers(dwg, floor, slabSchedule(dwgs), slabUnoThickness(dwgs), teacher);
   }
-  if (workGroup === 'beam') return beamMembers(dwg, floor, beamSchedule(dwgs), slabSchedule(dwgs), beamUnoSize(dwgs));
+  if (workGroup === 'beam') return beamMembers(dwg, floor, beamSchedule(dwgs), slabSchedule(dwgs), beamUnoSize(dwgs), beamReferenceLengths(dwgs));
   return []; // column/raft/wall/floor: start empty, user adds (auto-extraction not reliable on this data)
 }
 
@@ -153,6 +153,34 @@ function beamSchedule(dwgs: NormalizedDwg[]): Map<string, { widthMm: number; dep
     }
   }
   return schedule;
+}
+
+/** Details may state the verified overall span, but they never create members.
+ * Associate those dimensions with their nearby generic-layer beam mark and
+ * transfer only the modal length to the matching framing-plan member. */
+function beamReferenceLengths(dwgs: NormalizedDwg[]): Map<string, number> {
+  const samples = new Map<string, number[]>();
+  for (const dwg of dwgs) for (const text of dwg.texts) {
+    const label = beamLabel(text.text);
+    if (!label || isBeamNumberLayer(text.layer)) continue;
+    const nearest = dwg.dimensions
+      .filter((dimension) => dimension.measurement >= 600 && dimension.measurement <= 30000)
+      .map((dimension) => ({ dimension, distance: Math.hypot(text.pos.x - dimension.mid.x, text.pos.y - dimension.mid.y) }))
+      .filter((candidate) => candidate.distance <= 3000)
+      .sort((a, b) => a.distance - b.distance)[0]?.dimension;
+    if (nearest) samples.set(label, [...(samples.get(label) || []), nearest.measurement]);
+  }
+  const result = new Map<string, number>();
+  for (const [label, values] of samples) {
+    const counts = new Map<number, number[]>();
+    for (const value of values) {
+      const bucket = Math.round(value / 10) * 10;
+      counts.set(bucket, [...(counts.get(bucket) || []), value]);
+    }
+    const selected = [...counts.values()].sort((a, b) => b.length - a.length)[0];
+    if (selected) result.set(label, selected.reduce((sum, value) => sum + value, 0) / selected.length);
+  }
+  return result;
 }
 
 function slabSchedule(dwgs: NormalizedDwg[]): Map<string, number> {
@@ -355,7 +383,7 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
 }
 
 // --- beam: group BEAM face segments into collinear runs (bridging support gaps), size from BEAM SIZE text ---
-function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { widthMm: number; depthMm: number }>, slabThicknesses: Map<string, number>, unoSize?: { widthMm: number; depthMm: number }): MemberRow[] {
+function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { widthMm: number; depthMm: number }>, slabThicknesses: Map<string, number>, unoSize?: { widthMm: number; depthMm: number }, referenceLengths = new Map<string, number>()): MemberRow[] {
   const allSlabLabels = dwg.texts
     .filter((t) => /slabs?\s*(?:no|number)/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
     .map((t) => ({ ...t, code: t.text.replace(/\s/g, '').toUpperCase() }));
@@ -405,7 +433,34 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
   // sections is commonly placed on generic TEXT layers and must not create
   // quantities. Generic-layer marks remain supported only for drawings that
   // have no dedicated beam-number layer at all.
-  const noTexts = (dedicatedNoTexts.length ? dedicatedNoTexts
+  // Beam schedules/details often repeat the complete member register in a
+  // perfectly aligned text column. That column is reference data, not physical
+  // members. Remove only long lanes containing many distinct marks; ordinary
+  // vertical framing beams have few repeated marks and remain untouched.
+  const registerTexts = new Set<typeof dedicatedNoTexts[number]>();
+  for (const vertical of [true, false]) {
+    const ordered = [...dedicatedNoTexts].sort((a, b) => (vertical ? a.pos.x - b.pos.x : a.pos.y - b.pos.y));
+    const lanes: typeof dedicatedNoTexts[] = [];
+    for (const text of ordered) {
+      const coordinate = vertical ? text.pos.x : text.pos.y;
+      let lane = lanes[lanes.length - 1];
+      const prior = lane?.[lane.length - 1];
+      const priorCoordinate = prior ? (vertical ? prior.pos.x : prior.pos.y) : Number.NEGATIVE_INFINITY;
+      if (!lane || Math.abs(coordinate - priorCoordinate) > 2) { lane = []; lanes.push(lane); }
+      lane.push(text);
+    }
+    for (const lane of lanes) {
+      const distinct = new Set(lane.map((text) => beamLabel(text.text))).size;
+      const along = lane.map((text) => vertical ? text.pos.y : text.pos.x).sort((a, b) => a - b);
+      const gaps = along.slice(1).map((value, index) => value - along[index]).filter((gap) => gap >= 100);
+      const median = [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)] ?? 0;
+      const regular = gaps.filter((gap) => Math.abs(gap - median) <= Math.max(10, median * 0.05)).length;
+      if (lane.length >= 8 && distinct >= 8 && regular >= Math.max(5, Math.floor(gaps.length * 0.6)))
+        for (const text of lane) registerTexts.add(text);
+    }
+  }
+  const planNoTexts = dedicatedNoTexts.filter((text) => !registerTexts.has(text));
+  const noTexts = (planNoTexts.length ? planNoTexts
     : dwg.texts.filter((t) => !!beamLabel(t.text))).filter((t) => inPlan(t.pos));
   const slabLabels = allSlabLabels.filter((label) => inPlan(label.pos));
   const BRIDGE = 1400, CLUSTER = 550; // 550mm merges a beam's two faces (width 240–500) into one run
@@ -491,21 +546,47 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
     // beside only one occurrence. Share that verified size with every occurrence
     // of the same mark instead of producing zero-quantity sibling rows.
     const sizeByLabel = new Map(schedule);
+    for (const text of registerTexts) {
+      const label = beamLabel(text.text);
+      if (!label) continue;
+      const nearest = [...beams].sort((a, b) => pointSegmentDistance(text.pos, a) - pointSegmentDistance(text.pos, b))[0];
+      const direction = nearest ? (Math.abs(nearest.b.x - nearest.a.x) >= Math.abs(nearest.b.y - nearest.a.y) ? 'H' as const : 'V' as const) : null;
+      const beamCoord = nearest ? (direction === 'H' ? (nearest.a.y + nearest.b.y) / 2 : (nearest.a.x + nearest.b.x) / 2) : 0;
+      const inline = sizeForBeam(text.pos, direction, beamCoord);
+      if (inline) sizeByLabel.set(label, inline);
+    }
     for (const item of labelled) {
       if (sizeByLabel.has(item.label)) continue;
       const inline = parseBeamSize(nearestText(item.text.pos, sizeTexts, 6000) ?? '');
       if (inline) sizeByLabel.set(item.label, inline);
     }
     const rows = labelled.map(({ text, label }) => {
-      let nearest = [...beams].sort((a, b) => pointSegmentDistance(text.pos, a) - pointSegmentDistance(text.pos, b))[0];
       const expectedDirection = inferredDirection.get(text);
+      const siblings = labelled.filter((candidate) => candidate.label === label && candidate.text !== text);
+      let nearest = beams.map((beam) => ({ beam,
+        direction: Math.abs(beam.b.x - beam.a.x) >= Math.abs(beam.b.y - beam.a.y) ? 'H' as const : 'V' as const,
+        length: Math.hypot(beam.b.x - beam.a.x, beam.b.y - beam.a.y),
+        distance: pointSegmentDistance(text.pos, beam),
+        coveredMarks: siblings.filter((sibling) => pointSegmentDistance(sibling.text.pos, beam) <= 1200).length + 1,
+      })).filter((candidate) => (!expectedDirection || candidate.direction === expectedDirection)
+        && candidate.length >= 600 && candidate.coveredMarks <= 2)
+        .sort((a, b) => a.distance - b.distance || a.length - b.length)[0]?.beam;
       const rawDirection = nearest ? (Math.abs(nearest.b.x - nearest.a.x) >= Math.abs(nearest.b.y - nearest.a.y) ? 'H' : 'V') : null;
       const rawLength = nearest ? Math.hypot(nearest.b.x - nearest.a.x, nearest.b.y - nearest.a.y) : 0;
-      if (expectedDirection === 'V') {
+      if (expectedDirection) {
         const full = runs.filter((run) => (run.horizontal ? 'H' : 'V') === expectedDirection)
           .map((run) => ({ run, segment: { layer: 'BEAM-RUN', a: run.a, b: run.b } as Segment }))
-          .map((candidate) => ({ ...candidate, distance: pointSegmentDistance(text.pos, candidate.segment), length: Math.hypot(candidate.run.b.x - candidate.run.a.x, candidate.run.b.y - candidate.run.a.y) }))
-          .filter((candidate) => candidate.distance <= 1200 && candidate.length <= 60000)
+          .map((candidate) => ({ ...candidate,
+            distance: pointSegmentDistance(text.pos, candidate.segment),
+            length: Math.hypot(candidate.run.b.x - candidate.run.a.x, candidate.run.b.y - candidate.run.a.y),
+            coveredMarks: siblings.filter((sibling) => pointSegmentDistance(sibling.text.pos, candidate.segment) <= 1200).length + 1,
+          }))
+          // Repair interruptions at crossing secondary beams, but never jump
+          // across the whole floor to another collinear beam carrying the same
+          // mark. The nearest raw face is the scale guard for this local trace.
+          .filter((candidate) => candidate.distance <= 1200
+            && candidate.coveredMarks <= 2
+            && candidate.length <= Math.max(rawLength + 2000, rawLength * 1.75))
           .sort((a, b) => a.distance - b.distance)[0];
         if (full) nearest = full.segment;
       }
@@ -544,7 +625,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       const inlineSize = sizeForBeam(text.pos, beamDirection, beamCoord);
       // A size printed beside the actual framing-plan beam is the strongest
       // evidence. Use uploaded detail/schedule drawings only as fallback.
-      const size = inlineSize ?? schedule.get(label) ?? sizeByLabel.get(label) ?? unoSize;
+      const size = sizeByLabel.get(label) ?? schedule.get(label) ?? inlineSize ?? unoSize;
       const r = emptyRow(nextId(), floor);
       r.member = label;
       r.length = round3(lengthMm / 1000);
@@ -670,6 +751,12 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       overall.cadX0 = evidence.dimension.p1.x; overall.cadY0 = evidence.dimension.p1.y;
       overall.cadX1 = evidence.dimension.p2.x; overall.cadY1 = evidence.dimension.p2.y;
       consolidated = [...consolidated.filter((row) => row.member !== member), overall];
+    }
+    for (const row of consolidated) {
+      const reference = referenceLengths.get(row.member);
+      if (!reference || reference < row.length * 1000 * 0.7 || reference > row.length * 1000 * 1.3) continue;
+      row.length = row.sideLength = round3(reference / 1000);
+      row.measurementSource = 'marked dimension';
     }
     const coverage = (row: MemberRow) => {
       if ([row.cadX0, row.cadY0, row.cadX1, row.cadY1].some((value) => value == null)) return 0;
@@ -857,6 +944,13 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
     }
     // Normalization above can make equivalent parallel occurrences identical;
     // fold them into one MB row with Nos after support deductions are known.
+    for (const row of consolidated) {
+      const reference = referenceLengths.get(row.member);
+      if (!reference || reference < row.length * 1000 * 0.7 || reference > row.length * 1000 * 1.3) continue;
+      row.length = round3(reference / 1000);
+      row.sideLength = round3(Math.max(row.length - (row.supportWidths || []).reduce((sum, width) => sum + width, 0), 0));
+      row.measurementSource = 'marked dimension';
+    }
     const finalRows = new Map<string, MemberRow>();
     for (const row of consolidated) {
       // Repeated labels along one continuous beam resolve to the same CAD run.
@@ -870,7 +964,24 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       if (prior) prior.nos = Math.max(prior.nos, row.nos);
       else finalRows.set(key, { ...row });
     }
-    return [...finalRows.values()].sort((a, b) => compareBeamLabels(a.member, b.member));
+    const quantityRows = new Map<string, MemberRow>();
+    for (const row of finalRows.values()) {
+      const key = `${row.member}|${round3(row.length)}|${round3(row.breadth)}|${round3(row.height)}`;
+      const prior = quantityRows.get(key);
+      if (prior) prior.nos += row.nos;
+      else quantityRows.set(key, { ...row });
+    }
+    for (const row of quantityRows.values()) {
+      if ([...quantityRows.values()].filter((candidate) => candidate.member === row.member).length !== 1) continue;
+      const horizontal = Math.abs((row.cadX1 || 0) - (row.cadX0 || 0)) >= Math.abs((row.cadY1 || 0) - (row.cadY0 || 0));
+      const positions = labelled.filter((item) => item.label === row.member)
+        .map((item) => horizontal ? item.text.pos.x : item.text.pos.y).sort((a, b) => a - b);
+      let copies = positions.length ? 1 : 0;
+      for (let index = 1; index < positions.length; index++)
+        if (positions[index] - positions[index - 1] > row.length * 1500) copies++;
+      row.nos = Math.max(row.nos, copies);
+    }
+    return [...quantityRows.values()].sort((a, b) => compareBeamLabels(a.member, b.member));
   }
 
   let n = 1;

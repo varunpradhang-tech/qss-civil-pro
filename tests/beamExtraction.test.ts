@@ -158,6 +158,25 @@ describe('cross-sheet beam extraction', () => {
     ]);
   });
 
+  it('uses a detail dimension as reference without creating another beam', () => {
+    const drawing = base('combined-plan-and-details.dwg');
+    drawing.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 4950, y: 0 } },
+      { layer: 'BEAM', a: { x: 20_000, y: 0 }, b: { x: 24_950, y: 0 } },
+    ];
+    drawing.texts = [
+      { layer: 'BEAM NO', text: 'B2', pos: { x: 2000, y: 100 } },
+      { layer: 'BEAM NO', text: 'B2', pos: { x: 22_000, y: 100 } },
+      { layer: 'TEXT', text: 'B2', pos: { x: 61_500, y: 1000 } },
+      { layer: 'TEXT', text: '240X450', pos: { x: 63_000, y: 1000 } },
+    ];
+    drawing.dimensions = [{ layer: 'DIM', measurement: 4450, dir: 'H',
+      p1: { x: 60_000, y: 2000 }, p2: { x: 64_450, y: 2000 }, mid: { x: 62_225, y: 2000 } }];
+    expect(extractMembers(drawing, 'beam')).toEqual([
+      expect.objectContaining({ member: 'B2', length: 4.45, nos: 2, breadth: 0.24, height: 0.45 }),
+    ]);
+  });
+
   it('reads the consultant note wording FOR BEAM SIZE SHALL BE 300X550 U.N.O.', () => {
     const plan = base('uno-consultant-wording.dwg');
     plan.segments = [

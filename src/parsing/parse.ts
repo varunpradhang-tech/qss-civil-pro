@@ -172,7 +172,12 @@ export function normalize(db: any, fileName: string): NormalizedDwg {
       const p1 = apply(mat, e.subDefinitionPoint1), p2 = apply(mat, e.subDefinitionPoint2);
       const dx = Math.abs(p1.x - p2.x), dy = Math.abs(p1.y - p2.y);
       const dir: DimensionRef['dir'] = dx > dy * 3 ? 'H' : dy > dx * 3 ? 'V' : 'D';
-      dimensions.push({ measurement: e.measurement ?? Math.hypot(dx, dy), p1, p2, mid: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }, dir, layer });
+      // AutoCAD can override the displayed dimension text (for example a
+      // verified clear span). The displayed value is the user's authoritative
+      // measurement; geometric definition-point distance is only fallback.
+      const display = typeof e.text === 'string' ? cleanCadText(e.text).match(/^\s*(\d+(?:\.\d+)?)\s*(?:MM)?\s*$/i) : null;
+      const measurement = display ? Number(display[1]) : e.measurement ?? Math.hypot(dx, dy);
+      dimensions.push({ measurement, p1, p2, mid: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }, dir, layer });
       grow(p1); grow(p2);
     } else if (e.type === 'TEXT' || e.type === 'MTEXT') {
       const p = e.insertionPoint || e.startPoint;

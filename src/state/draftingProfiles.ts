@@ -48,18 +48,14 @@ function readProfiles(): SavedProfile[] {
 
 function compactTeacher(dwg: NormalizedDwg): NormalizedDwg {
   const marked = dwg.polylines.filter((line) => /^(?:A-HATCH|QSS[_ -].*OUTLINE.*)$/i.test(line.layer));
-  const boxes = marked.map((line) => ({
-    x0: Math.min(...line.pts.map((point) => point.x)) - 2500,
-    y0: Math.min(...line.pts.map((point) => point.y)) - 2500,
-    x1: Math.max(...line.pts.map((point) => point.x)) + 2500,
-    y1: Math.max(...line.pts.map((point) => point.y)) + 2500,
-  }));
   return {
     ...dwg,
     layers: [], entityCountsByType: {}, segments: [], hatches: [],
     polylines: marked,
-    dimensions: dwg.dimensions.filter((dimension) => !boxes.length || boxes.some((box) =>
-      dimension.mid.x >= box.x0 && dimension.mid.x <= box.x1 && dimension.mid.y >= box.y0 && dimension.mid.y <= box.y1)),
+    // Keep every verified dimension. Filtering these by the outline bounding
+    // box lost dimensions whose text/extension line sits outside an irregular
+    // panel, so a persisted profile could not reproduce its teaching run.
+    dimensions: dwg.dimensions,
     // Marked dimensions supply the verified side lengths. Thickness notes are
     // the only teacher text required by the correction pass.
     texts: dwg.texts.filter((text) => /slab|thk|thickness|depth/i.test(`${text.layer} ${text.text}`)),

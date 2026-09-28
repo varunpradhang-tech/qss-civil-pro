@@ -357,7 +357,7 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
 // --- beam: group BEAM face segments into collinear runs (bridging support gaps), size from BEAM SIZE text ---
 function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { widthMm: number; depthMm: number }>, slabThicknesses: Map<string, number>, unoSize?: { widthMm: number; depthMm: number }): MemberRow[] {
   const allSlabLabels = dwg.texts
-    .filter((t) => /slab no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
+    .filter((t) => /slabs?\s*(?:no|number)/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
     .map((t) => ({ ...t, code: t.text.replace(/\s/g, '').toUpperCase() }));
   // A consultant may keep the framing plan, slab profiles, beam details and
   // sections in one DWG. Only the dense slab-label cluster identifies the
@@ -399,7 +399,14 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
   const sizeTexts = dwg.texts.filter((t) => !!parseBeamSize(t.text) && inPlan(t.pos));
   // Beam marks are frequently placed on generic TEXT layers. The strict label
   // grammar prevents notes and reinforcement text from becoming members.
-  const noTexts = dwg.texts.filter((t) => (isBeamNumberLayer(t.layer) || !!beamLabel(t.text)) && inPlan(t.pos));
+  const dedicatedNoTexts = dwg.texts.filter((t) => isBeamNumberLayer(t.layer) && !!beamLabel(t.text));
+  // When the drawing provides a dedicated BEAM NO layer it is the authoritative
+  // member register. Identical B1/B2 text inside reinforcement details and
+  // sections is commonly placed on generic TEXT layers and must not create
+  // quantities. Generic-layer marks remain supported only for drawings that
+  // have no dedicated beam-number layer at all.
+  const noTexts = (dedicatedNoTexts.length ? dedicatedNoTexts
+    : dwg.texts.filter((t) => !!beamLabel(t.text))).filter((t) => inPlan(t.pos));
   const slabLabels = allSlabLabels.filter((label) => inPlan(label.pos));
   const BRIDGE = 1400, CLUSTER = 550; // 550mm merges a beam's two faces (width 240–500) into one run
 
@@ -610,6 +617,60 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       }
     }
     let consolidated = consolidateBeamRows(rows);
+    // Some framing plans print the same beam mark near both ends of one beam.
+    // A written overall dimension spanning that pair identifies one physical
+    // member; matching co-linear pairs are its mirrored copies. Do this before
+    // accepting short face fragments, and ignore isolated same-name marks from
+    // nearby details/sections.
+    for (const member of new Set(consolidated.map((row) => row.member))) {
+      const marks = labelled.filter((item) => item.label === member).map((item) => item.text.pos);
+      if (marks.length < 4) continue;
+      const evidenceCandidates = dwg.dimensions.map((dimension) => {
+        if (dimension.dir !== 'H' && dimension.dir !== 'V') return undefined;
+        const horizontal = dimension.dir === 'H';
+        const lo = horizontal ? Math.min(dimension.p1.x, dimension.p2.x) : Math.min(dimension.p1.y, dimension.p2.y);
+        const hi = horizontal ? Math.max(dimension.p1.x, dimension.p2.x) : Math.max(dimension.p1.y, dimension.p2.y);
+        const onLine = marks.filter((mark) => {
+          const along = horizontal ? mark.x : mark.y;
+          const perpendicular = horizontal ? Math.abs(mark.y - dimension.mid.y) : Math.abs(mark.x - dimension.mid.x);
+          return along >= lo - 500 && along <= hi + 500 && perpendicular <= 1200;
+        });
+        const perpendicular = onLine.length ? onLine.reduce((sum, mark) => sum + (horizontal
+          ? Math.abs(mark.y - dimension.mid.y) : Math.abs(mark.x - dimension.mid.x)), 0) / onLine.length : Number.POSITIVE_INFINITY;
+        return onLine.length >= 2 && dimension.measurement >= 3000 && dimension.measurement <= 30000
+          ? { dimension, horizontal, onLine, perpendicular } : undefined;
+      }).filter((value): value is NonNullable<typeof value> => !!value)
+        .sort((a, b) => a.perpendicular - b.perpendicular || b.dimension.measurement - a.dimension.measurement);
+      const match = evidenceCandidates.map((evidence) => {
+        const base = [...evidence.onLine].sort((a, b) => evidence.horizontal ? a.x - b.x : a.y - b.y);
+        const repeatGap = evidence.horizontal ? base[base.length - 1].x - base[0].x : base[base.length - 1].y - base[0].y;
+        if (repeatGap < 1200) return undefined;
+        const baseline = evidence.horizontal
+          ? evidence.onLine.reduce((sum, mark) => sum + mark.y, 0) / evidence.onLine.length
+          : evidence.onLine.reduce((sum, mark) => sum + mark.x, 0) / evidence.onLine.length;
+        const aligned = marks.filter((mark) => Math.abs((evidence.horizontal ? mark.y : mark.x) - baseline) <= 1000)
+          .sort((a, b) => evidence.horizontal ? a.x - b.x : a.y - b.y);
+        let copies = 0;
+        for (let index = 0; index + 1 < aligned.length;) {
+          const gap = evidence.horizontal ? aligned[index + 1].x - aligned[index].x : aligned[index + 1].y - aligned[index].y;
+          if (Math.abs(gap - repeatGap) <= Math.max(800, repeatGap * 0.25)) { copies++; index += 2; } else index++;
+        }
+        return copies >= 2 ? { evidence, copies } : undefined;
+      }).filter((value): value is NonNullable<typeof value> => !!value)
+        .sort((a, b) => b.copies - a.copies || a.evidence.perpendicular - b.evidence.perpendicular)[0];
+      if (!match) continue;
+      const { evidence, copies } = match;
+      const candidates = consolidated.filter((row) => row.member === member);
+      const template = candidates.find((row) => row.breadth > 0 && row.height > 0) ?? candidates[0];
+      if (!template) continue;
+      const overall = { ...template };
+      overall.length = overall.sideLength = round3(Math.round(evidence.dimension.measurement / 10) / 100);
+      overall.nos = copies;
+      overall.measurementSource = 'marked dimension';
+      overall.cadX0 = evidence.dimension.p1.x; overall.cadY0 = evidence.dimension.p1.y;
+      overall.cadX1 = evidence.dimension.p2.x; overall.cadY1 = evidence.dimension.p2.y;
+      consolidated = [...consolidated.filter((row) => row.member !== member), overall];
+    }
     const coverage = (row: MemberRow) => {
       if ([row.cadX0, row.cadY0, row.cadX1, row.cadY1].some((value) => value == null)) return 0;
       const segment: Segment = { layer: 'BEAM-ROW', a: { x: row.cadX0 as number, y: row.cadY0 as number }, b: { x: row.cadX1 as number, y: row.cadY1 as number } };

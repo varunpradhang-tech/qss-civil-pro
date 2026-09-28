@@ -33,9 +33,15 @@ describe('persistent drafting profiles', () => {
 
   it('reuses marked corrections on a later unmarked-only extraction', () => {
     const plain = base();
-    expect(saveDraftingProfile(plain, marked()).saved).toBe(true);
+    const teacher = marked();
+    teacher.dimensions.push({ dir: 'H', measurement: 12_345, p1: { x: 30_000, y: 20_000 },
+      p2: { x: 42_345, y: 20_000 }, mid: { x: 36_172.5, y: 20_000 }, layer: 'DIM' });
+    expect(saveDraftingProfile(plain, teacher).saved).toBe(true);
     const learned = loadDraftingProfile({ ...plain, fileName: 'uploaded-again.dwg' });
     expect(learned).toBeDefined();
+    // Dimensions that do not sit beside a coloured outline can still define a
+    // mirrored or irregular panel, so the persisted teacher must retain them.
+    expect(learned?.dimensions).toHaveLength(3);
     const rows = extractMembers([plain], 'slab', 'Typical floor', learned);
     expect(rows).toHaveLength(6);
     expect(rows[0]).toMatchObject({ length: 4.4, breadth: 3.2, measurementSource: 'marked dimension' });

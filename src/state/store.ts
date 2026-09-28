@@ -60,7 +60,7 @@ const mid = () => `m${mseq++}`;
 
 // Increment whenever extraction or quantity rules change in a way that makes
 // previously saved member rows stale. Drawings are then re-extracted on open.
-const EXTRACTION_VERSION = 25;
+const EXTRACTION_VERSION = 26;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function snapshot(s: AppState): StoredProject | null {
@@ -103,6 +103,17 @@ export const useStore = create<AppState>((set, get) => ({
   setSheets: (sheets) => {
     const active = [...sheets].sort((a, b) => b.slabDimCount - a.slabDimCount)[0];
     const name = (active?.name || 'Untitled project').replace(/\.[^.]+$/, '');
+    // Learn a verified marked/unmarked pair at upload time, independent of the
+    // currently selected quantity tab. Previously a pair uploaded while Beam
+    // was selected was never persisted for a later unmarked-only slab run.
+    if (sheets.length > 1) {
+      const drawings = sheets.map((sheet) => sheet.dwg);
+      const base = selectGeometrySheet(drawings, 'slab');
+      const teacher = drawings.filter((candidate) => candidate !== base
+        && hasMarkedPanelCorrections(candidate) && samePlanGeometry(base, candidate))
+        .sort((a, b) => b.dimensions.length - a.dimensions.length)[0];
+      if (teacher) saveDraftingProfile(base, teacher);
+    }
     set({ sheets, activeSheetId: active?.id ?? null, dwg: active?.dwg ?? null, projectId: `proj-${Date.now()}`, projectName: name, members: [] });
     get().extractQuantity();
     autosave(get);

@@ -73,8 +73,10 @@ function buildBeamShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
     const member = `${m.member || m.id} ${Math.round(width * 1000)}x${Math.round(depth * 1000)}`;
     const bottom = ws.addRow({ serial: index + 1, member, item: 'Beam bottom', length, nos, width, unit: 'm²', remarks: remarks || null });
     bottom.getCell('quantity').value = { formula: `D${bottom.number}*E${bottom.number}*F${bottom.number}`, result: length * nos * width };
-    const sides = ws.addRow({ serial: index + 1, member, item: 'Beam sides', length, nos, depth, side1Code: m.slabCodeSide1 ?? null, side1Thickness, side2Code: m.slabCodeSide2 ?? null, side2Thickness, unit: 'm²', remarks: remarks || null });
-    sides.getCell('quantity').value = { formula: `D${sides.number}*E${sides.number}*(2*G${sides.number}-I${sides.number}-K${sides.number})`, result: length * nos * (2 * depth - side1Thickness - side2Thickness) };
+    const sideFaces = nos * 2;
+    const averageExposedDepth = (Math.max(depth - side1Thickness, 0) + Math.max(depth - side2Thickness, 0)) / 2;
+    const sides = ws.addRow({ serial: index + 1, member, item: 'Beam sides', length, nos: sideFaces, depth: averageExposedDepth, side1Code: m.slabCodeSide1 ?? null, side1Thickness, side2Code: m.slabCodeSide2 ?? null, side2Thickness, unit: 'm²', remarks: remarks || null });
+    sides.getCell('quantity').value = { formula: `D${sides.number}*E${sides.number}*G${sides.number}`, result: length * sideFaces * averageExposedDepth };
     if (remarks) for (const row of [bottom, sides]) row.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF1F2' } }));
   }
   addFormulaTotal(ws, 'L', 'M', 'Total — Beam shuttering', 'm²', sorted.reduce((sum, m) => sum + RULES.beam_shuttering.calculate(m, capMode), 0));

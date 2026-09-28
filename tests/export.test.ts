@@ -47,6 +47,12 @@ describe('MB export (member rows)', () => {
     expect(r.quantity).toBe(4.97);
   });
 
+  it('beam concrete universally excludes slab thickness', () => {
+    const [r] = membersToRows([row({ length: 5, breadth: 0.3, height: 0.6, slabThickness: 0.15, nos: 2 })], 'beam_concrete', 'included');
+    expect(r.height).toBe(0.45);
+    expect(r.quantity).toBe(1.35); // 5 × 0.3 × (0.6−0.15) × 2
+  });
+
   it('CSV has header, review remarks, and a total row', () => {
     const csv = membersToCsv([row({ member: 'S1, corner' }), row({ member: 'S2', length: 2, breadth: 4, needsReview: true, reviewReason: 'dim uncertain' })], 'slab_shuttering', 'excluded');
     const lines = csv.split('\r\n');
@@ -66,8 +72,19 @@ describe('MB export (member rows)', () => {
     for (const unwanted of ['Dia (mm)', 'Spacing (mm)', 'Measurement basis']) expect(ws.getRow(2).values).not.toContain(unwanted);
     expect(ws.getCell('A3').value).toBe(1); expect(ws.getCell('B3').value).toBe('B2 250x500'); expect(ws.getCell('C3').value).toBe('Beam bottom'); expect(ws.getCell('C4').value).toBe('Beam sides');
     expect((ws.getCell('L3').value as ExcelJS.CellFormulaValue).formula).toBe('D3*E3*F3');
-    expect((ws.getCell('L4').value as ExcelJS.CellFormulaValue).formula).toBe('D4*E4*(2*G4-I4-K4)');
+    expect((ws.getCell('L4').value as ExcelJS.CellFormulaValue).formula).toBe('D4*E4*G4');
     expect(ws.getCell('B5').value).toBe('B10 300x600'); expect((ws.getCell('L7').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(L3:L6)');
+  });
+
+  it('exports two physical beams as two bottoms and four side faces', async () => {
+    const blob = await buildMbXlsx([
+      row({ member: 'B1', length: 9.8, breadth: 0.6, height: 0.8, slabThicknessSide1: 0.15, slabThicknessSide2: 0.15, nos: 2 }),
+    ], 'beam_shuttering', 'excluded');
+    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await blob.arrayBuffer()); const ws = wb.worksheets[0];
+    expect(ws.getCell('E3').value).toBe(2);
+    expect(ws.getCell('E4').value).toBe(4);
+    expect(ws.getCell('G4').value).toBeCloseTo(0.65);
+    expect((ws.getCell('L4').value as ExcelJS.CellFormulaValue).result).toBeCloseTo(25.48);
   });
 
   it('exports slab shuttering with formula quantities and no reinforcement columns', async () => {

@@ -82,9 +82,22 @@ export function beamShutteringBreakdown(r: MemberRow, capMode: CapMode) {
   return { bottomArea, sideArea, capAddition, total: (bottomArea + sideArea + capAddition) * nos };
 }
 export function beamConcreteBreakdown(r: MemberRow, capMode: CapMode) {
-  const gross = Math.max(r.length || 0, 0) * Math.max(r.breadth || 0, 0) * Math.max(r.height || 0, 0) * Math.max(r.nos || 0, 0);
-  const capDeduction = capMode === 'excluded' ? Math.max(r.columnCapDeduction || 0, 0) * Math.max(r.nos || 0, 0) : 0;
-  return { gross, capDeduction, net: Math.max(gross - capDeduction, 0) };
+  const length = Math.max(r.length || 0, 0);
+  const breadth = Math.max(r.breadth || 0, 0);
+  const fullDepth = Math.max(r.height || 0, 0);
+  const slabThickness = Math.min(Math.max(
+    r.slabThickness || r.slabThicknessSide1 || r.slabThicknessSide2 || 0,
+  0), fullDepth);
+  const effectiveDepth = Math.max(fullDepth - slabThickness, 0);
+  const nos = Math.max(r.nos || 0, 0);
+  const gross = length * breadth * effectiveDepth * nos;
+  const supportLength = (r.supportWidths || []).reduce((sum, width) => sum + Math.max(width, 0), 0);
+  const legacyCapDeduction = fullDepth > 0
+    ? Math.max(r.columnCapDeduction || 0, 0) * (effectiveDepth / fullDepth)
+    : 0;
+  const perBeamDeduction = supportLength > 0 ? supportLength * breadth * effectiveDepth : legacyCapDeduction;
+  const capDeduction = capMode === 'excluded' ? Math.min(perBeamDeduction * nos, gross) : 0;
+  return { gross, capDeduction, net: Math.max(gross - capDeduction, 0), effectiveDepth };
 }
 
 export interface QuantityRule {
@@ -99,8 +112,8 @@ export const RULES: Record<string, QuantityRule> = {
   column_concrete: { key: 'column_concrete', label: 'Column concrete', unit: 'm3', calculate: (r) => columnMainConcrete(r) + columnCapConcrete(r), note: 'Column concrete shows main quantity up to beam bottom and column cap from beam bottom to slab top separately.' },
   column_shuttering: { key: 'column_shuttering', label: 'Column shuttering', unit: 'm2', calculate: (r) => columnMainShuttering(r) + columnCapShuttering(r), note: 'Column shuttering: main up to beam bottom plus only exposed cap faces; faces covered by beam sides are not measured again.' },
   column_steel: { key: 'column_steel', label: 'Column steel BBS', unit: 'kg', calculate: (r) => r.length * r.nos * steelUnitWeight(r.dia), note: 'Column reinforcement BBS by bar mark, diameter, cutting length, number of bars, unit weight d²/162 kg/m.' },
-  beam_concrete: { key: 'beam_concrete', label: 'Beam concrete', unit: 'm3', calculate: (r, cap) => beamConcreteBreakdown(r, cap).net, note: 'Beam concrete in m³. With caps excluded, support/cap overlap is deducted from beam concrete.' },
-  beam_shuttering: { key: 'beam_shuttering', label: 'Beam shuttering', unit: 'm2', calculate: (r, cap) => beamShutteringBreakdown(r, cap).total, note: 'Beam shuttering = length × width at bottom + length × exposed depth for both sides. Slab thickness is deducted only on sides marked as inner.' },
+  beam_concrete: { key: 'beam_concrete', label: 'Beam concrete', unit: 'm3', calculate: (r, cap) => beamConcreteBreakdown(r, cap).net, note: 'Beam concrete = length × width × (overall beam depth − slab thickness). With caps excluded, RCC support overlap is also deducted.' },
+  beam_shuttering: { key: 'beam_shuttering', label: 'Beam shuttering', unit: 'm2', calculate: (r, cap) => beamShutteringBreakdown(r, cap).total, note: 'Beam shuttering = one bottom per beam plus two longitudinal side faces per beam. Slab thickness is deducted from both side-face depths.' },
   beam_steel: { key: 'beam_steel', label: 'Beam steel BBS', unit: 'kg', calculate: (r) => r.length * r.nos * steelUnitWeight(r.dia), note: 'Beam reinforcement BBS by bar mark, diameter, cutting length, number of bars, unit weight d²/162 kg/m.' },
   slab_concrete: { key: 'slab_concrete', label: 'Slab concrete', unit: 'm3', calculate: (r) => Math.max(r.netArea ?? (r.length * r.breadth - r.openings), 0) * r.height * r.nos, note: 'Slab concrete = net slab area after cutout/opening deductions × thickness (IS 1200).' },
   slab_shuttering: { key: 'slab_shuttering', label: 'Slab shuttering', unit: 'm2', calculate: (r) => Math.max(r.netArea ?? (r.length * r.breadth - r.openings), 0) * r.nos, note: 'Slab soffit shuttering = net slab area after cutout/opening deductions (IS 1200).' },

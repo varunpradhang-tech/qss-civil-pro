@@ -640,9 +640,13 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       // slab mark must not silently turn the exposed beam side into full depth;
       // use the standard 175 mm slab fallback and keep the row reviewable.
       const defaultSlabThickness = 175;
-      r.slabThicknessSide1 = side1 ? round3((slabThicknesses.get(side1.code) ?? defaultSlabThickness) / 1000) : 0;
-      r.slabThicknessSide2 = side2 ? round3((slabThicknesses.get(side2.code) ?? defaultSlabThickness) / 1000) : 0;
-      r.innerSideCount = Number(!!r.slabThicknessSide1) + Number(!!r.slabThicknessSide2);
+      // A framing-plan beam normally meets the floor slab on both longitudinal
+      // faces. Missing slab text is a recognition gap, not evidence that the
+      // slab disappears; retain the universal fallback on that face.
+      r.slabThicknessSide1 = round3(((side1 ? slabThicknesses.get(side1.code) : undefined) ?? defaultSlabThickness) / 1000);
+      r.slabThicknessSide2 = round3(((side2 ? slabThicknesses.get(side2.code) : undefined) ?? defaultSlabThickness) / 1000);
+      r.slabThickness = round3(Math.max(r.slabThicknessSide1, r.slabThicknessSide2));
+      r.innerSideCount = 2;
       r.nos = 1;
       const sourceA = useMarkedDimension ? markedDimension.dimension.p1 : nearest?.a;
       const sourceB = useMarkedDimension ? markedDimension.dimension.p2 : nearest?.b;
@@ -650,7 +654,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         r.cadX0 = sourceA.x; r.cadY0 = sourceA.y;
         r.cadX1 = sourceB.x; r.cadY1 = sourceB.y;
       }
-      const unresolvedSlabs = (side1 && !r.slabThicknessSide1) || (side2 && !r.slabThicknessSide2);
+      const unresolvedSlabs = false;
       r.needsReview = !lengthMm || !size || unresolvedSlabs;
       r.reviewReason = !lengthMm ? 'no marked dimension or matching beam face found' : !size ? 'no beam size found in uploaded plan/schedule' : unresolvedSlabs ? 'adjacent slab code has no thickness schedule' : undefined;
       return r;
@@ -1129,7 +1133,7 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
   // using Nos. Different length or size (such as the two B12 beams) stay as
   // separate rows.
   const combined = new Map<string, MemberRow>();
-  for (const row of consolidated) {
+  for (const row of consolidated.filter((candidate) => candidate.length > 0 && candidate.breadth > 0 && candidate.height > 0)) {
     const key = `${row.member}|${round3(row.length)}|${round3(row.breadth)}|${round3(row.height)}`;
     const prior = combined.get(key);
     if (prior) prior.nos += row.nos;

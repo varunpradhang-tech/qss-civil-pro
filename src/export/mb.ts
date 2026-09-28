@@ -1,6 +1,6 @@
 // Measurement Book export (member-row based). One sheet per selected quantity rule; ends in an
 // IS-code measurement-basis column (QSS-Pro style). Pure/testable.
-import { RULES, UNIT_LABEL, type CapMode, type MemberRow } from '../takeoff/rules.js';
+import { RULES, UNIT_LABEL, beamConcreteBreakdown, type CapMode, type MemberRow } from '../takeoff/rules.js';
 import { round3 as round } from '../lib/num.js';
 
 export interface MBRow {
@@ -25,12 +25,15 @@ export function membersToRows(members: MemberRow[], quantityKey: string, capMode
     const supportDeduction = quantityKey === 'beam_concrete' && capMode === 'excluded'
       ? (m.supportWidths || []).reduce((sum, width) => sum + Math.max(width, 0), 0)
       : 0;
+    const effectiveHeight = quantityKey === 'beam_concrete'
+      ? beamConcreteBreakdown(m, capMode).effectiveDepth
+      : m.height;
     return ({
     member: quantityKey.startsWith('beam_') && m.breadth > 0 && m.height > 0
       ? `${m.member || m.id} ${Math.round(m.breadth * 1000)}x${Math.round(m.height * 1000)}`
       : m.member || m.id,
     floor: m.floor,
-    length: round(Math.max(m.length - supportDeduction, 0)), breadth: round(m.breadth), height: round(m.height),
+    length: round(Math.max(m.length - supportDeduction, 0)), breadth: round(m.breadth), height: round(effectiveHeight),
     dia: m.dia, spacing: m.spacing, nos: m.nos, openings: round(m.openings),
     quantity: round(rule.calculate(m, capMode)), unit: UNIT_LABEL[rule.unit],
     remarks: m.needsReview ? `need review${m.reviewReason ? ` (${m.reviewReason})` : ''}` : '',

@@ -507,13 +507,17 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
     const inferredDirection = new Map<typeof noTexts[number], 'H' | 'V'>();
     for (const item of labelled) {
       const siblings = labelled.filter((candidate) => candidate.label === item.label && candidate !== item);
-      let horizontalVotes = 0, verticalVotes = 0;
-      for (const sibling of siblings) {
+      const alignedSiblings = siblings.map((sibling) => {
         const dx = Math.abs(sibling.text.pos.x - item.text.pos.x), dy = Math.abs(sibling.text.pos.y - item.text.pos.y);
-        if (dx >= 1200 && dy <= 1000) horizontalVotes++;
-        if (dy >= 1200 && dx <= 1000) verticalVotes++;
-      }
-      if (horizontalVotes || verticalVotes) inferredDirection.set(item.text, horizontalVotes >= verticalVotes ? 'H' : 'V');
+        const direction = dx >= 1200 && dy <= 1000 ? 'H' as const
+          : dy >= 1200 && dx <= 1000 ? 'V' as const : undefined;
+        return direction ? { direction, distance: Math.hypot(dx, dy) } : undefined;
+      }).filter((candidate): candidate is { direction: 'H' | 'V'; distance: number } => !!candidate)
+        .sort((a, b) => a.distance - b.distance);
+      // The nearest same-mark label on the same baseline identifies this
+      // physical member. Farther mirrored copies must not outvote it (B34 has
+      // a close vertical pair and two more labels on the opposite tower).
+      if (alignedSiblings.length) inferredDirection.set(item.text, alignedSiblings[0].direction);
       else {
         const nearbyRuns = runs.map((run) => {
           const segment: Segment = { layer: 'BEAM-RUN', a: run.a, b: run.b };
@@ -581,12 +585,24 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
             length: Math.hypot(candidate.run.b.x - candidate.run.a.x, candidate.run.b.y - candidate.run.a.y),
             coveredMarks: siblings.filter((sibling) => pointSegmentDistance(sibling.text.pos, candidate.segment) <= 1200).length + 1,
           }))
-          // Repair interruptions at crossing secondary beams, but never jump
-          // across the whole floor to another collinear beam carrying the same
-          // mark. The nearest raw face is the scale guard for this local trace.
-          .filter((candidate) => candidate.distance <= 1200
-            && candidate.coveredMarks <= 2
-            && candidate.length <= Math.max(rawLength + 2000, rawLength * 1.75))
+          // Repair interruptions at crossing secondary beams. The former
+          // raw-fragment length guard rejected the real continuous run whenever
+          // a transverse beam split a vertical member into several short faces.
+          // Perpendicular lane distance and plan-region filtering are the
+          // safeguards against jumping to an unrelated member.
+          .filter((candidate) => {
+            if (candidate.distance > 1200 || candidate.coveredMarks > 2) return false;
+            const segment = candidate.segment;
+            const sameLineSibling = siblings.find((sibling) => {
+              const dx = Math.abs(sibling.text.pos.x - text.pos.x), dy = Math.abs(sibling.text.pos.y - text.pos.y);
+              const aligned = expectedDirection === 'H' ? dx >= 1200 && dy <= 1000 : dy >= 1200 && dx <= 1000;
+              return aligned && pointSegmentDistance(sibling.text.pos, segment) <= 1200;
+            });
+            const labelSpan = sameLineSibling ? Math.hypot(sameLineSibling.text.pos.x - text.pos.x,
+              sameLineSibling.text.pos.y - text.pos.y) : 0;
+            return candidate.length <= Math.max(rawLength + 2000, rawLength * 1.75)
+              || (!!sameLineSibling && candidate.length <= labelSpan + 4000);
+          })
           .sort((a, b) => a.distance - b.distance)[0];
         if (full) nearest = full.segment;
       }
@@ -1034,18 +1050,16 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
     const key = `${row.member}|lane:${lane}`;
     groups.set(key, [...(groups.get(key) || []), row]);
   }
-  // A repeated mark may continue through columns/walls, but it must not jump
-  // across a slab bay or another genuine break in the beam faces. Split every
-  // lane into longitudinally connected components before consolidating it.
+  // Split genuinely remote collinear members, while allowing ordinary support
+  // and crossing-beam interruptions. Longer B34-style continuity is recovered
+  // earlier from the same-mark aligned-label evidence and its complete run.
   const connectedGroups = [...groups.values()].flatMap((spans) => {
     const located = spans.map((span) => {
       if ([span.cadX0, span.cadY0, span.cadX1, span.cadY1].some((value) => value == null)) return null;
       const horizontal = Math.abs((span.cadX1 as number) - (span.cadX0 as number)) >= Math.abs((span.cadY1 as number) - (span.cadY0 as number));
-      return {
-        span,
+      return { span,
         lo: horizontal ? Math.min(span.cadX0 as number, span.cadX1 as number) : Math.min(span.cadY0 as number, span.cadY1 as number),
-        hi: horizontal ? Math.max(span.cadX0 as number, span.cadX1 as number) : Math.max(span.cadY0 as number, span.cadY1 as number),
-      };
+        hi: horizontal ? Math.max(span.cadX0 as number, span.cadX1 as number) : Math.max(span.cadY0 as number, span.cadY1 as number) };
     }).filter((item): item is { span: MemberRow; lo: number; hi: number } => !!item)
       .sort((a, b) => a.lo - b.lo);
     if (located.length !== spans.length) return [spans];
@@ -1053,8 +1067,7 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
     for (const item of located) {
       const current = components[components.length - 1];
       if (current && item.lo <= current.hi + 1400) {
-        current.spans.push(item.span);
-        current.hi = Math.max(current.hi, item.hi);
+        current.spans.push(item.span); current.hi = Math.max(current.hi, item.hi);
       } else components.push({ spans: [item.span], hi: item.hi });
     }
     return components.map((component) => component.spans);

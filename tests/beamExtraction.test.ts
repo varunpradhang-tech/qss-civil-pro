@@ -200,6 +200,25 @@ describe('cross-sheet beam extraction', () => {
     expect(member.length).toBe(3.976);
   });
 
+  it('keeps a vertical beam continuous through intersecting transverse beams', () => {
+    const plan = base('vertical-crossings.dwg');
+    plan.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 0, y: 10_000 } },
+      { layer: 'BEAM', a: { x: 450, y: 0 }, b: { x: 450, y: 10_000 } },
+      ...[2000, 4000, 6000, 8000].flatMap((y) => [
+        { layer: 'BEAM', a: { x: -3000, y }, b: { x: 3000, y } },
+        { layer: 'BEAM', a: { x: -3000, y: y + 300 }, b: { x: 3000, y: y + 300 } },
+      ]),
+    ];
+    plan.texts = [
+      { layer: 'BEAM NO', text: 'B34', pos: { x: 225, y: 5000 } },
+      { layer: 'TEXT', text: '450X750', pos: { x: 225, y: 5500 } },
+    ];
+    expect(extractMembers(plan, 'beam')).toEqual([
+      expect.objectContaining({ member: 'B34', length: 10, nos: 1, breadth: 0.45, height: 0.75 }),
+    ]);
+  });
+
   it('keeps the nearby beam-face length when a less-related dimension is farther away', () => {
     const plan = base('framing.dwg');
     plan.segments = [{ layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 2170, y: 0 } }];

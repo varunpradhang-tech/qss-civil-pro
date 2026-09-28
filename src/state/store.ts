@@ -60,7 +60,7 @@ const mid = () => `m${mseq++}`;
 
 // Increment whenever extraction or quantity rules change in a way that makes
 // previously saved member rows stale. Drawings are then re-extracted on open.
-const EXTRACTION_VERSION = 26;
+const EXTRACTION_VERSION = 27;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function snapshot(s: AppState): StoredProject | null {
@@ -117,6 +117,26 @@ export const useStore = create<AppState>((set, get) => ({
     set({ sheets, activeSheetId: active?.id ?? null, dwg: active?.dwg ?? null, projectId: `proj-${Date.now()}`, projectName: name, members: [] });
     get().extractQuantity();
     autosave(get);
+    // If the lightweight profile cache is absent, recover the teacher from a
+    // previously saved paired project in IndexedDB. This makes an unmarked-only
+    // rerun learn from the user's earlier marked upload instead of silently
+    // falling back to the original incomplete 51-panel interpretation.
+    if (sheets.length === 1) {
+      const base = sheets[0].dwg;
+      if (!loadDraftingProfile(base)) void listProjects().then(async (projects) => {
+        for (const summary of projects) {
+          const project = await getProject(summary.id);
+          const teacher = project?.sheets.map((sheet) => sheet.dwg)
+            .filter((candidate) => hasMarkedPanelCorrections(candidate) && samePlanGeometry(base, candidate))
+            .sort((a, b) => b.dimensions.length - a.dimensions.length)[0];
+          if (!teacher) continue;
+          const saved = saveDraftingProfile(base, teacher);
+          const current = get().sheets;
+          if (saved.saved && current.length === 1 && samePlanGeometry(base, current[0].dwg)) get().extractQuantity();
+          break;
+        }
+      }).catch(() => {});
+    }
   },
   setActiveSheet: (id) => { const sh = get().sheets.find((s) => s.id === id); if (!sh) return; set({ activeSheetId: id, dwg: sh.dwg }); get().extractQuantity(); },
 

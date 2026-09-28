@@ -340,16 +340,51 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
 
 // --- beam: group BEAM face segments into collinear runs (bridging support gaps), size from BEAM SIZE text ---
 function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { widthMm: number; depthMm: number }>, slabThicknesses: Map<string, number>, unoSize?: { widthMm: number; depthMm: number }): MemberRow[] {
-  const beams: Segment[] = dwg.segments.filter((s) => isBeamGeometryLayer(s.layer));
-  // Many consultants place sizes on generic TEXT layers. Accept only text that
-  // itself parses as a size; geometric proximity below still controls association.
-  const sizeTexts = dwg.texts.filter((t) => !!parseBeamSize(t.text));
-  // Beam marks are frequently placed on generic TEXT layers. The strict label
-  // grammar prevents notes and reinforcement text from becoming members.
-  const noTexts = dwg.texts.filter((t) => isBeamNumberLayer(t.layer) || !!beamLabel(t.text));
-  const slabLabels = dwg.texts
+  const allSlabLabels = dwg.texts
     .filter((t) => /slab no/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
     .map((t) => ({ ...t, code: t.text.replace(/\s/g, '').toUpperCase() }));
+  // A consultant may keep the framing plan, slab profiles, beam details and
+  // sections in one DWG. Only the dense slab-label cluster identifies the
+  // primary plan and is allowed to create beam members. Details remain valid
+  // reference evidence for section sizes, but never become quantity rows.
+  const planBounds = (() => {
+    if (allSlabLabels.length < 3) return undefined;
+    const remaining = new Set(allSlabLabels);
+    const groups: typeof allSlabLabels[] = [];
+    while (remaining.size) {
+      const seed = remaining.values().next().value as typeof allSlabLabels[number];
+      const group = [seed]; remaining.delete(seed);
+      for (let index = 0; index < group.length; index++) {
+        const current = group[index];
+        for (const candidate of [...remaining]) {
+          if (Math.hypot(candidate.pos.x - current.pos.x, candidate.pos.y - current.pos.y) <= 15_000) {
+            group.push(candidate); remaining.delete(candidate);
+          }
+        }
+      }
+      groups.push(group);
+    }
+    const primary = groups.sort((a, b) => b.length - a.length)[0];
+    if (!primary || primary.length < 3) return undefined;
+    const padding = 8_000;
+    return {
+      x0: Math.min(...primary.map((label) => label.pos.x)) - padding,
+      y0: Math.min(...primary.map((label) => label.pos.y)) - padding,
+      x1: Math.max(...primary.map((label) => label.pos.x)) + padding,
+      y1: Math.max(...primary.map((label) => label.pos.y)) + padding,
+    };
+  })();
+  const inPlan = (point: Pt) => !planBounds || (point.x >= planBounds.x0 && point.x <= planBounds.x1
+    && point.y >= planBounds.y0 && point.y <= planBounds.y1);
+  const beams: Segment[] = dwg.segments.filter((s) => isBeamGeometryLayer(s.layer)
+    && inPlan({ x: (s.a.x + s.b.x) / 2, y: (s.a.y + s.b.y) / 2 }));
+  // Many consultants place sizes on generic TEXT layers. Accept only text that
+  // itself parses as a size; geometric proximity below still controls association.
+  const sizeTexts = dwg.texts.filter((t) => !!parseBeamSize(t.text) && inPlan(t.pos));
+  // Beam marks are frequently placed on generic TEXT layers. The strict label
+  // grammar prevents notes and reinforcement text from becoming members.
+  const noTexts = dwg.texts.filter((t) => (isBeamNumberLayer(t.layer) || !!beamLabel(t.text)) && inPlan(t.pos));
+  const slabLabels = allSlabLabels.filter((label) => inPlan(label.pos));
   const BRIDGE = 1400, CLUSTER = 550; // 550mm merges a beam's two faces (width 240–500) into one run
 
   const runs: { a: Pt; b: Pt; horizontal: boolean }[] = [];

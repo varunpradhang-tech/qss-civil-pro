@@ -124,6 +124,40 @@ describe('cross-sheet beam extraction', () => {
     expect(member).toMatchObject({ member: 'B1', breadth: 0.3, height: 0.5, needsReview: false });
   });
 
+  it('never creates beam quantities from sections or details embedded beside the framing plan', () => {
+    const drawing = base('framing-plan-with-details.dwg');
+    drawing.extents.max = { x: 100_000, y: 60_000 };
+    drawing.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 9800, y: 0 } },
+      { layer: 'BEAM', a: { x: 0, y: 600 }, b: { x: 9800, y: 600 } },
+      { layer: 'BEAM', a: { x: 20_000, y: 0 }, b: { x: 29_800, y: 0 } },
+      { layer: 'BEAM', a: { x: 20_000, y: 600 }, b: { x: 29_800, y: 600 } },
+      ...Array.from({ length: 21 }, (_, index) => ({
+        layer: 'BEAM', a: { x: 60_000, y: index * 1500 }, b: { x: 64_000 + index * 50, y: index * 1500 },
+      })),
+    ];
+    drawing.texts = [
+      { layer: 'TITLE', text: 'TYPICAL FRAMING PLAN', pos: { x: 15_000, y: 20_000 } },
+      { layer: 'SLAB NO', text: 'S1', pos: { x: 3000, y: 4000 } },
+      { layer: 'SLAB NO', text: 'S2', pos: { x: 9000, y: 4000 } },
+      { layer: 'SLAB NO', text: 'S3', pos: { x: 15_000, y: 4000 } },
+      { layer: 'SLAB NO', text: 'S4', pos: { x: 21_000, y: 4000 } },
+      { layer: 'BEAM NO', text: 'B1', pos: { x: 4900, y: 300 } },
+      { layer: 'BEAM NO', text: 'B1', pos: { x: 24_900, y: 300 } },
+      { layer: 'TEXT', text: '600X800', pos: { x: 5500, y: 300 } },
+      { layer: 'TITLE', text: 'BEAM DETAILS AND SECTIONS', pos: { x: 60_000, y: 35_000 } },
+      ...Array.from({ length: 21 }, (_, index) => ({ layer: 'BEAM NO', text: 'B1', pos: { x: 62_000, y: index * 1500 } })),
+    ];
+    drawing.dimensions = [
+      { layer: 'DIM', measurement: 9800, dir: 'H', p1: { x: 0, y: 900 }, p2: { x: 9800, y: 900 }, mid: { x: 4900, y: 900 } },
+      { layer: 'DIM', measurement: 9800, dir: 'H', p1: { x: 20_000, y: 900 }, p2: { x: 29_800, y: 900 }, mid: { x: 24_900, y: 900 } },
+    ];
+
+    expect(extractMembers(drawing, 'beam')).toEqual([
+      expect.objectContaining({ member: 'B1', length: 9.8, nos: 2, breadth: 0.6, height: 0.8 }),
+    ]);
+  });
+
   it('reads the consultant note wording FOR BEAM SIZE SHALL BE 300X550 U.N.O.', () => {
     const plan = base('uno-consultant-wording.dwg');
     plan.segments = [

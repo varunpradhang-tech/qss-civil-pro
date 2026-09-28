@@ -170,7 +170,7 @@ describe('cross-sheet beam extraction', () => {
       { layer: 'TABLE-TEXT', text: 'B2', pos: { x: 61_500, y: 1000 } },
       { layer: 'TABLE-TEXT', text: '240X450', pos: { x: 63_000, y: 1000 } },
     ];
-    drawing.dimensions = [{ layer: 'DIM', measurement: 4450, dir: 'H',
+    drawing.dimensions = [{ layer: 'DIM1', measurement: 4450, dir: 'H',
       p1: { x: 60_000, y: 2000 }, p2: { x: 64_450, y: 2000 }, mid: { x: 62_225, y: 2000 } }];
     expect(extractMembers(drawing, 'beam')).toEqual([
       expect.objectContaining({ member: 'B2', length: 4.45, nos: 2, breadth: 0.24, height: 0.45 }),
@@ -216,6 +216,49 @@ describe('cross-sheet beam extraction', () => {
     ];
     expect(extractMembers(plan, 'beam')).toEqual([
       expect.objectContaining({ member: 'B34', length: 10, nos: 1, breadth: 0.45, height: 0.75 }),
+    ]);
+  });
+
+  it('does not merge mirrored copies across a differently labelled centre beam', () => {
+    const plan = base('mirrored-separated-beams.dwg');
+    plan.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 6825, y: 0 } },
+      { layer: 'BEAM', a: { x: 9500, y: 0 }, b: { x: 13_865, y: 0 } },
+      { layer: 'BEAM', a: { x: 16_500, y: 0 }, b: { x: 23_325, y: 0 } },
+    ];
+    plan.texts = [
+      { layer: 'BEAM NO', text: 'B7', pos: { x: 1500, y: 100 } },
+      { layer: 'BEAM NO', text: 'B7', pos: { x: 5200, y: 100 } },
+      { layer: 'BEAM NO', text: 'B8', pos: { x: 11_500, y: 100 } },
+      { layer: 'BEAM NO', text: 'B7', pos: { x: 18_000, y: 100 } },
+      { layer: 'BEAM NO', text: 'B7', pos: { x: 21_700, y: 100 } },
+      { layer: 'TEXT', text: '400X1100', pos: { x: 2000, y: 300 } },
+    ];
+    expect(extractMembers(plan, 'beam')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ member: 'B7', length: 6.825, nos: 2 }),
+      expect.objectContaining({ member: 'B8', length: 4.365, nos: 1 }),
+    ]));
+  });
+
+  it('keeps mirrored plan evidence when an unrelated detail span conflicts', () => {
+    const plan = base('mirrored-with-conflicting-detail.dwg');
+    plan.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 6825, y: 0 } },
+      { layer: 'BEAM', a: { x: 20_000, y: 0 }, b: { x: 26_825, y: 0 } },
+    ];
+    plan.texts = [
+      { layer: 'BEAM NO', text: 'B7', pos: { x: 3000, y: 100 } },
+      { layer: 'BEAM NO', text: 'B7', pos: { x: 23_000, y: 100 } },
+      { layer: 'TEXT', text: 'B7', pos: { x: 61_000, y: 1000 } },
+      { layer: 'TEXT', text: 'B7', pos: { x: 71_000, y: 1000 } },
+      { layer: 'TEXT', text: '400X1100', pos: { x: 3500, y: 300 } },
+    ];
+    plan.dimensions = [
+      { layer: 'BEAM', measurement: 1500, dir: 'H', p1: { x: 60_000, y: 2000 }, p2: { x: 61_500, y: 2000 }, mid: { x: 60_750, y: 2000 } },
+      { layer: 'BEAM', measurement: 1500, dir: 'H', p1: { x: 70_000, y: 2000 }, p2: { x: 71_500, y: 2000 }, mid: { x: 70_750, y: 2000 } },
+    ];
+    expect(extractMembers(plan, 'beam')).toEqual([
+      expect.objectContaining({ member: 'B7', length: 6.825, nos: 2, needsReview: false }),
     ]);
   });
 

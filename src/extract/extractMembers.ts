@@ -165,6 +165,10 @@ function beamReferenceLengths(dwgs: NormalizedDwg[]): Map<string, number> {
     if (!label || isBeamNumberLayer(text.layer)) continue;
     const nearest = dwg.dimensions
       .filter((dimension) => dimension.measurement >= 600 && dimension.measurement <= 30000)
+      // Slab/grid chains near a beam-detail mark are not beam spans. Detail
+      // dimensions on BEAM/DIM layers are the only admissible references.
+      .filter((dimension) => /beam|dim1/i.test(dimension.layer)
+        && !/slab|grid|s-dim|vin_/i.test(dimension.layer))
       .map((dimension) => ({ dimension, distance: Math.hypot(text.pos.x - dimension.mid.x, text.pos.y - dimension.mid.y) }))
       .filter((candidate) => candidate.distance <= 3000)
       .sort((a, b) => a.distance - b.distance)[0]?.dimension;
@@ -177,8 +181,18 @@ function beamReferenceLengths(dwgs: NormalizedDwg[]): Map<string, number> {
       const bucket = Math.round(value / 10) * 10;
       counts.set(bucket, [...(counts.get(bucket) || []), value]);
     }
-    const selected = [...counts.values()].sort((a, b) => b.length - a.length)[0];
-    if (selected) result.set(label, selected.reduce((sum, value) => sum + value, 0) / selected.length);
+    const ranked = [...counts.values()].sort((a, b) => b.length - a.length);
+    const selected = ranked[0];
+    // Two equally repeated detail dimensions mean the mark is used in more
+    // than one detail context; neither is a safe overall-span reference.
+    if (selected && (!ranked[1] || selected.length > ranked[1].length)) {
+      const mean = selected.reduce((sum, value) => sum + value, 0) / selected.length;
+      // CAD dimensions often contain floating-point residue (3853.068 for a
+      // drafted 3850). Snap only values already within 5 mm of a conventional
+      // 50 mm increment; otherwise retain legitimate 5 mm dimensions (4365).
+      const nearest50 = Math.round(mean / 50) * 50;
+      result.set(label, Math.abs(mean - nearest50) <= 5 ? nearest50 : Math.round(mean / 5) * 5);
+    }
   }
   return result;
 }
@@ -695,26 +709,45 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       const marks = labelled.filter((item) => item.label === member).map((item) => item.text.pos);
       if (marks.length < 2) continue;
       const horizontal = memberRows.filter((row) => Math.abs((row.cadX1 || 0) - (row.cadX0 || 0)) >= Math.abs((row.cadY1 || 0) - (row.cadY0 || 0))).length >= memberRows.length / 2;
-      const overall = runs
-        .filter((run) => run.horizontal === horizontal)
-        .map((run) => ({ run, segment: { layer: 'BEAM-RUN', a: run.a, b: run.b } as Segment }))
-        .map((candidate) => ({ ...candidate, covered: marks.filter((mark) => pointSegmentDistance(mark, candidate.segment) <= 1200).length }))
-        .filter((candidate) => candidate.covered === marks.length)
-        .filter((candidate) => {
-          const markLo = Math.min(...marks.map((mark) => horizontal ? mark.x : mark.y));
-          const markHi = Math.max(...marks.map((mark) => horizontal ? mark.x : mark.y));
-          const runLength = Math.hypot(candidate.run.b.x - candidate.run.a.x, candidate.run.b.y - candidate.run.a.y);
-          return runLength <= markHi - markLo + 4000;
-        })
-        .sort((a, b) => Math.hypot(b.run.b.x - b.run.a.x, b.run.b.y - b.run.a.y) - Math.hypot(a.run.b.x - a.run.a.x, a.run.b.y - a.run.a.y))[0]?.run;
-      if (!overall) continue;
-      const overallLength = Math.hypot(overall.b.x - overall.a.x, overall.b.y - overall.a.y);
-      for (const row of memberRows) {
-        row.length = round3(overallLength / 1000);
-        row.sideLength = row.length;
-        row.cadX0 = overall.a.x; row.cadY0 = overall.a.y;
-        row.cadX1 = overall.b.x; row.cadY1 = overall.b.y;
-        row.measurementSource = 'drawing geometry';
+      const baselineGroups: Pt[][] = [];
+      for (const mark of [...marks].sort((a, b) => (horizontal ? a.y - b.y : a.x - b.x))) {
+        const perpendicular = horizontal ? mark.y : mark.x;
+        const group = baselineGroups.find((candidate) => Math.abs(candidate.reduce((sum, point) => sum
+          + (horizontal ? point.y : point.x), 0) / candidate.length - perpendicular) <= 1000);
+        if (group) group.push(mark); else baselineGroups.push([mark]);
+      }
+      for (const baseline of baselineGroups) {
+        const ordered = [...baseline].sort((a, b) => (horizontal ? a.x - b.x : a.y - b.y));
+        const gaps = ordered.slice(1).map((mark, index) => (horizontal ? mark.x - ordered[index].x : mark.y - ordered[index].y));
+        const small = [...gaps].sort((a, b) => a - b).slice(0, Math.max(1, Math.ceil(gaps.length / 2)));
+        const typical = small.reduce((sum, gap) => sum + gap, 0) / Math.max(small.length, 1);
+        const clusters: Pt[][] = [[]];
+        for (let index = 0; index < ordered.length; index++) {
+          if (index && typical > 0 && gaps[index - 1] > typical * 1.8 && gaps[index - 1] > 4000) clusters.push([]);
+          clusters[clusters.length - 1].push(ordered[index]);
+        }
+        for (const cluster of clusters.filter((candidate) => candidate.length >= 2)) {
+          const markLo = Math.min(...cluster.map((mark) => horizontal ? mark.x : mark.y));
+          const markHi = Math.max(...cluster.map((mark) => horizontal ? mark.x : mark.y));
+          const complete = runs.filter((run) => run.horizontal === horizontal)
+            .map((run) => ({ run, segment: { layer: 'BEAM-RUN', a: run.a, b: run.b } as Segment,
+              length: Math.hypot(run.b.x - run.a.x, run.b.y - run.a.y) }))
+            .filter((candidate) => cluster.every((mark) => pointSegmentDistance(mark, candidate.segment) <= 1200)
+              && candidate.length <= markHi - markLo + 4000)
+            .sort((a, b) => b.length - a.length)[0];
+          if (!complete) continue;
+          for (const row of memberRows.filter((candidate) => {
+            const midpoint = { x: ((candidate.cadX0 || 0) + (candidate.cadX1 || 0)) / 2,
+              y: ((candidate.cadY0 || 0) + (candidate.cadY1 || 0)) / 2 };
+            return pointSegmentDistance(midpoint, complete.segment) <= 1200
+              && cluster.some((mark) => pointSegmentDistance(mark, complete.segment) <= 1200);
+          })) {
+            row.length = row.sideLength = round3(complete.length / 1000);
+            row.cadX0 = complete.run.a.x; row.cadY0 = complete.run.a.y;
+            row.cadX1 = complete.run.b.x; row.cadY1 = complete.run.b.y;
+            row.measurementSource = 'drawing geometry';
+          }
+        }
       }
     }
     let consolidated = consolidateBeamRows(rows);
@@ -774,7 +807,9 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
     }
     for (const row of consolidated) {
       const reference = referenceLengths.get(row.member);
-      if (!reference || reference < row.length * 1000 * 0.7 || reference > row.length * 1000 * 1.3) continue;
+      const ratio = reference ? reference / Math.max(row.length * 1000, 1) : 0;
+      const accepted = row.nos > 1 ? ratio >= 0.7 && ratio <= 1.3 : ratio >= 0.4 && ratio <= 2;
+      if (!reference || !accepted) continue;
       row.length = row.sideLength = round3(reference / 1000);
       row.measurementSource = 'marked dimension';
     }
@@ -966,11 +1001,20 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
     // fold them into one MB row with Nos after support deductions are known.
     for (const row of consolidated) {
       const reference = referenceLengths.get(row.member);
-      if (!reference || reference < row.length * 1000 * 0.7 || reference > row.length * 1000 * 1.3) continue;
+      const ratio = reference ? reference / Math.max(row.length * 1000, 1) : 0;
+      const accepted = row.nos > 1 ? ratio >= 0.7 && ratio <= 1.3 : ratio >= 0.4 && ratio <= 2;
+      if (!reference || !accepted) continue;
       row.length = round3(reference / 1000);
       row.sideLength = round3(Math.max(row.length - (row.supportWidths || []).reduce((sum, width) => sum + width, 0), 0));
       row.measurementSource = 'marked dimension';
     }
+    // Once a verified detail span exists, discard tiny leftover fragments of
+    // the same mark. They are support-face remnants, not additional beams
+    // (the former source of B31=0 and duplicate B35/B36 rows).
+    consolidated = consolidated.filter((row) => {
+      const reference = referenceLengths.get(row.member);
+      return !reference || row.length >= reference / 1000 * 0.5;
+    });
     const finalRows = new Map<string, MemberRow>();
     for (const row of consolidated) {
       // Repeated labels along one continuous beam resolve to the same CAD run.
@@ -1000,6 +1044,16 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       for (let index = 1; index < positions.length; index++)
         if (positions[index] - positions[index - 1] > row.length * 1500) copies++;
       row.nos = Math.max(row.nos, copies);
+      const reference = referenceLengths.get(row.member);
+      const conflictRatio = reference ? reference / Math.max(row.length * 1000, 1) : 1;
+      if (row.nos <= 1 && reference && (conflictRatio < 0.4 || conflictRatio > 2)) {
+        // Conflicting plan/detail evidence must never become a confident
+        // quantity. Retain an auditable review row but count zero until the
+        // member span is resolved (B10), rather than inventing beam work.
+        row.nos = 0;
+        row.needsReview = true;
+        row.reviewReason = 'plan trace conflicts with the verified beam-detail span';
+      }
     }
     return [...quantityRows.values()].sort((a, b) => compareBeamLabels(a.member, b.member));
   }

@@ -29,6 +29,28 @@ describe('unmarked slab geometry', () => {
     expect(oversized.duplicate).toBe(true);
     expect(exact.duplicate).toBe(false);
   });
+
+  it('recovers an unlabelled XB-bounded bay inside an established framing-plan footprint', () => {
+    const plan = drawing();
+    plan.extents.max = { x: 19000, y: 3000 };
+    plan.segments = [];
+    plan.texts = [{ layer: 'TITLE', text: 'TYPICAL FLOOR FRAMING PLAN', pos: { x: 9000, y: 5000 } }];
+    for (let bay = 0; bay < 6; bay++) {
+      const x0 = bay * 3200, x1 = x0 + 3000;
+      plan.segments.push(
+        { layer: 'BEAM 2', a: { x: x0, y: 0 }, b: { x: x1, y: 0 } },
+        { layer: 'BEAM 2', a: { x: x0, y: 3000 }, b: { x: x1, y: 3000 } },
+        { layer: 'BEAM 2', a: { x: x0, y: 0 }, b: { x: x0, y: 3000 } },
+        { layer: 'BEAM 2', a: { x: x1, y: 0 }, b: { x: x1, y: 3000 } },
+      );
+      if (bay < 5) plan.texts.push({ layer: 'SLAB', text: `S${bay + 1}`, pos: { x: x0 + 1500, y: 1500 } });
+    }
+    const panels = autoProposePanels(plan);
+    expect(panels.filter((panel) => /^S\d/.test(panel.label || ''))).toHaveLength(5);
+    expect(panels).toContainEqual(expect.objectContaining({
+      label: 'UNMARKED SLAB', lengthMm: 3000, breadthMm: 3000, closedStructuralBoundary: true,
+    }));
+  });
   it('stops overlapping mirror bays at the stepped RCC core faces', () => {
     const panel = (x0: number, x1: number): PanelProposalBox => ({ label: 'UNMARKED SLAB',
       box: { x0, y0: 0, x1, y1: 2000 }, lengthMm: x1 - x0, breadthMm: 2000,

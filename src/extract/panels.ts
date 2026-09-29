@@ -607,6 +607,49 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       openingM2: 0, thicknessMm: panelThickness(face.box, centre, thicknesses),
       confident: true, duplicate: false, closedStructuralBoundary: true });
   }
+  // Framing plans can contain genuine slab bays with no repeated S mark. XB
+  // secondary beams still close those bays, so recover their exact structural
+  // faces inside the already established plan footprint. This is deliberately
+  // unavailable outside a labelled framing plan and excludes sparse wall
+  // outlines, stairs, X-voids, details and anything already measured.
+  const measuredPlanPanels = out.filter((panel) => /^S\d+[A-Z]?$/i.test(panel.label || '')
+    && !panel.crossesDifferentSlabMark);
+  if (measuredPlanPanels.length >= 5 && dwg.texts.some((text) => /\bFRAMING\s+PLAN\b/i.test(text.text))) {
+    const footprint = measuredPlanPanels.reduce((box, panel) => ({
+      x0: Math.min(box.x0, panel.box.x0), y0: Math.min(box.y0, panel.box.y0),
+      x1: Math.max(box.x1, panel.box.x1), y1: Math.max(box.y1, panel.box.y1),
+    }), { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+    const candidateFaces = topologyFaces.filter((face) => {
+      const width = face.box.x1 - face.box.x0, height = face.box.y1 - face.box.y0;
+      const boxM2 = width * height / 1e6;
+      const centre = { x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 };
+      if (width < 600 || height < 600 || face.areaM2 < 0.2 || face.areaM2 > 200
+        || face.areaM2 < boxM2 * 0.55 || simplifyCollinearPolygon(face.polygon).length > 16
+        || face.box.x0 < footprint.x0 - 3000 || face.box.x1 > footprint.x1 + 3000
+        || face.box.y0 < footprint.y0 - 3000 || face.box.y1 > footprint.y1 + 3000
+        || excludedDetailPoint(centre) || bayImageShowsFullX(allSegs, face.box)) return false;
+      const stairStroke = allSegs.some((segment) => /(?:^|[-_$\s])(?:stair|step|flight)(?:$|[-_$\s])/i.test(segment.layer)
+        && pointInPolygon(mid(segment.a, segment.b), face.polygon));
+      if (stairStroke) return false;
+      return !out.some((panel) => {
+        const intersection = panel.polygon ? polygonRectIntersectionArea(panel.polygon, face.box)
+          : Math.max(0, Math.min(panel.box.x1, face.box.x1) - Math.max(panel.box.x0, face.box.x0))
+            * Math.max(0, Math.min(panel.box.y1, face.box.y1) - Math.max(panel.box.y0, face.box.y0));
+        return intersection / Math.max(Math.min(boxArea(panel.box), boxArea(face.box)), 1) > 0.15;
+      });
+    }).sort((a, b) => a.areaM2 - b.areaM2);
+    for (const face of candidateFaces) {
+      if (out.some((panel) => overlapFrac(panel.box, face.box) > 0.15)) continue;
+      const shape = simplifyCollinearPolygon(face.polygon);
+      const rectangular = face.areaM2 >= boxArea(face.box) / 1e6 * 0.985;
+      const centre = { x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 };
+      out.push({ label: 'UNMARKED SLAB', box: face.box, polygon: rectangular ? undefined : shape,
+        netAreaM2: rectangular ? undefined : face.areaM2,
+        lengthMm: face.box.x1 - face.box.x0, breadthMm: face.box.y1 - face.box.y0,
+        openingM2: 0, thicknessMm: panelThickness(face.box, centre, thicknesses),
+        confident: false, duplicate: false, closedStructuralBoundary: true });
+    }
+  }
   // Polygonise the real band around each standalone C mark. A valid band has
   // a dashed/hidden inner beam face AND a continuous outer slab/free edge.
   // This preserves tapered, curved (segmented), L-shaped and other irregular

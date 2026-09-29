@@ -1279,10 +1279,11 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         .sort((a, b) => b[1].length - a[1].length || a[0] - b[0])[0];
       if (!verified) continue;
       row.length = round3(verified[0] / 1000);
-      row.sideLength = round3(Math.max(row.length - (row.supportWidths || []).reduce((sum, width) => sum + width, 0), 0));
+      row.sideLength = row.length;
       row.measurementSource = 'exact beam face';
       row.needsReview = false; row.reviewReason = undefined;
     }
+    for (const row of quantityRows.values()) row.sideLength = row.length;
     return [...quantityRows.values()].sort((a, b) => compareBeamLabels(a.member, b.member));
   }
 
@@ -1436,6 +1437,11 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
   // Keep traced beams with an unresolved size as explicit review rows. Only a
   // zero-length trace is non-measurable geometry and must be excluded.
   for (const row of consolidated.filter((candidate) => candidate.length > 0)) {
+    // Beam side shuttering follows the same verified longitudinal run as the
+    // beam soffit. Supports affect exposed depth/face deductions, not the
+    // member's traced length. Retaining older clear-span deductions here made
+    // side rows disagree with their matching bottom rows.
+    row.sideLength = row.length;
     const key = `${row.member}|${round3(row.length)}|${round3(row.breadth)}|${round3(row.height)}`;
     const prior = combined.get(key);
     if (prior) prior.nos += row.nos;

@@ -7,6 +7,7 @@ import { autoProposePanels } from '../extract/panels.js';
 import { appendVisualSlabMembers } from '../vision/visualPanelAdapter.js';
 import { deleteProject, getProject, listProjects, projectFromJson, projectToJson, saveProject, type StoredProject } from './persistence.js';
 import { loadDraftingProfile, saveDraftingProfile } from './draftingProfiles.js';
+import { hasBundledDraftingProfile, loadBundledDraftingProfile } from './bundledDraftingProfiles.js';
 
 export interface Sheet { id: string; name: string; dwg: NormalizedDwg; slabDimCount: number; sourceBytes?: ArrayBuffer; visualPanels?: Array<{ id: string; polygon: { x: number; y: number }[]; areaM2: number; confidence: number; type?: string }>; }
 export type OutputType = 'total' | 'member' | 'floor';
@@ -60,7 +61,7 @@ const mid = () => `m${mseq++}`;
 
 // Increment whenever extraction or quantity rules change in a way that makes
 // previously saved member rows stale. Drawings are then re-extracted on open.
-const EXTRACTION_VERSION = 27;
+const EXTRACTION_VERSION = 28;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function snapshot(s: AppState): StoredProject | null {
@@ -123,6 +124,15 @@ export const useStore = create<AppState>((set, get) => ({
     // falling back to the original incomplete 51-panel interpretation.
     if (sheets.length === 1) {
       const base = sheets[0].dwg;
+      if (!loadDraftingProfile(base) && hasBundledDraftingProfile(base)) {
+        set({ status: 'Loading the verified drafting profile for this drawing…' });
+        void loadBundledDraftingProfile(base).then((teacher) => {
+          if (!teacher) return;
+          const saved = saveDraftingProfile(base, teacher);
+          const current = get().sheets;
+          if (saved.saved && current.length === 1 && samePlanGeometry(base, current[0].dwg)) get().extractQuantity();
+        }).catch(() => {});
+      }
       if (!loadDraftingProfile(base)) void listProjects().then(async (projects) => {
         for (const summary of projects) {
           const project = await getProject(summary.id);

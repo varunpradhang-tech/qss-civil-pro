@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { parseDwg } from '../src/parsing/parse.js';
 import { extractMembers } from '../src/extract/extractMembers.js';
 import { loadDraftingProfile, saveDraftingProfile } from '../src/state/draftingProfiles.js';
+import { hasBundledDraftingProfile } from '../src/state/bundledDraftingProfiles.js';
 
 const WASM = './node_modules/@mlightcad/libredwg-web/wasm/';
 const plainFile = fileURLToPath(new URL('../assets/06. TYPICAL FRAMING PLAN.dwg', import.meta.url));
@@ -31,6 +32,7 @@ describe('Tower A & B typical framing plan acceptance', () => {
   it('extracts the verified physical beam spans, copies, sizes and UNO slab deductions', async () => {
     const plain = await drawing(plainFile, '06. TYPICAL FRAMING PLAN.dwg');
     const beams = extractMembers(plain, 'beam');
+    expect(beams.every((beam) => beam.sideLength === beam.length)).toBe(true);
     const expected: Record<string, { length: number; nos: number }> = {
       B7: { length: 6.825, nos: 2 }, B8: { length: 4.365, nos: 2 },
       B9: { length: 6.45, nos: 1 }, B10: { length: 8.15, nos: 2 },
@@ -51,6 +53,7 @@ describe('Tower A & B typical framing plan acceptance', () => {
   it('retains all 59 verified slab panels for the pair and a later unmarked-only upload', async () => {
     const plain = await drawing(plainFile, '06. TYPICAL FRAMING PLAN.dwg');
     const marked = await drawing(markedFile, '06. updated TYPICAL FRAMING PLAN.dwg');
+    expect(hasBundledDraftingProfile(plain)).toBe(true);
     expect(extractMembers([plain, marked], 'slab')).toHaveLength(59);
     expect(saveDraftingProfile(plain, marked).saved).toBe(true);
     const learned = loadDraftingProfile(plain);

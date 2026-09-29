@@ -33,7 +33,7 @@ export interface MemberRow {
   netArea?: number; // m², exact polygonal slab area when not rectangular
   needsReview: boolean;
   reviewReason?: string;
-  measurementSource?: 'marked dimension' | 'drawing geometry' | 'rcc support faces';
+  measurementSource?: 'marked dimension' | 'drawing geometry' | 'exact beam face' | 'rcc support faces';
   cadX?: number; // source drawing coordinate in mm, used by reference CAD export
   cadY?: number;
   cadX0?: number;

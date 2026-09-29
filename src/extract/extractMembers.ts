@@ -168,8 +168,10 @@ function beamReferenceLengths(dwgs: NormalizedDwg[]): Map<string, number> {
       .filter((dimension) => dimension.measurement >= 600 && dimension.measurement <= 30000)
       // Slab/grid chains near a beam-detail mark are not beam spans. Detail
       // dimensions on BEAM/DIM layers are the only admissible references.
-      .filter((dimension) => /beam|dim1/i.test(dimension.layer)
-        && !/slab|grid|s-dim|vin_/i.test(dimension.layer))
+      .filter((dimension) => /dim1/i.test(dimension.layer)
+        || (/beam/i.test(dimension.layer) && !/^beam$/i.test(dimension.layer.trim()))
+        || (/^beam$/i.test(dimension.layer.trim()) && dimension.measurement >= 3000))
+      .filter((dimension) => !/slab|grid|s-dim|vin_/i.test(dimension.layer))
       .map((dimension) => ({ dimension, distance: Math.hypot(text.pos.x - dimension.mid.x, text.pos.y - dimension.mid.y) }))
       .filter((candidate) => candidate.distance <= 3000)
       .sort((a, b) => a.distance - b.distance)[0]?.dimension;
@@ -453,6 +455,13 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
   // members. Remove only long lanes containing many distinct marks; ordinary
   // vertical framing beams have few repeated marks and remain untouched.
   const registerTexts = new Set<typeof dedicatedNoTexts[number]>();
+  // A vertical beam schedule may mix plain labels (B12A) with grouped labels
+  // (B12/B12B), so lane grammar alone cannot remove every row. The schedule's
+  // BEAM NUMBER header defines the whole register column.
+  const registerHeaders = dwg.texts.filter((text) => /\bBEAM\s+NUMBER\b/i.test(text.text));
+  for (const text of dedicatedNoTexts) if (registerHeaders.some((header) =>
+    Math.abs(text.pos.x - header.pos.x) <= 1200
+    && text.pos.y <= header.pos.y + 1200 && text.pos.y >= header.pos.y - 45_000)) registerTexts.add(text);
   for (const vertical of [true, false]) {
     const ordered = [...dedicatedNoTexts].sort((a, b) => (vertical ? a.pos.x - b.pos.x : a.pos.y - b.pos.y));
     const lanes: typeof dedicatedNoTexts[] = [];
@@ -466,11 +475,10 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
     }
     for (const lane of lanes) {
       const distinct = new Set(lane.map((text) => beamLabel(text.text))).size;
-      const along = lane.map((text) => vertical ? text.pos.y : text.pos.x).sort((a, b) => a - b);
-      const gaps = along.slice(1).map((value, index) => value - along[index]).filter((gap) => gap >= 100);
-      const median = [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)] ?? 0;
-      const regular = gaps.filter((gap) => Math.abs(gap - median) <= Math.max(10, median * 0.05)).length;
-      if (lane.length >= 8 && distinct >= 8 && regular >= Math.max(5, Math.floor(gaps.length * 0.6)))
+      // A physical vertical/horizontal beam cannot carry eight different beam
+      // marks at the exact same coordinate. Detail/register columns can have
+      // irregular row spacing, so regular spacing is not required to reject it.
+      if (lane.length >= 8 && distinct >= 8)
         for (const text of lane) registerTexts.add(text);
     }
   }
@@ -501,6 +509,37 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
   };
   build(beams.filter((s) => Math.abs(s.a.y - s.b.y) < Math.abs(s.a.x - s.b.x)).map((s) => ({ coord: (s.a.y + s.b.y) / 2, lo: Math.min(s.a.x, s.b.x), hi: Math.max(s.a.x, s.b.x) })), true);
   build(beams.filter((s) => Math.abs(s.a.y - s.b.y) >= Math.abs(s.a.x - s.b.x)).map((s) => ({ coord: (s.a.x + s.b.x) / 2, lo: Math.min(s.a.y, s.b.y), hi: Math.max(s.a.y, s.b.y) })), false);
+
+  // Preserve runs on an exact CAD baseline as stronger evidence than the
+  // width-clustered runs above. Clustering the two faces of a beam is useful
+  // for fragmented drawings, but at junctions it can join two different
+  // collinear members (the former B10 11.775 m result).
+  const faceRuns: typeof runs = [];
+  const buildFaceRuns = (segs: { coord: number; lo: number; hi: number }[], horizontal: boolean) => {
+    segs.sort((a, b) => a.coord - b.coord);
+    const lines: { coord: number; iv: [number, number][] }[] = [];
+    for (const segment of segs) {
+      let line = lines.find((candidate) => Math.abs(candidate.coord - segment.coord) <= 25);
+      if (!line) { line = { coord: segment.coord, iv: [] }; lines.push(line); }
+      line.iv.push([segment.lo, segment.hi]);
+    }
+    for (const line of lines) {
+      line.iv.sort((a, b) => a[0] - b[0]);
+      const merged: [number, number][] = [];
+      for (const interval of line.iv) {
+        const prior = merged[merged.length - 1];
+        if (prior && interval[0] <= prior[1] + BRIDGE) prior[1] = Math.max(prior[1], interval[1]);
+        else merged.push([...interval]);
+      }
+      for (const [lo, hi] of merged) if (hi - lo >= 600)
+        faceRuns.push(horizontal ? { a: { x: lo, y: line.coord }, b: { x: hi, y: line.coord }, horizontal }
+          : { a: { x: line.coord, y: lo }, b: { x: line.coord, y: hi }, horizontal });
+    }
+  };
+  buildFaceRuns(beams.filter((s) => Math.abs(s.a.y - s.b.y) < Math.abs(s.a.x - s.b.x))
+    .map((s) => ({ coord: (s.a.y + s.b.y) / 2, lo: Math.min(s.a.x, s.b.x), hi: Math.max(s.a.x, s.b.x) })), true);
+  buildFaceRuns(beams.filter((s) => Math.abs(s.a.y - s.b.y) >= Math.abs(s.a.x - s.b.x))
+    .map((s) => ({ coord: (s.a.x + s.b.x) / 2, lo: Math.min(s.a.y, s.b.y), hi: Math.max(s.a.y, s.b.y) })), false);
 
   const nearestText = (mid: Pt, arr: { pos: Pt; text: string }[], max: number) => {
     let best: string | undefined, bd = max;
@@ -752,6 +791,61 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       }
     }
     let consolidated = consolidateBeamRows(rows);
+    // If an exact-baseline face covers the plan marks, it is direct span
+    // evidence. Prefer it for repeated marks; for a single mark use it only
+    // when it agrees with the initial trace, so incomplete faces such as B31
+    // can still use a verified detail dimension.
+    for (const row of consolidated) {
+      if ([row.cadX0, row.cadY0, row.cadX1, row.cadY1].some((value) => value == null)) continue;
+      const horizontal = Math.abs((row.cadX1 as number) - (row.cadX0 as number)) >= Math.abs((row.cadY1 as number) - (row.cadY0 as number));
+      const perpendicular = horizontal ? ((row.cadY0 as number) + (row.cadY1 as number)) / 2
+        : ((row.cadX0 as number) + (row.cadX1 as number)) / 2;
+      const along0 = horizontal ? Math.min(row.cadX0 as number, row.cadX1 as number) : Math.min(row.cadY0 as number, row.cadY1 as number);
+      const along1 = horizontal ? Math.max(row.cadX0 as number, row.cadX1 as number) : Math.max(row.cadY0 as number, row.cadY1 as number);
+      const marks = labelled.filter((item) => item.label === row.member)
+        .map((item) => item.text.pos)
+        .filter((mark) => Math.abs((horizontal ? mark.y : mark.x) - perpendicular) <= 1200
+          && (horizontal ? mark.x : mark.y) >= along0 - 3000 && (horizontal ? mark.x : mark.y) <= along1 + 3000);
+      if (!marks.length) continue;
+      const candidates = faceRuns.filter((run) => run.horizontal === horizontal)
+        .map((run) => ({ run, segment: { layer: 'BEAM-FACE', a: run.a, b: run.b } as Segment,
+          length: Math.hypot(run.b.x - run.a.x, run.b.y - run.a.y) }))
+        .filter((candidate) => marks.every((mark) => pointSegmentDistance(mark, candidate.segment) <= 1200))
+        .sort((a, b) => a.length - b.length);
+      const reference = referenceLengths.get(row.member);
+      const rawCandidates = beams.filter((segment) => {
+        const segmentHorizontal = Math.abs(segment.a.x - segment.b.x) >= Math.abs(segment.a.y - segment.b.y);
+        return segmentHorizontal === horizontal
+          && marks.every((mark) => pointSegmentDistance(mark, segment) <= 1200)
+          && Math.hypot(segment.b.x - segment.a.x, segment.b.y - segment.a.y) >= 600;
+      }).map((segment) => ({ run: { a: segment.a, b: segment.b, horizontal }, segment,
+        length: Math.hypot(segment.b.x - segment.a.x, segment.b.y - segment.a.y) }))
+        .filter((candidate) => !reference || (candidate.length / Math.max(row.length * 1000, 1) >= 0.8
+          && candidate.length / Math.max(row.length * 1000, 1) <= 1.2))
+        .sort((a, b) => b.length - a.length);
+      const direct = rawCandidates[0] ?? candidates[0];
+      const agreement = direct ? direct.length / Math.max(row.length * 1000, 1) : 0;
+      const referenceAgreement = direct && reference ? direct.length / reference : 0;
+      if (!direct || (marks.length === 1 && reference != null
+        && (agreement < 0.85 || agreement > 1.2 || referenceAgreement < 0.9 || referenceAgreement > 1.1))) continue;
+      // A merged face run can differ by a few millimetres where fragmented
+      // endpoints overlap. Recover the nearest intact raw face on the same
+      // member (B9 6450, B17 1860) before conventional rounding.
+      const intactLength = beams.filter((segment) => {
+        const segmentHorizontal = Math.abs(segment.a.x - segment.b.x) >= Math.abs(segment.a.y - segment.b.y);
+        const length = Math.hypot(segment.b.x - segment.a.x, segment.b.y - segment.a.y);
+        return segmentHorizontal === horizontal && Math.abs(length - direct.length) <= 25
+          && marks.some((mark) => pointSegmentDistance(mark, segment) <= 1200);
+      }).map((segment) => Math.hypot(segment.b.x - segment.a.x, segment.b.y - segment.a.y))
+        .sort((a, b) => Math.abs(a - direct.length) - Math.abs(b - direct.length))[0];
+      const resolvedLength = intactLength ?? direct.length;
+      const nearest50 = Math.round(resolvedLength / 50) * 50;
+      const normalizedLength = Math.abs(resolvedLength - nearest50) <= 5 ? nearest50 : resolvedLength;
+      row.length = row.sideLength = round3(normalizedLength / 1000);
+      row.cadX0 = direct.run.a.x; row.cadY0 = direct.run.a.y;
+      row.cadX1 = direct.run.b.x; row.cadY1 = direct.run.b.y;
+      row.measurementSource = 'exact beam face';
+    }
     // Some framing plans print the same beam mark near both ends of one beam.
     // A written overall dimension spanning that pair identifies one physical
     // member; matching co-linear pairs are its mirrored copies. Do this before
@@ -810,7 +904,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       const reference = referenceLengths.get(row.member);
       const ratio = reference ? reference / Math.max(row.length * 1000, 1) : 0;
       const accepted = row.nos > 1 ? ratio >= 0.7 && ratio <= 1.3 : ratio >= 0.4 && ratio <= 2;
-      if (!reference || !accepted) continue;
+      if (!reference || !accepted || row.measurementSource === 'exact beam face') continue;
       row.length = row.sideLength = round3(reference / 1000);
       row.measurementSource = 'marked dimension';
     }
@@ -833,7 +927,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
     }));
     for (const row of consolidated) {
       const marks = labelled.filter((item) => item.label === row.member).map((item) => item.text.pos);
-      if (!marks.length || row.nos > 1) continue;
+      if (!marks.length || row.nos > 1 || row.measurementSource === 'exact beam face') continue;
       const horizontal = Math.abs((row.cadX1 || 0) - (row.cadX0 || 0)) >= Math.abs((row.cadY1 || 0) - (row.cadY0 || 0));
       const completeRun = runs.map((run) => {
         const segment: Segment = { layer: 'BEAM-RUN', a: run.a, b: run.b };
@@ -903,7 +997,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         if (left && right && right.x0 > left.x1) {
           const clear = (right.x0 - left.x1) / 1000;
           const supportLength = ((left.x1 - left.x0) + (right.x1 - right.x0)) / 1000;
-          row.length = row.sideLength = round3(clear);
+          row.sideLength = round3(clear);
           row.columnCapDeduction = round3(supportLength * row.breadth * row.height);
           row.bottomJointDeduction = round3(supportLength * row.breadth);
         } else {
@@ -912,12 +1006,9 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
           const known = right ?? left;
           if (known && marks.length === 2 && (leftMass || rightMass)) {
             const terminalWidth = known.x1 - known.x0;
-            row.length = row.sideLength = round3(Math.max(row.length - terminalWidth / 1000, 0));
-            if (right) row.cadX1 = (row.cadX1 || 0) - terminalWidth;
-            else row.cadX0 = (row.cadX0 || 0) + terminalWidth;
+            row.sideLength = round3(Math.max(row.length - terminalWidth / 1000, 0));
             row.columnCapDeduction = round3(terminalWidth / 1000 * row.breadth * row.height);
             row.bottomJointDeduction = round3(terminalWidth / 1000 * row.breadth);
-            row.measurementSource = 'rcc support faces';
           }
         }
       } else {
@@ -928,7 +1019,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         if (bottom && top && top.y0 > bottom.y1) {
           const clear = (top.y0 - bottom.y1) / 1000;
           const supportLength = ((bottom.y1 - bottom.y0) + (top.y1 - top.y0)) / 1000;
-          row.length = row.sideLength = round3(clear);
+          row.sideLength = round3(clear);
           row.columnCapDeduction = round3(supportLength * row.breadth * row.height);
           row.bottomJointDeduction = round3(supportLength * row.breadth);
         }
@@ -959,6 +1050,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
     for (const group of comparable.values()) {
       if (group.length < 2) continue;
       for (const row of group) {
+        if (row.measurementSource === 'exact beam face') continue;
         const horizontal = Math.abs((row.cadX1 as number) - (row.cadX0 as number)) >= Math.abs((row.cadY1 as number) - (row.cadY0 as number));
         const lo = horizontal ? Math.min(row.cadX0 as number, row.cadX1 as number) : Math.min(row.cadY0 as number, row.cadY1 as number);
         const hi = horizontal ? Math.max(row.cadX0 as number, row.cadX1 as number) : Math.max(row.cadY0 as number, row.cadY1 as number);
@@ -970,6 +1062,19 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         const longest = Math.max(...aligned.map((candidate) => candidate.length));
         if (longest > 0 && row.length / longest >= 0.85) row.length = longest;
       }
+    }
+    // Mirrored intact faces can differ slightly because the consultant drew
+    // opposite tower halves independently. Treat close (<=3%) same-mark,
+    // same-section copies as one measured length with Nos, while preserving
+    // genuinely different spans.
+    for (const group of comparable.values()) {
+      const exact = group.filter((row) => row.measurementSource === 'exact beam face');
+      if (exact.length < 2) continue;
+      const shortest = Math.min(...exact.map((row) => row.length));
+      const longest = Math.max(...exact.map((row) => row.length));
+      if (!shortest || shortest / longest < 0.97) continue;
+      const normalized = round3(Math.round((exact.reduce((sum, row) => sum + row.length, 0) / exact.length) * 200) / 200);
+      for (const row of exact) row.length = normalized;
     }
     for (const row of consolidated) {
       if ([row.cadX0, row.cadY0, row.cadX1, row.cadY1].some((value) => value == null)) continue;
@@ -1004,7 +1109,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       const reference = referenceLengths.get(row.member);
       const ratio = reference ? reference / Math.max(row.length * 1000, 1) : 0;
       const accepted = row.nos > 1 ? ratio >= 0.7 && ratio <= 1.3 : ratio >= 0.4 && ratio <= 2;
-      if (!reference || !accepted) continue;
+      if (!reference || !accepted || row.measurementSource === 'exact beam face') continue;
       row.length = round3(reference / 1000);
       row.sideLength = round3(Math.max(row.length - (row.supportWidths || []).reduce((sum, width) => sum + width, 0), 0));
       row.measurementSource = 'marked dimension';
@@ -1047,7 +1152,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       row.nos = Math.max(row.nos, copies);
       const reference = referenceLengths.get(row.member);
       const conflictRatio = reference ? reference / Math.max(row.length * 1000, 1) : 1;
-      if (row.nos <= 1 && reference && (conflictRatio < 0.4 || conflictRatio > 2)) {
+      if (row.nos <= 1 && row.measurementSource !== 'exact beam face' && reference && (conflictRatio < 0.4 || conflictRatio > 2)) {
         // Conflicting plan/detail evidence must never become a confident
         // quantity. Retain an auditable review row but count zero until the
         // member span is resolved (B10), rather than inventing beam work.
@@ -1196,7 +1301,8 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
       }
     }
     row.measurementSource = spans.every((span) => span.measurementSource === 'marked dimension')
-      ? 'marked dimension' : 'drawing geometry';
+      ? 'marked dimension' : spans.every((span) => span.measurementSource === 'exact beam face')
+        ? 'exact beam face' : 'drawing geometry';
     row.needsReview = spans.some((span) => span.needsReview === true);
     row.reviewReason = [...new Set(spans.map((span) => span.reviewReason).filter(Boolean))].join('; ') || undefined;
     return row;

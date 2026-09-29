@@ -282,6 +282,39 @@ describe('cross-sheet beam extraction', () => {
     ]);
   });
 
+  it('prefers an intact exact-baseline face over a width-clustered adjoining run', () => {
+    const plan = base('exact-face-at-junction.dwg');
+    plan.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 8150, y: 0 } },
+      { layer: 'BEAM', a: { x: -3600, y: 450 }, b: { x: 3000, y: 450 } },
+      { layer: 'BEAM', a: { x: 3300, y: 450 }, b: { x: 8150, y: 450 } },
+    ];
+    plan.texts = [
+      { layer: 'BEAM NO', text: 'B10', pos: { x: 1000, y: 120 } },
+      { layer: 'BEAM NO', text: 'B10', pos: { x: 4000, y: 120 } },
+      { layer: 'BEAM NO', text: 'B10', pos: { x: 7000, y: 120 } },
+      { layer: 'TEXT', text: '400X1100', pos: { x: 2000, y: 250 } },
+    ];
+    expect(extractMembers(plan, 'beam')).toEqual([
+      expect.objectContaining({ member: 'B10', length: 8.15, nos: 1, needsReview: false }),
+    ]);
+  });
+
+  it('does not create members from an irregular BEAM NUMBER schedule column', () => {
+    const plan = base('plan-with-beam-register.dwg');
+    plan.segments = [{ layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 4100, y: 0 } }];
+    plan.texts = [
+      { layer: 'BEAM NO', text: 'B12A', pos: { x: 2000, y: 100 } },
+      { layer: 'TEXT', text: '240X450', pos: { x: 2300, y: 250 } },
+      { layer: 'BEAM NO', text: 'BEAM NUMBER', pos: { x: 20_000, y: 10_000 } },
+      { layer: 'BEAM NO', text: 'B12A', pos: { x: 20_100, y: 5000 } },
+      ...Array.from({ length: 9 }, (_, index) => ({ layer: 'BEAM NO', text: `B${index + 20}`, pos: { x: 20_100, y: 4300 - index * 333 } })),
+    ];
+    const rows = extractMembers(plan, 'beam');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ member: 'B12A', length: 4.1, nos: 1 });
+  });
+
   it('keeps the nearby beam-face length when a less-related dimension is farther away', () => {
     const plan = base('framing.dwg');
     plan.segments = [{ layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 2170, y: 0 } }];

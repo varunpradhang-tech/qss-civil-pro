@@ -2,7 +2,7 @@ name: Deploy staging to GitHub Pages
 
 on:
   push:
-    branches: [staging]
+    branches: [main, staging]
   workflow_dispatch:
 
 permissions:
@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Check out staging source
+      - name: Check out deployment source
         uses: actions/checkout@v4
 
       - name: Use Node.js 20
@@ -49,6 +49,7 @@ jobs:
         env:
           QSS_BASE_PATH: /qss-civil-pro/
           VITE_QSS_REMOTE_PROCESSING: "false"
+          VITE_QSS_BUILD_SHA: ${{ github.sha }}
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

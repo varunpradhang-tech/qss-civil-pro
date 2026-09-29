@@ -63,7 +63,12 @@ export function Layout() {
             <span className="footer-word">Pro</span>
           </div>
           <p className="footer-tag">Rule-based civil quantity takeoff — IS-1200 measurement, in your browser.</p>
-          <p className="footer-fine">© {new Date().getFullYear()} QSS Pro · Verify all quantities before billing.</p>
+          <p className="footer-fine">
+            © {new Date().getFullYear()} QSS Pro · Verify all quantities before billing.
+            {import.meta.env.VITE_QSS_BUILD_SHA
+              ? ` · Build ${import.meta.env.VITE_QSS_BUILD_SHA.slice(0, 7)}`
+              : ''}
+          </p>
         </div>
       </footer>
     </div>

@@ -262,6 +262,26 @@ describe('cross-sheet beam extraction', () => {
     ]);
   });
 
+  it('uses the slab UNO note once for every consolidated physical beam copy', () => {
+    const plan = base('beam-with-slab-uno.dwg');
+    plan.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 9800, y: 0 } },
+      { layer: 'BEAM', a: { x: 20_000, y: 0 }, b: { x: 29_800, y: 0 } },
+    ];
+    plan.texts = [
+      { layer: 'BEAM NO', text: 'B1', pos: { x: 4900, y: 100 } },
+      { layer: 'BEAM NO', text: 'B1', pos: { x: 24_900, y: 100 } },
+      { layer: 'TEXT', text: '600X800', pos: { x: 5000, y: 300 } },
+      { layer: 'NOTES', text: 'FOR ALL SLAB SHALL BE 140MM THK. U.N.O.', pos: { x: 40_000, y: 20_000 } },
+    ];
+    expect(extractMembers(plan, 'beam')).toEqual([
+      expect.objectContaining({
+        member: 'B1', height: 0.8, nos: 2,
+        slabThicknessSide1: 0.14, slabThicknessSide2: 0.14,
+      }),
+    ]);
+  });
+
   it('keeps the nearby beam-face length when a less-related dimension is farther away', () => {
     const plan = base('framing.dwg');
     plan.segments = [{ layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 2170, y: 0 } }];

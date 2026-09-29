@@ -25,7 +25,8 @@ export function extractMembers(input: NormalizedDwg | NormalizedDwg[], workGroup
       && samePlanGeometry(dwg, candidate)).sort((a, b) => b.dimensions.length - a.dimensions.length)[0] ?? learnedTeacher;
     return slabMembers(dwg, floor, slabSchedule(dwgs), slabUnoThickness(dwgs), teacher);
   }
-  if (workGroup === 'beam') return beamMembers(dwg, floor, beamSchedule(dwgs), slabSchedule(dwgs), beamUnoSize(dwgs), beamReferenceLengths(dwgs));
+  if (workGroup === 'beam') return beamMembers(dwg, floor, beamSchedule(dwgs), slabSchedule(dwgs),
+    slabUnoThickness(dwgs), beamUnoSize(dwgs), beamReferenceLengths(dwgs));
   return []; // column/raft/wall/floor: start empty, user adds (auto-extraction not reliable on this data)
 }
 
@@ -397,7 +398,7 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
 }
 
 // --- beam: group BEAM face segments into collinear runs (bridging support gaps), size from BEAM SIZE text ---
-function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { widthMm: number; depthMm: number }>, slabThicknesses: Map<string, number>, unoSize?: { widthMm: number; depthMm: number }, referenceLengths = new Map<string, number>()): MemberRow[] {
+function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { widthMm: number; depthMm: number }>, slabThicknesses: Map<string, number>, slabUnoThicknessMm?: number, unoSize?: { widthMm: number; depthMm: number }, referenceLengths = new Map<string, number>()): MemberRow[] {
   const allSlabLabels = dwg.texts
     .filter((t) => /slabs?\s*(?:no|number)/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
     .map((t) => ({ ...t, code: t.text.replace(/\s/g, '').toUpperCase() }));
@@ -669,7 +670,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       // Slab thickness is a universal beam-side deduction. A missing/ambiguous
       // slab mark must not silently turn the exposed beam side into full depth;
       // use the standard 175 mm slab fallback and keep the row reviewable.
-      const defaultSlabThickness = 175;
+      const defaultSlabThickness = slabUnoThicknessMm ?? 175;
       // A framing-plan beam normally meets the floor slab on both longitudinal
       // faces. Missing slab text is a recognition gap, not evidence that the
       // slab disappears; retain the universal fallback on that face.
@@ -1165,9 +1166,13 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
       ? physicalBeams.reduce((sum, beam) => sum + Math.min(beam.clearM, beam.grossM), 0) / physicalBeams.length
       : spans.reduce((sum, span) => sum + (span.sideLength || span.length), 0);
     const totalSideLength = clearLength;
-    const weightedThickness = (side: 1 | 2) => totalSideLength > 0
+    // Repeated labels create one source span per physical copy. Weight slab
+    // thickness by those source lengths, not by the averaged consolidated
+    // length; otherwise two identical 175 mm slabs incorrectly become 350 mm.
+    const thicknessWeight = spans.reduce((sum, span) => sum + (span.sideLength || span.length), 0);
+    const weightedThickness = (side: 1 | 2) => thicknessWeight > 0
       ? spans.reduce((sum, span) => sum + (span.sideLength || span.length)
-        * (side === 1 ? span.slabThicknessSide1 || 0 : span.slabThicknessSide2 || 0), 0) / totalSideLength
+        * (side === 1 ? span.slabThicknessSide1 || 0 : span.slabThicknessSide2 || 0), 0) / thicknessWeight
       : 0;
     const row = { ...spans[0] };
     row.length = round3(grossLength);

@@ -72,7 +72,7 @@ describe('MB export (member rows)', () => {
     for (const unwanted of ['Dia (mm)', 'Spacing (mm)', 'Measurement basis']) expect(ws.getRow(2).values).not.toContain(unwanted);
     expect(ws.getCell('A3').value).toBe(1); expect(ws.getCell('B3').value).toBe('B2 250x500'); expect(ws.getCell('C3').value).toBe('Beam bottom'); expect(ws.getCell('C4').value).toBe('Beam sides');
     expect((ws.getCell('L3').value as ExcelJS.CellFormulaValue).formula).toBe('D3*E3*F3');
-    expect((ws.getCell('L4').value as ExcelJS.CellFormulaValue).formula).toBe('D4*E4*G4');
+    expect((ws.getCell('L4').value as ExcelJS.CellFormulaValue).formula).toBe('D4*(E4/2)*(MAX(G4-I4,0)+MAX(G4-K4,0))');
     expect(ws.getCell('B5').value).toBe('B10 300x600'); expect((ws.getCell('L7').value as ExcelJS.CellFormulaValue).formula).toBe('SUM(L3:L6)');
   });
 
@@ -83,7 +83,9 @@ describe('MB export (member rows)', () => {
     const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await blob.arrayBuffer()); const ws = wb.worksheets[0];
     expect(ws.getCell('E3').value).toBe(2);
     expect(ws.getCell('E4').value).toBe(4);
-    expect(ws.getCell('G4').value).toBeCloseTo(0.65);
+    expect(ws.getCell('G4').value).toBeCloseTo(0.8);
+    expect(ws.getCell('I4').value).toBeCloseTo(0.15);
+    expect(ws.getCell('K4').value).toBeCloseTo(0.15);
     expect((ws.getCell('L4').value as ExcelJS.CellFormulaValue).result).toBeCloseTo(25.48);
   });
 

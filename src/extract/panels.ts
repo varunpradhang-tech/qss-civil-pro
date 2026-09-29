@@ -6,6 +6,9 @@ import { polygoniseCadFaces } from './topology.js';
 import { applyPanelMeasurementPriority } from './panelMeasurement.js';
 import { bayImageShowsFullX, mirroredBaySimilarity, segmentVisualBay, unionVisualPolygons } from '../vision/bayImage.js';
 
+const isBeamMarkText = (text: string) => /^(?:T\d+)?(?:M|X)?B\d+[A-Z]?(?:\(\d{2,4}[X×]\d{2,4}\))?$/i
+  .test(text.replace(/\s/g, ''));
+
 export interface PanelProposalBox {
   label?: string;
   inferredSlabCode?: string; // schedule lookup when the panel itself has no S1/S2 mark
@@ -29,6 +32,7 @@ export interface PanelProposalBox {
   hatchConnectedBoundary?: boolean; // same-pattern slab hatch connected to a numeric depth mark
   visualBoundary?: boolean; // dotted beam face completed by beam/wall/column faces
   markedBoundary?: boolean; // user-supplied CAD correction polyline; still requires review
+  crossesDifferentSlabMark?: boolean; // ray cast jumped across an internal beam into a differently coded bay
   measurementBasis?: 'marked dimensions' | 'exact polygon' | 'drawing geometry';
 }
 
@@ -462,8 +466,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       || bayImageShowsFullX(allSegs, face.box)) return false;
     // Beam numbers along multiple sides corroborate that this is a bay in the
     // framing plan, not a similarly shaped section near a SECTION leader.
-    const nearbyBeamNumbers = dwg.texts.filter((text) => /^B\d+[A-Z]?$/i.test(text.text.trim())
-      && /beam\s*no/i.test(text.layer)
+    const nearbyBeamNumbers = dwg.texts.filter((text) => isBeamMarkText(text.text)
+      && /beam\s*(?:no|number|size)/i.test(text.layer)
       && text.pos.x >= face.box.x0 - 600 && text.pos.x <= face.box.x1 + 600
       && text.pos.y >= face.box.y0 - 600 && text.pos.y <= face.box.y1 + 600);
     return nearbyBeamNumbers.length >= 2;
@@ -532,6 +536,38 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       confident: !planDottedFace(face), duplicate: false, dottedBoundary: true,
       visualBoundary: planDottedFace(face) });
   }
+  // A ray cast must never jump across an XB/B beam and absorb a differently
+  // coded slab mark. Mark that oversized proposal as provisional so the
+  // closed-face recovery below can replace it with the actual individual bay.
+  for (const panel of out.filter((candidate) => /^S\d+[A-Z]?$/i.test(candidate.label || ''))) {
+    const margin = Math.min(250, (panel.box.x1 - panel.box.x0) * 0.05,
+      (panel.box.y1 - panel.box.y0) * 0.05);
+    let crossesDifferent = labels.some((label) => label.text !== panel.label
+      && label.pos.x > panel.box.x0 + margin && label.pos.x < panel.box.x1 - margin
+      && label.pos.y > panel.box.y0 + margin && label.pos.y < panel.box.y1 - margin);
+    if (crossesDifferent) {
+      const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
+      const sourceMarks = labels.filter((label) => label.text === panel.label
+        && label.pos.x >= panel.box.x0 && label.pos.x <= panel.box.x1
+        && label.pos.y >= panel.box.y0 && label.pos.y <= panel.box.y1)
+        .sort((a, b) => Math.hypot(a.pos.x - centre.x, a.pos.y - centre.y)
+          - Math.hypot(b.pos.x - centre.x, b.pos.y - centre.y));
+      for (const source of sourceMarks) {
+        const region = segmentVisualBay(allSegs, source.pos, panel.box);
+        if (!region || region.areaM2 < 0.2 || labels.some((label) => label.text !== panel.label
+          && pointInPolygon(label.pos, region.polygon))) continue;
+        panel.box = region.box;
+        panel.lengthMm = region.box.x1 - region.box.x0;
+        panel.breadthMm = region.box.y1 - region.box.y0;
+        if (region.rectangular) { panel.polygon = undefined; panel.netAreaM2 = undefined; }
+        else { panel.polygon = region.polygon; panel.netAreaM2 = region.areaM2; }
+        panel.visualBoundary = true;
+        crossesDifferent = false;
+        break;
+      }
+    }
+    panel.crossesDifferentSlabMark = crossesDifferent;
+  }
   // Some corner bays close against a column/wall or a continuous beam return,
   // so their loop is not made exclusively from dotted entities. Recover only
   // S marks that are STILL unmeasured. This cannot modify or split any stable
@@ -541,7 +577,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     .filter((mark) => markEnvelope ? (mark.pos.x >= markEnvelope.minX - 5000 && mark.pos.x <= markEnvelope.maxX + 5000
       && mark.pos.y >= markEnvelope.minY - 5000 && mark.pos.y <= markEnvelope.maxY + 5000) : mark.trustedLayer);
   for (const slabMark of recoverableSlabMarks) {
-    const alreadyMeasured = out.some((panel) => slabMark.pos.x >= panel.box.x0 - ALIGN_TOL
+    const alreadyMeasured = out.some((panel) => !panel.crossesDifferentSlabMark
+      && slabMark.pos.x >= panel.box.x0 - ALIGN_TOL
       && slabMark.pos.x <= panel.box.x1 + ALIGN_TOL && slabMark.pos.y >= panel.box.y0 - ALIGN_TOL
       && slabMark.pos.y <= panel.box.y1 + ALIGN_TOL);
     if (alreadyMeasured) continue;
@@ -1607,8 +1644,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // on the shared beam boundary is allowed beside a real slab bay.
     if (!/^S\d+[A-Z]?$/i.test(panel.label || '') && !panel.cantileverBoundary) {
       const beamMarkInside = dwg.texts.some((text) => {
-        const mark = text.text.replace(/\s/g, '').toUpperCase();
-        if (!/^(?:T\d+)?M?B\d+[A-Z]?$/.test(mark)) return false;
+        if (!isBeamMarkText(text.text)) return false;
         const margin = Math.min(350, (panel.box.x1 - panel.box.x0) * 0.15,
           (panel.box.y1 - panel.box.y0) * 0.15);
         return text.pos.x > panel.box.x0 + margin && text.pos.x < panel.box.x1 - margin
@@ -1947,7 +1983,8 @@ export function markDuplicates(panels: PanelProposalBox[]): void {
     // A panel tied to an explicit slab mark is authoritative. Generated
     // hatch/cantilever polygons may fill otherwise unmeasured space, but must
     // never displace or survive inside an established S-coded bay.
-    const rank = (panel: PanelProposalBox) => /^S\d+[A-Z]?$/i.test(panel.label || '')
+    const rank = (panel: PanelProposalBox) => panel.crossesDifferentSlabMark ? 2
+      : /^S\d+[A-Z]?$/i.test(panel.label || '')
       && panel.dottedBoundary && panel.polygon?.length === 3 ? -1
       : panel.closedStructuralBoundary ? 1
       : /^S\d+[A-Z]?$/i.test(panel.label || '') ? 0

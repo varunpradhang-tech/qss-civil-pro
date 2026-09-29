@@ -18,6 +18,17 @@ const drawing = (): NormalizedDwg => ({
 });
 
 describe('unmarked slab geometry', () => {
+  it('prefers a closed individual bay over a ray cast that crossed into a different slab mark', () => {
+    const oversized: PanelProposalBox = { label: 'S15', box: { x0: 0, y0: 0, x1: 8000, y1: 5000 },
+      lengthMm: 8000, breadthMm: 5000, openingM2: 0, thicknessMm: 150, confident: false,
+      duplicate: false, crossesDifferentSlabMark: true };
+    const exact: PanelProposalBox = { label: 'S2', box: { x0: 0, y0: 0, x1: 3500, y1: 2500 },
+      lengthMm: 3500, breadthMm: 2500, openingM2: 0, thicknessMm: 150, confident: true,
+      duplicate: false, closedStructuralBoundary: true };
+    markDuplicates([oversized, exact]);
+    expect(oversized.duplicate).toBe(true);
+    expect(exact.duplicate).toBe(false);
+  });
   it('stops overlapping mirror bays at the stepped RCC core faces', () => {
     const panel = (x0: number, x1: number): PanelProposalBox => ({ label: 'UNMARKED SLAB',
       box: { x0, y0: 0, x1, y1: 2000 }, lengthMm: x1 - x0, breadthMm: 2000,

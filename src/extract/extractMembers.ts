@@ -32,8 +32,10 @@ export function extractMembers(input: NormalizedDwg | NormalizedDwg[], workGroup
 
 function beamLabel(text: string): string | null {
   const value = text.replace(/\s/g, '').toUpperCase();
-  // Projects use plain B1/MB1 as well as tower-prefixed T3B1/T3MB1 labels.
-  return /^(?:T\d+)?M?B\d+[A-Z]?$/.test(value) ? value : null;
+  // Projects use plain B1/MB1/XB1 as well as tower-prefixed labels. Some
+  // consultants combine the mark and size in one entity: XB2(300x500).
+  const match = value.match(/^((?:T\d+)?(?:M|X)?B\d+[A-Z]?)(?:\(\d{2,4}[X×]\d{2,4}\))?$/);
+  return match?.[1] ?? null;
 }
 
 const isBeamGeometryLayer = (layer: string) => /(?:^|[-_\s])beam(?:$|[-_\s])/i.test(layer)
@@ -41,7 +43,7 @@ const isBeamGeometryLayer = (layer: string) => /(?:^|[-_\s])beam(?:$|[-_\s])/i.t
 const isBeamNumberLayer = (layer: string) => /b(?:ea|ra)m\s*(?:no|number)/i.test(layer);
 
 function compareBeamLabels(a: string, b: string): number {
-  const am = a.match(/^T(\d+)(M?B)(\d+)([A-Z]?)$/), bm = b.match(/^T(\d+)(M?B)(\d+)([A-Z]?)$/);
+  const am = a.match(/^T(\d+)((?:M|X)?B)(\d+)([A-Z]?)$/), bm = b.match(/^T(\d+)((?:M|X)?B)(\d+)([A-Z]?)$/);
   if (am && bm) return Number(am[1]) - Number(bm[1]) || Number(am[3]) - Number(bm[3]) || am[4].localeCompare(bm[4]) || am[2].localeCompare(bm[2]);
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 }
@@ -444,7 +446,8 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
   const sizeTexts = dwg.texts.filter((t) => !!parseBeamSize(t.text) && inPlan(t.pos));
   // Beam marks are frequently placed on generic TEXT layers. The strict label
   // grammar prevents notes and reinforcement text from becoming members.
-  const dedicatedNoTexts = dwg.texts.filter((t) => isBeamNumberLayer(t.layer) && !!beamLabel(t.text));
+  const dedicatedNoTexts = dwg.texts.filter((t) => (isBeamNumberLayer(t.layer)
+    || /beam\s*size/i.test(t.layer)) && !!beamLabel(t.text));
   // When the drawing provides a dedicated BEAM NO layer it is the authoritative
   // member register. Identical B1/B2 text inside reinforcement details and
   // sections is commonly placed on generic TEXT layers and must not create
@@ -1236,7 +1239,8 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       row.nos = Math.max(row.nos, copies);
       const reference = referenceLengths.get(row.member);
       const conflictRatio = reference ? reference / Math.max(row.length * 1000, 1) : 1;
-      if (row.nos <= 1 && row.measurementSource !== 'exact beam face' && reference && (conflictRatio < 0.4 || conflictRatio > 2)) {
+      if (!/^XB\d/i.test(row.member) && row.nos <= 1 && row.measurementSource !== 'exact beam face'
+        && reference && (conflictRatio < 0.4 || conflictRatio > 2)) {
         // Conflicting plan/detail evidence must never become a confident
         // quantity. Retain an auditable review row but count zero until the
         // member span is resolved (B10), rather than inventing beam work.

@@ -110,6 +110,17 @@ describe('cross-sheet beam extraction', () => {
     expect(member).toMatchObject({ member: 'B5', length: 5, breadth: 0.3, height: 0.6 });
   });
 
+  it('reads XB beam marks with an inline size from a BEAM SIZE layer', () => {
+    const plan = base('xb-framing-plan.dwg');
+    plan.segments = [
+      { layer: 'BEAM 2', a: { x: 0, y: 0 }, b: { x: 5000, y: 0 } },
+      { layer: 'BEAM 2', a: { x: 0, y: 300 }, b: { x: 5000, y: 300 } },
+    ];
+    plan.texts = [{ layer: 'beam size', text: 'XB2(300x500)', pos: { x: 2500, y: 150 } }];
+    const [member] = extractMembers(plan, 'beam');
+    expect(member).toMatchObject({ member: 'XB2', length: 5, breadth: 0.3, height: 0.5, nos: 1 });
+  });
+
   it('uses a drawing U.N.O. beam size only when no specific size is associated', () => {
     const plan = base('uno.dwg');
     plan.segments = [

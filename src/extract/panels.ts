@@ -678,19 +678,25 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     return !hatch.solid && !!hatch.pattern && w >= 300 && h >= 300
       && areaM2 >= 0.05 && areaM2 <= 400;
   });
-  const confirmedHatchSignatures = new Set(hatchCandidates.filter(({ box }) => labels.some((label) =>
-    label.pos.x >= box.x0 && label.pos.x <= box.x1 && label.pos.y >= box.y0 && label.pos.y <= box.y1))
+  const nonSlabHatchLayer = (layer: string) => /(?:^|[-_\s])(?:RCC[\s_-]*WALL|WALL|COLUMN|COL[\s_-]*HATCH)(?:$|[-_\s])/i.test(layer);
+  const wallLikeHatchLoop = (box: PanelProposalBox['box']) => {
+    const w = box.x1 - box.x0, h = box.y1 - box.y0;
+    return Math.min(w, h) <= 400 && Math.max(w, h) / Math.max(Math.min(w, h), 1) >= 4;
+  };
+  const confirmedHatchSignatures = new Set(hatchCandidates.filter(({ hatch, polygon, box }) =>
+    !nonSlabHatchLayer(hatch.layer) && !wallLikeHatchLoop(box)
+    && labels.some((label) => pointInPolygon(label.pos, polygon)))
     .map(({ hatch }) => hatchSignature(hatch)));
   for (const { hatch, polygon, box, areaM2 } of hatchCandidates) {
     const c = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
     if (excludedDetailPoint(c) || holdNotes.some((note) => note.pos.x >= box.x0 && note.pos.x <= box.x1
       && note.pos.y >= box.y0 && note.pos.y <= box.y1)) continue;
-    const containedLabel = labels.find((label) => label.pos.x >= box.x0 && label.pos.x <= box.x1
-      && label.pos.y >= box.y0 && label.pos.y <= box.y1);
+    const containedLabel = labels.find((label) => pointInPolygon(label.pos, polygon));
     // An S-code inside a bounded hatch directly confirms that loop even when
     // another triangle uses a different hatch layer/scale. Unlabelled loops
     // still require a hatch signature learned from a confirmed slab.
     if (!containedLabel && !confirmedHatchSignatures.has(hatchSignature(hatch))) continue;
+    if (!containedLabel && (nonSlabHatchLayer(hatch.layer) || wallLikeHatchLoop(box))) continue;
     const bboxAreaM2 = ((box.x1 - box.x0) * (box.y1 - box.y0)) / 1e6;
     const rectangular = areaM2 >= bboxAreaM2 * 0.985;
     // An S-labelled structural bay has already been measured from its four

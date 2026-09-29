@@ -975,4 +975,34 @@ describe('unmarked slab geometry', () => {
     expect(panel).toMatchObject({ lengthMm: 4000, breadthMm: 3000 });
   });
 
+  it('does not learn an RCC wall hatch from slab labels inside only its bounding box', () => {
+    const plan = drawing();
+    plan.texts = [
+      { layer: 'SLAB NO', text: 'S1', pos: { x: 2000, y: 1500 } },
+      { layer: 'SLAB NO', text: 'S2', pos: { x: 7000, y: 1500 } },
+    ];
+    plan.segments.push(
+      { layer: 'BEAM', a: { x: 5000, y: 0 }, b: { x: 9000, y: 0 } },
+      { layer: 'BEAM', a: { x: 9000, y: 0 }, b: { x: 9000, y: 3000 } },
+      { layer: 'BEAM', a: { x: 9000, y: 3000 }, b: { x: 5000, y: 3000 } },
+      { layer: 'BEAM', a: { x: 5000, y: 3000 }, b: { x: 5000, y: 0 } },
+    );
+    // This L-shaped RCC wall surrounds S1 in its bounding rectangle, but S1
+    // is not inside the wall polygon. Its hatch signature must not be learned
+    // and propagated to the second wall.
+    plan.hatches = [
+      { layer: 'RCC WALL', solid: false, pattern: 'ANSI31', pts: [
+        { x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 300 },
+        { x: 300, y: 300 }, { x: 300, y: 3000 }, { x: 0, y: 3000 },
+      ] },
+      { layer: 'RCC WALL', solid: false, pattern: 'ANSI31', pts: [
+        { x: 5000, y: 0 }, { x: 9000, y: 0 }, { x: 9000, y: 300 },
+        { x: 5300, y: 300 }, { x: 5300, y: 3000 }, { x: 5000, y: 3000 },
+      ] },
+    ];
+    const panels = autoProposePanels(plan);
+    expect(panels.filter((panel) => panel.label === 'HATCH-SLAB')).toHaveLength(0);
+    expect(panels.map((panel) => panel.label)).toEqual(expect.arrayContaining(['S1', 'S2']));
+  });
+
 });

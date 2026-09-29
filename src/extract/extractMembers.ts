@@ -846,6 +846,84 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       row.cadX1 = direct.run.b.x; row.cadY1 = direct.run.b.y;
       row.measurementSource = 'exact beam face';
     }
+    // Resolve mirrored/repeated plan members from the modal intact face beside
+    // every occurrence of their beam mark. This is orientation-independent:
+    // a short vertical beam at a busy junction must not inherit a nearby
+    // horizontal run merely because that run passes closer to its text.
+    for (const row of consolidated) {
+      const marks = labelled.filter((item) => item.label === row.member).map((item) => item.text.pos);
+      if (marks.length < 2) continue;
+      const evidence = beams.map((segment) => {
+        const length = Math.hypot(segment.b.x - segment.a.x, segment.b.y - segment.a.y);
+        const horizontal = Math.abs(segment.b.x - segment.a.x) >= Math.abs(segment.b.y - segment.a.y);
+        const coveredMarks = marks.map((mark, index) => pointSegmentDistance(mark, segment) <= 1200 ? index : -1)
+          .filter((index) => index >= 0);
+        return { segment, length, horizontal, coveredMarks };
+      }).filter((candidate) => candidate.length >= 600 && candidate.length <= 30_000 && candidate.coveredMarks.length);
+      const groups = new Map<string, typeof evidence>();
+      for (const candidate of evidence) {
+        const key = `${candidate.horizontal ? 'H' : 'V'}:${Math.round(candidate.length / 25) * 25}`;
+        groups.set(key, [...(groups.get(key) || []), candidate]);
+      }
+      const ranked = [...groups.values()].map((group) => ({
+        group,
+        coverage: new Set(group.flatMap((candidate) => candidate.coveredMarks)).size,
+        proximity: marks.reduce((sum, mark) => sum + Math.min(...group.map((candidate) =>
+          pointSegmentDistance(mark, candidate.segment))), 0),
+        pairedFaces: group.reduce((count, candidate, index) => count + group.slice(index + 1).filter((other) => {
+          const gap = candidate.horizontal
+            ? Math.abs((candidate.segment.a.y + candidate.segment.b.y - other.segment.a.y - other.segment.b.y) / 2)
+            : Math.abs((candidate.segment.a.x + candidate.segment.b.x - other.segment.a.x - other.segment.b.x) / 2);
+          return candidate.horizontal === other.horizontal
+            && Math.abs(candidate.length - other.length) <= 25
+            && gap >= row.breadth * 1000 * 0.75 && gap <= row.breadth * 1000 * 1.25;
+        }).length, 0),
+        // Identical CAD faces can be split into fragments. Count the closest
+        // representative per plan mark rather than treating every fragment as
+        // another physical beam.
+        copies: new Set(marks.map((mark) => {
+          const nearest = [...group].sort((a, b) => pointSegmentDistance(mark, a.segment)
+            - pointSegmentDistance(mark, b.segment))[0];
+          if (!nearest || pointSegmentDistance(mark, nearest.segment) > 1200) return '';
+          const midX = (nearest.segment.a.x + nearest.segment.b.x) / 2;
+          const midY = (nearest.segment.a.y + nearest.segment.b.y) / 2;
+          return `${Math.round(midX / 100)}:${Math.round(midY / 100)}`;
+        }).filter(Boolean)).size,
+      })).filter((candidate) => candidate.coverage === marks.length && candidate.group.length >= 2
+        && (!candidate.pairedFaces || (candidate.group[0].length / Math.max(row.length * 1000, 1) >= 0.85
+          && candidate.group[0].length / Math.max(row.length * 1000, 1) <= 1.15)))
+        .sort((a, b) => Number(b.pairedFaces > 0) - Number(a.pairedFaces > 0) || b.coverage - a.coverage
+          || (a.pairedFaces && b.pairedFaces ? a.group[0].length - b.group[0].length : 0)
+          || a.proximity - b.proximity || b.group.length - a.group.length
+          || Math.abs(a.group[0].length - row.length * 1000) - Math.abs(b.group[0].length - row.length * 1000));
+      const modal = ranked[0];
+      if (!modal) continue;
+      const lengths = modal.group.map((candidate) => candidate.length).sort((a, b) => a - b);
+      let resolved = lengths[Math.floor(lengths.length / 2)];
+      const reference = referenceLengths.get(row.member);
+      // Details may provide the written overall span, but only use them to
+      // refine a face already proven by every plan mark. Small differences are
+      // left to the actual plan face; larger, plausible differences normally
+      // represent support-to-support dimensioning (for example two mirrored
+      // B8 beams drawn with projecting face fragments).
+      let refinedByReference = false;
+      if (reference && !modal.pairedFaces) {
+        const ratio = reference / resolved;
+        if (ratio >= 0.7 && ratio <= 1.3 && Math.abs(1 - ratio) > 0.03) {
+          resolved = reference;
+          refinedByReference = true;
+        }
+      }
+      const changesPlanSpan = Math.abs(resolved - row.length * 1000) / Math.max(row.length * 1000, 1) > 0.02;
+      if (!changesPlanSpan || (!modal.pairedFaces && !refinedByReference)) continue;
+      const nearest25 = Math.round(resolved / 25) * 25;
+      if (Math.abs(resolved - nearest25) <= 5) resolved = nearest25;
+      row.length = row.sideLength = round3(resolved / 1000);
+      if (consolidated.filter((candidate) => candidate.member === row.member).length === 1)
+        row.nos = Math.max(row.nos, modal.copies);
+      row.measurementSource = 'exact beam face';
+      row.needsReview = false; row.reviewReason = undefined;
+    }
     // Some framing plans print the same beam mark near both ends of one beam.
     // A written overall dimension spanning that pair identifies one physical
     // member; matching co-linear pairs are its mirrored copies. Do this before
@@ -1073,7 +1151,13 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       const shortest = Math.min(...exact.map((row) => row.length));
       const longest = Math.max(...exact.map((row) => row.length));
       if (!shortest || shortest / longest < 0.97) continue;
-      const normalized = round3(Math.round((exact.reduce((sum, row) => sum + row.length, 0) / exact.length) * 200) / 200);
+      // Independent mirrored halves can differ by a few millimetres. Use the
+      // shorter verified face so shuttering is not overstated; then snap only
+      // to the conventional 5 mm drafting increment.
+      const ratio = shortest / longest;
+      const representative = ratio >= 0.99 ? shortest
+        : exact.reduce((sum, row) => sum + row.length, 0) / exact.length;
+      const normalized = round3(Math.round(representative * 200) / 200);
       for (const row of exact) row.length = normalized;
     }
     for (const row of consolidated) {
@@ -1160,6 +1244,44 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         row.needsReview = true;
         row.reviewReason = 'plan trace conflicts with the verified beam-detail span';
       }
+    }
+    // Final plan-face safeguard: if both physical faces of every mirrored copy
+    // agree on a slightly shorter span, they override a nearby detail/grid
+    // dimension. Only shorten by 2–10%; tiny drafting residue is retained and
+    // large conflicts remain reviewable instead of being guessed.
+    for (const row of quantityRows.values()) {
+      const marks = labelled.filter((item) => item.label === row.member).map((item) => item.text.pos);
+      if (marks.length < 2 || row.breadth <= 0) continue;
+      const candidates = beams.map((segment) => ({ segment,
+        horizontal: Math.abs(segment.b.x - segment.a.x) >= Math.abs(segment.b.y - segment.a.y),
+        length: Math.hypot(segment.b.x - segment.a.x, segment.b.y - segment.a.y) }))
+        .filter((candidate) => candidate.length >= row.length * 1000 * 0.9
+          && candidate.length <= row.length * 1000 * 0.98);
+      const pairs: { length: number; covered: number[] }[] = [];
+      for (let first = 0; first < candidates.length; first++) for (let second = first + 1; second < candidates.length; second++) {
+        const a = candidates[first], b = candidates[second];
+        if (a.horizontal !== b.horizontal || Math.abs(a.length - b.length) > 25) continue;
+        const gap = a.horizontal
+          ? Math.abs((a.segment.a.y + a.segment.b.y - b.segment.a.y - b.segment.b.y) / 2)
+          : Math.abs((a.segment.a.x + a.segment.b.x - b.segment.a.x - b.segment.b.x) / 2);
+        if (gap < row.breadth * 1000 * 0.75 || gap > row.breadth * 1000 * 1.25) continue;
+        const covered = marks.map((mark, index) => Math.min(pointSegmentDistance(mark, a.segment),
+          pointSegmentDistance(mark, b.segment)) <= 1200 ? index : -1).filter((index) => index >= 0);
+        if (covered.length) pairs.push({ length: Math.min(a.length, b.length), covered });
+      }
+      const groups = new Map<number, typeof pairs>();
+      for (const pair of pairs) {
+        const bucket = Math.round(pair.length / 25) * 25;
+        groups.set(bucket, [...(groups.get(bucket) || []), pair]);
+      }
+      const verified = [...groups.entries()].filter(([, group]) =>
+        new Set(group.flatMap((pair) => pair.covered)).size === marks.length)
+        .sort((a, b) => b[1].length - a[1].length || a[0] - b[0])[0];
+      if (!verified) continue;
+      row.length = round3(verified[0] / 1000);
+      row.sideLength = round3(Math.max(row.length - (row.supportWidths || []).reduce((sum, width) => sum + width, 0), 0));
+      row.measurementSource = 'exact beam face';
+      row.needsReview = false; row.reviewReason = undefined;
     }
     return [...quantityRows.values()].sort((a, b) => compareBeamLabels(a.member, b.member));
   }

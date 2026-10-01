@@ -36,7 +36,7 @@ describe('unmarked slab geometry', () => {
     plan.segments = [];
     plan.texts = [{ layer: 'TITLE', text: 'TYPICAL FLOOR FRAMING PLAN', pos: { x: 9000, y: 5000 } }];
     for (let bay = 0; bay < 6; bay++) {
-      const x0 = bay * 3200, x1 = x0 + 3000;
+      const x0 = bay * 3000, x1 = x0 + 3000;
       plan.segments.push(
         { layer: 'BEAM 2', a: { x: x0, y: 0 }, b: { x: x1, y: 0 } },
         { layer: 'BEAM 2', a: { x: x0, y: 3000 }, b: { x: x1, y: 3000 } },

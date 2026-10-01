@@ -752,6 +752,41 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       panel.netAreaM2 = region.areaM2;
       panel.visualBoundary = true;
     }
+    // A first closed face around an S mark can be only the small re-entrant
+    // corner of a much larger L-shaped slab. Probe immediately outside that
+    // preliminary polygon and promote the enclosing plotted contour only when
+    // it contains the same mark and no different slab mark. This is a shape
+    // rule, not a drawing-coordinate exception.
+    for (const panel of measuredPlanPanels.filter((candidate) => candidate.polygon
+      && candidate.netAreaM2 !== undefined && candidate.netAreaM2 >= 2)) {
+      const sourceLabel = labels.find((label) => label.text === panel.label
+        && pointInPolygon(label.pos, panel.polygon as Pt[]));
+      if (!sourceLabel) continue;
+      const width = panel.box.x1 - panel.box.x0, height = panel.box.y1 - panel.box.y0;
+      const pad = Math.min(4500, Math.max(2200, Math.max(width, height) * 0.85));
+      const search = { x0: panel.box.x0 - pad, y0: panel.box.y0 - pad,
+        x1: panel.box.x1 + pad, y1: panel.box.y1 + pad };
+      const xs = [panel.box.x0 - 500, panel.box.x0 + 350,
+        (panel.box.x0 + panel.box.x1) / 2, panel.box.x1 - 350, panel.box.x1 + 500];
+      const ys = [panel.box.y0 - 500, panel.box.y0 + 350,
+        (panel.box.y0 + panel.box.y1) / 2, panel.box.y1 - 350, panel.box.y1 + 500];
+      const regions = xs.flatMap((x) => ys.map((y) => segmentVisualBay(visualSegments,
+        { x, y }, search, 512, 350))).filter((region): region is NonNullable<typeof region> => !!region);
+      const expanded = regions.map((region) => ({ region, shape: simplifyCollinearPolygon(region.polygon) }))
+        .filter(({ region, shape }) => !region.rectangular && shape.length >= 5 && shape.length <= 16
+          && region.areaM2 >= (panel.netAreaM2 as number) * 1.25
+          && region.areaM2 <= (panel.netAreaM2 as number) * 4.5
+          && pointInPolygon(sourceLabel.pos, shape)
+          && !labels.some((label) => label.text !== panel.label && pointInPolygon(label.pos, shape)))
+        .sort((a, b) => b.region.areaM2 - a.region.areaM2)[0];
+      if (!expanded) continue;
+      panel.box = expanded.region.box;
+      panel.lengthMm = expanded.region.box.x1 - expanded.region.box.x0;
+      panel.breadthMm = expanded.region.box.y1 - expanded.region.box.y0;
+      panel.polygon = expanded.shape;
+      panel.netAreaM2 = expanded.region.areaM2;
+      panel.visualBoundary = true;
+    }
   }
   // Polygonise the real band around each standalone C mark. A valid band has
   // a dashed/hidden inner beam face AND a continuous outer slab/free edge.

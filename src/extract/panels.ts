@@ -711,6 +711,47 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         confident: false, duplicate: false, visualBoundary: true,
         closedStructuralBoundary: true });
     }
+
+    // A slab mark proves membership, not shape. Large labelled corridor/core
+    // slabs are frequently stepped even though the first ray cast returns a
+    // rectangular bounding box. Refine only when the plotted structural ink
+    // produces one corroborating irregular contour with essentially the same
+    // outer extent. The wider closure is a labelled-panel fallback only; it
+    // cannot create a new slab or cross into another panel.
+    for (const panel of measuredPlanPanels.filter((candidate) => !candidate.polygon
+      && boxArea(candidate.box) >= 20_000_000)) {
+      const width = panel.box.x1 - panel.box.x0, height = panel.box.y1 - panel.box.y0;
+      const pad = Math.min(1500, Math.max(700, Math.min(width, height) * 0.35));
+      const search = { x0: panel.box.x0 - pad, y0: panel.box.y0 - pad,
+        x1: panel.box.x1 + pad, y1: panel.box.y1 + pad };
+      const sourceLabel = labels.find((label) => label.text === panel.label
+        && pointInsideBox(label.pos, panel.box));
+      const seedFractions = [[0.5, 0.5], [0.25, 0.35], [0.25, 0.65],
+        [0.75, 0.35], [0.75, 0.65]];
+      const seeds = [sourceLabel?.pos, ...seedFractions.map(([fx, fy]) => ({
+        x: panel.box.x0 + width * fx, y: panel.box.y0 + height * fy,
+      }))].filter((point): point is Pt => !!point);
+      let region = seeds.map((seed) => segmentVisualBay(visualSegments, seed, search, 512))
+        .find((candidate) => !!candidate && !candidate.rectangular);
+      if (!region) region = seeds.map((seed) => segmentVisualBay(visualSegments, seed, search, 512, 350))
+        .find((candidate) => !!candidate && !candidate.rectangular);
+      if (!region) continue;
+      const gross = boxArea(panel.box) / 1e6;
+      const shape = simplifyCollinearPolygon(region.polygon);
+      if (shape.length < 5 || shape.length > 16 || region.areaM2 < gross * 0.55
+        || region.areaM2 > gross * 1.08
+        || Math.abs(region.box.x0 - panel.box.x0) > 800
+        || Math.abs(region.box.x1 - panel.box.x1) > 800
+        || Math.abs(region.box.y0 - panel.box.y0) > 800
+        || Math.abs(region.box.y1 - panel.box.y1) > 800
+        || labels.some((label) => label.text !== panel.label && pointInPolygon(label.pos, shape))) continue;
+      panel.box = region.box;
+      panel.lengthMm = region.box.x1 - region.box.x0;
+      panel.breadthMm = region.box.y1 - region.box.y0;
+      panel.polygon = shape;
+      panel.netAreaM2 = region.areaM2;
+      panel.visualBoundary = true;
+    }
   }
   // Polygonise the real band around each standalone C mark. A valid band has
   // a dashed/hidden inner beam face AND a continuous outer slab/free edge.

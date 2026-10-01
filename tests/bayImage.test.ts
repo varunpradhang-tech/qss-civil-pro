@@ -35,6 +35,20 @@ describe('raster bay cues', () => {
     expect(region?.areaM2).toBeCloseTo(10, 0);
   });
 
+  it('uses wider gap closure only when a labelled-panel caller explicitly requests it', () => {
+    const outline = [
+      stroke(0, 0, 4000, 0), stroke(4000, 0, 4000, 3000),
+      stroke(4000, 3000, 2500, 3000), stroke(2500, 3000, 2500, 2200),
+      stroke(2500, 2200, 0, 2200), stroke(0, 2200, 0, 1050), stroke(0, 950, 0, 0),
+    ];
+    const search = { x0: -500, y0: -500, x1: 4500, y1: 3500 };
+    expect(segmentVisualBay(outline, { x: 2000, y: 1000 }, search)).toBeNull();
+    const closed = segmentVisualBay(outline, { x: 2000, y: 1000 }, search, 512, 350);
+    expect(closed).not.toBeNull();
+    expect(closed?.rectangular).toBe(false);
+    expect(closed?.areaM2).toBeCloseTo(10, 0);
+  });
+
   it('recognises reflected structural images and unions connected chajja legs', () => {
     const left = [stroke(0, 0, 4000, 0), stroke(4000, 0, 4000, 3000),
       stroke(4000, 3000, 0, 3000), stroke(0, 3000, 0, 0)];

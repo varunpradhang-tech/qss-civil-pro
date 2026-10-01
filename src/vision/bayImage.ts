@@ -97,7 +97,8 @@ function simplifyRasterPolygon(points: ImagePoint[], tolerance: number): ImagePo
  * layer-independent after callers select structural strokes. Scale-aware
  * dilation joins drafting gaps only up to 75 mm at plan scale.
  */
-export function segmentVisualBay(segments: Segment[], seed: ImagePoint, search: ImageBay, size = 512): SegmentedBay | null {
+export function segmentVisualBay(segments: Segment[], seed: ImagePoint, search: ImageBay, size = 512,
+  maxCloseMm = 75): SegmentedBay | null {
   const width = search.x1 - search.x0, height = search.y1 - search.y0;
   if (width <= 0 || height <= 0 || size < 64) return null;
   const ink = renderBayImage(segments, search, size);
@@ -107,7 +108,7 @@ export function segmentVisualBay(segments: Segment[], seed: ImagePoint, search: 
   // pixel radius either misses the same physical gap in a large bay or joins
   // a 100–150 mm expansion joint in a small one.
   const mmPerPixel = Math.max(width, height) / size;
-  const closeRadius = Math.max(1, Math.min(4, Math.floor(75 / Math.max(1, 2 * mmPerPixel))));
+  const closeRadius = Math.max(1, Math.min(8, Math.floor(maxCloseMm / Math.max(1, 2 * mmPerPixel))));
   for (let y = closeRadius; y < size - closeRadius; y++) for (let x = closeRadius; x < size - closeRadius; x++) if (ink[y * size + x]) {
     for (let dy = -closeRadius; dy <= closeRadius; dy++) for (let dx = -closeRadius; dx <= closeRadius; dx++)
       closed[(y + dy) * size + x + dx] = 1;

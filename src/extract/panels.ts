@@ -614,6 +614,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // outlines, stairs, X-voids, details and anything already measured.
   const measuredPlanPanels = out.filter((panel) => /^S\d+[A-Z]?$/i.test(panel.label || '')
     && !panel.crossesDifferentSlabMark);
+  let drawingPlanAxis: number | undefined;
   if (measuredPlanPanels.length >= 5 && dwg.texts.some((text) => /\bFRAMING\s+PLAN\b/i.test(text.text))) {
     const footprint = measuredPlanPanels.reduce((box, panel) => ({
       x0: Math.min(box.x0, panel.box.x0), y0: Math.min(box.y0, panel.box.y0),
@@ -786,6 +787,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       panel.polygon = expanded.shape;
       panel.netAreaM2 = expanded.region.areaM2;
       panel.visualBoundary = true;
+      panel.steppedBoundary = true;
     }
   }
   // Polygonise the real band around each standalone C mark. A valid band has
@@ -1372,6 +1374,7 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         && panel.box.y0 >= footprint.y0 - 7000 && panel.box.y1 <= footprint.y1 + 7000;
     });
     const planAxis = (footprint.x0 + footprint.x1) / 2;
+    drawingPlanAxis = planAxis;
     // Drawing-wide visual symmetry pass. CAD entities are rendered into a
     // layer-independent structural image, the white bay around each proposal
     // is segmented, and only visually corresponding left/right regions are
@@ -1435,25 +1438,35 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     }
     const recoveredMirrors: PanelProposalBox[] = [];
     for (const source of [...planCandidates]) {
-      if (source.polygon || source.label !== 'UNMARKED SLAB'
+      const recoverableShape = source.label === 'UNMARKED SLAB'
+        || (source.steppedBoundary && !!source.polygon);
+      if (!recoverableShape
         || (source.box.x0 < planAxis && source.box.x1 > planAxis)) continue;
       const box = { x0: 2 * planAxis - source.box.x1, x1: 2 * planAxis - source.box.x0,
         y0: source.box.y0, y1: source.box.y1 };
       if (overlapFrac(source.box, box) > 0.05) continue;
-      const insideAggregate = planCandidates.some((panel) => panel.polygon
+      const polygon = source.polygon ? mirrorPolygon(source.polygon) : undefined;
+      const insideAggregate = planCandidates.some((panel) => panel !== source && panel.polygon
         && polygonRectOverlapFrac(panel.polygon, box) > 0.5);
-      const existingRectangle = planCandidates.some((panel) => !panel.polygon
-        && overlapFrac(panel.box, box) > 0.6);
+      const existingPanel = planCandidates.some((panel) => panel !== source
+        && (panel.polygon
+          ? (polygon
+            ? polygonRectOverlapFrac(panel.polygon, bbox(polygon)) > 0.6
+            : polygonRectOverlapFrac(panel.polygon, box) > 0.6)
+          : overlapFrac(panel.box, box) > 0.6));
+      const similarity = mirroredBaySimilarity(structuralImageSegments, source.box, box);
       if (box.x0 < footprint.x0 - 3000 || box.x1 > footprint.x1 + 3000
-        || existingRectangle
+        || existingPanel
+        || similarity < (polygon ? 0.48 : 0.42)
         || (!insideAggregate && supportedVisualSides(box, visibleRuns) < 2)
         || (!insideAggregate && supportedVisualSides(box, structuralRuns) < 1)
         || bayImageShowsFullX(allSegs, box)) continue;
       const centre = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
       recoveredMirrors.push({ label: 'UNMARKED SLAB', box,
         lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0, openingM2: 0,
+        polygon, netAreaM2: polygon ? (source.netAreaM2 ?? Math.abs(shoelace(polygon)) / 1e6) : undefined,
         thicknessMm: panelThickness(box, centre, thicknesses), confident: false,
-        duplicate: false, visualBoundary: true });
+        duplicate: false, visualBoundary: true, steppedBoundary: source.steppedBoundary });
     }
     planCandidates.push(...recoveredMirrors);
     notchLargePanelsAtCornerOverlaps(planCandidates);
@@ -1922,6 +1935,66 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // boundaries. Apply this consistently to every proposal path, not only a
   // previously reported panel. True stepped/notched polygons remain exact.
   normalizeNearRectangularPanels(measurable);
+  const slabMarkXs = rawSlabMarks.map((mark) => mark.pos.x).sort((a, b) => a - b);
+  const symmetricAxisVotes: number[] = [];
+  const axisPanels = measurable.filter((panel) => /^S\d+[A-Z]?$/i.test(panel.label || ''));
+  for (let i = 0; i < axisPanels.length; i++) for (let j = i + 1; j < axisPanels.length; j++) {
+    const a = axisPanels[i], b = axisPanels[j];
+    const aw = a.box.x1 - a.box.x0, bw = b.box.x1 - b.box.x0;
+    const ah = a.box.y1 - a.box.y0, bh = b.box.y1 - b.box.y0;
+    if (Math.abs((a.box.y0 + a.box.y1 - b.box.y0 - b.box.y1) / 2) <= 250
+      && Math.abs(aw - bw) <= Math.max(120, Math.min(aw, bw) * 0.08)
+      && Math.abs(ah - bh) <= Math.max(120, Math.min(ah, bh) * 0.08)
+      && Math.abs((a.box.x0 + a.box.x1 - b.box.x0 - b.box.x1) / 2) >= Math.max(aw, bw))
+      symmetricAxisVotes.push((a.box.x0 + a.box.x1 + b.box.x0 + b.box.x1) / 4);
+  }
+  const axisClusters = new Map<number, number>();
+  for (const vote of symmetricAxisVotes) {
+    const key = Math.round(vote / 200) * 200;
+    axisClusters.set(key, (axisClusters.get(key) ?? 0) + 1);
+  }
+  const votedAxis = [...axisClusters].sort((a, b) => b[1] - a[1])[0]?.[0];
+  const finalAxis = votedAxis ?? drawingPlanAxis ?? (slabMarkXs.length >= 4
+    ? (slabMarkXs[Math.floor((slabMarkXs.length - 1) / 2)] + slabMarkXs[Math.ceil((slabMarkXs.length - 1) / 2)]) / 2
+    : (Math.min(...measurable.map((panel) => panel.box.x0)) + Math.max(...measurable.map((panel) => panel.box.x1))) / 2);
+  const finalRuns = mergeAxisBeamSegments(finalBoundarySegments, 80);
+  const finalRecoveredMirrors: PanelProposalBox[] = [];
+  for (const source of measurable.filter((panel) => !panel.duplicate
+    && (panel.label === 'UNMARKED SLAB' || panel.steppedBoundary
+      || (!!panel.polygon && panel.visualBoundary && /^S\d+[A-Z]?$/i.test(panel.label || '')
+        && simplifyCollinearPolygon(panel.polygon).length >= 5)))) {
+    if (source.box.x0 < finalAxis && source.box.x1 > finalAxis) continue;
+    const polygon = source.polygon?.map((point) => ({ x: 2 * finalAxis - point.x, y: point.y })).reverse();
+    const box = polygon ? bbox(polygon) : { x0: 2 * finalAxis - source.box.x1,
+      x1: 2 * finalAxis - source.box.x0, y0: source.box.y0, y1: source.box.y1 };
+    const counterpart = measurable.find((panel) => panel !== source && !panel.duplicate
+      && (panel.polygon ? polygonRectOverlapFrac(panel.polygon, box) : overlapFrac(panel.box, box)) > 0.55);
+    if (counterpart) {
+      // The opposite bay may already exist as an oversized bounding rectangle.
+      // When the source is a verified stepped outline, repair that proposal in
+      // place so numbering/count stays stable and both sides use the same area.
+      if (source.steppedBoundary && polygon && !counterpart.polygon) {
+        counterpart.box = box; counterpart.polygon = polygon;
+        counterpart.netAreaM2 = source.netAreaM2 ?? Math.abs(shoelace(polygon)) / 1e6;
+        counterpart.lengthMm = box.x1 - box.x0; counterpart.breadthMm = box.y1 - box.y0;
+        counterpart.visualBoundary = true; counterpart.steppedBoundary = true;
+      }
+      continue;
+    }
+    const similarity = mirroredBaySimilarity(allSegs, source.box, box);
+    const sides = supportedVisualSides(box, finalRuns);
+    // An irregular bay needs matching raster structure; a small rectangular
+    // edge bay may contain little internal ink, so four/three plotted boundary
+    // sides are stronger evidence than the raster score.
+    if (!((similarity >= 0.62 && sides >= 1) || (!polygon && sides >= 3))) continue;
+    const centre = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
+    finalRecoveredMirrors.push({ label: 'UNMARKED SLAB', box, polygon,
+      netAreaM2: polygon ? (source.netAreaM2 ?? Math.abs(shoelace(polygon)) / 1e6) : undefined,
+      lengthMm: box.x1 - box.x0, breadthMm: box.y1 - box.y0, openingM2: 0,
+      thicknessMm: panelThickness(box, centre, thicknesses), confident: false,
+      duplicate: false, visualBoundary: true, steppedBoundary: source.steppedBoundary });
+  }
+  measurable.push(...finalRecoveredMirrors);
   assignCutouts(measurable.filter((panel) => !panel.duplicate), cutouts); // QSS-SLAB-004
   for (const panel of measurable) if (panel.openingM2 < 0.4) panel.openingM2 = 0;
   // An inferred hatch/cantilever proposal that is mostly an opening is an

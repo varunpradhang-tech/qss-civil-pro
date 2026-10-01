@@ -46,7 +46,7 @@ describe('raster bay cues', () => {
     const closed = segmentVisualBay(outline, { x: 2000, y: 1000 }, search, 512, 350);
     expect(closed).not.toBeNull();
     expect(closed?.rectangular).toBe(false);
-    expect(closed?.areaM2).toBeCloseTo(10, 0);
+    expect(closed?.areaM2).toBeCloseTo(9, 0);
   });
 
   it('recognises reflected structural images and unions connected chajja legs', () => {

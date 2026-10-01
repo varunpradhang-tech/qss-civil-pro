@@ -50,14 +50,14 @@ describe('Tower A & B typical framing plan acceptance', () => {
     }
   }, 60_000);
 
-  it('retains all 59 verified slab panels for the pair and a later unmarked-only upload', async () => {
+  it('retains all 62 verified slab panels including mirrored irregular and edge bays', async () => {
     const plain = await drawing(plainFile, '06. TYPICAL FRAMING PLAN.dwg');
     const marked = await drawing(markedFile, '06. updated TYPICAL FRAMING PLAN.dwg');
     expect(hasBundledDraftingProfile(plain)).toBe(true);
-    expect(extractMembers([plain, marked], 'slab')).toHaveLength(59);
+    expect(extractMembers([plain, marked], 'slab')).toHaveLength(62);
     expect(saveDraftingProfile(plain, marked).saved).toBe(true);
     const learned = loadDraftingProfile(plain);
     expect(learned).toBeDefined();
-    expect(extractMembers(plain, 'slab', 'Typical floor', learned)).toHaveLength(59);
+    expect(extractMembers(plain, 'slab', 'Typical floor', learned)).toHaveLength(62);
   }, 90_000);
 });

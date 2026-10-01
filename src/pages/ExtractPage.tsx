@@ -39,7 +39,7 @@ export function ExtractPage() {
 
   const [blockName, setBlockName] = useState('Block A');
   const [calcAreaMode, setCalcAreaMode] = useState<'drawing' | 'grid'>('drawing');
-  const [deductionMode, setDeductionMode] = useState<'manual' | 'none'>('manual');
+  const [deductionMode, setDeductionMode] = useState<'is1200' | 'none'>('is1200');
   const [selected, setSelected] = useState<string | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
   const [cadExporting, setCadExporting] = useState(false);
@@ -84,7 +84,13 @@ export function ExtractPage() {
   const isBeamCap = s.quantityKey === 'beam_concrete' || s.quantityKey === 'beam_shuttering';
   const isFraming = s.drawingType === 'structural' && ['slab', 'beam', 'raft'].includes(s.workGroup);
   const isColumn = s.drawingType === 'structural' && s.workGroup === 'column';
-  const rowQty = (r: MemberRow) => rule.calculate(r, s.capMode);
+  const quantityMember = (r: MemberRow): MemberRow => {
+    if (deductionMode !== 'none' || !/^slab_(?:shuttering|concrete)$/.test(s.quantityKey)
+      || !r.openings) return r;
+    return { ...r, netArea: r.netArea !== undefined ? r.netArea + r.openings : r.netArea, openings: 0 };
+  };
+  const quantityMembers = s.members.map(quantityMember);
+  const rowQty = (r: MemberRow) => rule.calculate(quantityMember(r), s.capMode);
   const total = s.members.reduce((a, r) => a + rowQty(r), 0);
   const canDetail = plan === 'premium' || s.outputType === 'total';
   const showDownloads = canDetail && s.members.length > 0;
@@ -265,8 +271,8 @@ export function ExtractPage() {
       }
     } finally { s.setParsing(false); }
   }
-  function exportCsv() { downloadBlob(membersToCsv(s.members, s.quantityKey, s.capMode), 'qss-takeoff.csv', 'text/csv;charset=utf-8'); }
-  async function exportXlsx() { downloadBlob(await buildMbXlsx(s.members, s.quantityKey, s.capMode, s.projectName, s.sheets.map((sheet) => sheet.dwg)), 'qss-mb.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
+  function exportCsv() { downloadBlob(membersToCsv(quantityMembers, s.quantityKey, s.capMode), 'qss-takeoff.csv', 'text/csv;charset=utf-8'); }
+  async function exportXlsx() { downloadBlob(await buildMbXlsx(quantityMembers, s.quantityKey, s.capMode, s.projectName, s.sheets.map((sheet) => sheet.dwg)), 'qss-mb.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
   async function exportReferenceCad() {
     setReferenceNotice(null);
     if (referenceReady) URL.revokeObjectURL(referenceReady.url);
@@ -388,8 +394,8 @@ export function ExtractPage() {
             <input type="text" value={s.defaultFloor} onChange={(e) => s.setDefaultFloor(e.target.value)} />
           </label>
           <label>Deduction mode
-            <select value={deductionMode} onChange={(e) => setDeductionMode(e.target.value as 'manual' | 'none')}>
-              <option value="manual">Manual opening deduction</option>
+            <select value={deductionMode} onChange={(e) => setDeductionMode(e.target.value as 'is1200' | 'none')}>
+              <option value="is1200">IS 1200 deduction (openings above 0.40 m²)</option>
               <option value="none">No deduction</option>
             </select>
           </label>

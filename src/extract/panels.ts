@@ -619,7 +619,15 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
       x0: Math.min(box.x0, panel.box.x0), y0: Math.min(box.y0, panel.box.y0),
       x1: Math.max(box.x1, panel.box.x1), y1: Math.max(box.y1, panel.box.y1),
     }), { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
-    const candidateFaces = topologyFaces.filter((face) => {
+    // The same physical beam/wall face is often stopped at columns, leaders
+    // or xref seams. Rejoin only short collinear structural gaps before the
+    // unmarked-bay pass; otherwise a visually enclosed bay has no graph face
+    // and can never become a candidate.
+    const repairedUnmarkedFaces = polygoniseCadFaces([
+      ...recoveryTopologySegments,
+      ...joinBrokenStructuralSegments(recoveryTopologySegments, 1200),
+    ], 300);
+    const candidateFaces = [...topologyFaces, ...sMarkRecoveryFaces, ...repairedUnmarkedFaces].filter((face) => {
       const width = face.box.x1 - face.box.x0, height = face.box.y1 - face.box.y0;
       const boxM2 = width * height / 1e6;
       const centre = { x: (face.box.x0 + face.box.x1) / 2, y: (face.box.y0 + face.box.y1) / 2 };
@@ -648,6 +656,60 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         lengthMm: face.box.x1 - face.box.x0, breadthMm: face.box.y1 - face.box.y0,
         openingM2: 0, thicknessMm: panelThickness(face.box, centre, thicknesses),
         confident: false, duplicate: false, closedStructuralBoundary: true });
+    }
+
+    // A plotted framing bay may look fully enclosed while its CAD entities do
+    // not form a closed graph (faces stop at columns, xref seams or leaders).
+    // Sample only space not already occupied by an authoritative S/hatch
+    // panel, then flood the layer-independent structural image. This recovers
+    // the visible bay itself instead of inventing a rectangle from dimensions.
+    const stablePanels = out.filter((panel) => panel.label !== 'UNMARKED SLAB');
+    const visualSearch = { x0: footprint.x0 - 3000, y0: footprint.y0 - 3000,
+      x1: footprint.x1 + 3000, y1: footprint.y1 + 3000 };
+    const visualSegments = recoveryTopologySegments.filter((segment) =>
+      isStructuralBoundarySegment(segment) || /slab|chajja|edge/i.test(segment.layer)
+      || /^A-STRS$|^0$/i.test(segment.layer));
+    const visualBays: ReturnType<typeof segmentVisualBay>[] = [];
+    const pointInsideBox = (point: Pt, box: PanelProposalBox['box']) => point.x > box.x0
+      && point.x < box.x1 && point.y > box.y0 && point.y < box.y1;
+    for (let y = footprint.y0 - 2200; y < footprint.y1 + 2200; y += 1600) {
+      for (let x = footprint.x0 - 2200; x < footprint.x1 + 2200; x += 1600) {
+        const seed = { x, y };
+        if (stablePanels.some((panel) => pointInsideBox(seed, panel.box))) continue;
+        const region = segmentVisualBay(visualSegments, seed, visualSearch, 512);
+        if (!region) continue;
+        const width = region.box.x1 - region.box.x0, height = region.box.y1 - region.box.y0;
+        const centre = { x: (region.box.x0 + region.box.x1) / 2,
+          y: (region.box.y0 + region.box.y1) / 2 };
+        const stableOverlap = stablePanels.some((panel) => overlapFrac(panel.box, region.box) > 0.15);
+        const duplicateVisual = visualBays.some((other) => other && overlapFrac(other.box, region.box) > 0.5);
+        const stairStroke = allSegs.some((segment) => /(?:^|[-_$\s])(?:stair|step|flight)(?:$|[-_$\s])/i.test(segment.layer)
+          && pointInPolygon(mid(segment.a, segment.b), region.polygon));
+        if (width < 600 || height < 600 || region.areaM2 < 2 || region.areaM2 > 200
+          || region.box.x0 < footprint.x0 - 3000 || region.box.x1 > footprint.x1 + 3000
+          || region.box.y0 < footprint.y0 - 3000 || region.box.y1 > footprint.y1 + 3000
+          || stableOverlap || duplicateVisual || stairStroke || excludedDetailPoint(centre)
+          || bayImageShowsFullX(allSegs, region.box)
+          || supportedVisualSides(region.box, visualSegments, 450) < 2) continue;
+        visualBays.push(region);
+      }
+    }
+    for (const region of visualBays) {
+      if (!region) continue;
+      // Replace only weaker unmarked fragments. Never modify an S-coded slab.
+      for (let index = out.length - 1; index >= 0; index--) {
+        if (out[index].label === 'UNMARKED SLAB' && overlapFrac(out[index].box, region.box) > 0.15)
+          out.splice(index, 1);
+      }
+      const centre = { x: (region.box.x0 + region.box.x1) / 2,
+        y: (region.box.y0 + region.box.y1) / 2 };
+      out.push({ label: 'UNMARKED SLAB', box: region.box,
+        polygon: region.rectangular ? undefined : simplifyCollinearPolygon(region.polygon),
+        netAreaM2: region.rectangular ? undefined : region.areaM2,
+        lengthMm: region.box.x1 - region.box.x0, breadthMm: region.box.y1 - region.box.y0,
+        openingM2: 0, thicknessMm: panelThickness(region.box, centre, thicknesses),
+        confident: false, duplicate: false, visualBoundary: true,
+        closedStructuralBoundary: true });
     }
   }
   // Polygonise the real band around each standalone C mark. A valid band has

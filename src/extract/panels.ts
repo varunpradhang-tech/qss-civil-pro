@@ -1783,6 +1783,49 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
   // HOLD / HOLD AREA is an explicit instruction that the containing bay is
   // outside the current measurable scope. Exclude it before deductions,
   // numbering, Excel export, totals, and reference-file marking.
+  // Finish every visually recovered unmarked bay with its own plotted
+  // outline after all proposal sources have run. Some projection/corner bays
+  // are created late by the cantilever/comment-line recovery, so refining
+  // only the earlier plan candidate set leaves those as coarse rectangles.
+  const finalBoundarySegments = allSegs.filter((segment) =>
+    (/beam|wall|col|pardi|rcc|slab|chajja|edge/i.test(segment.layer)
+      || /^0$|^A-STRS$/i.test(segment.layer))
+    && !/grid|axis|centre|center|dim|dimension|annot|text|title|schedule|section|cut|open|void|shaft|lift|duct|ots/i
+      .test(segment.layer));
+  for (const panel of out.filter((candidate) => !candidate.polygon
+    && candidate.label === 'UNMARKED SLAB'
+    && (candidate.visualBoundary || candidate.closedStructuralBoundary)
+    && boxArea(candidate.box) >= 2_000_000)) {
+    const original = panel.box;
+    const width = original.x1 - original.x0, height = original.y1 - original.y0;
+    const pad = Math.min(1500, Math.max(600, Math.min(width, height) * 0.4));
+    const search = { x0: original.x0 - pad, y0: original.y0 - pad,
+      x1: original.x1 + pad, y1: original.y1 + pad };
+    const fractions = [[0.5, 0.5], [0.25, 0.25], [0.25, 0.5], [0.25, 0.75],
+      [0.5, 0.25], [0.5, 0.75], [0.75, 0.25], [0.75, 0.5], [0.75, 0.75]];
+    const regions = fractions.map(([fx, fy]) => segmentVisualBay(finalBoundarySegments,
+      { x: original.x0 + width * fx, y: original.y0 + height * fy }, search, 512))
+      .filter((region): region is NonNullable<typeof region> => !!region);
+    const gross = boxArea(original) / 1e6;
+    const region = regions.filter((candidate) => candidate.areaM2 >= gross * 0.5
+      && candidate.areaM2 <= gross * 1.2
+      && Math.abs(candidate.box.x0 - original.x0) <= 500
+      && Math.abs(candidate.box.x1 - original.x1) <= 500
+      && Math.abs(candidate.box.y0 - original.y0) <= 500
+      && Math.abs(candidate.box.y1 - original.y1) <= 500)
+      .sort((a, b) => b.polygon.length - a.polygon.length || b.areaM2 - a.areaM2)[0];
+    if (!region) continue;
+    panel.box = region.box;
+    panel.lengthMm = region.box.x1 - region.box.x0;
+    panel.breadthMm = region.box.y1 - region.box.y0;
+    if (region.rectangular) {
+      panel.polygon = undefined;
+      panel.netAreaM2 = undefined;
+    } else {
+      panel.polygon = simplifyCollinearPolygon(region.polygon);
+      panel.netAreaM2 = region.areaM2;
+    }
+  }
   const measurable = out.filter((panel) => {
     const centre = { x: (panel.box.x0 + panel.box.x1) / 2, y: (panel.box.y0 + panel.box.y1) / 2 };
     // A beam mark is positive evidence that its location belongs to a beam.

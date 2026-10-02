@@ -304,6 +304,35 @@ describe('cross-sheet beam extraction', () => {
     ]);
   });
 
+  it('uses the slab thickness covering the greatest beam length on each side', () => {
+    const plan = base('mixed-slab-thickness-framing.dwg');
+    plan.extents = { min: { x: 0, y: -3000 }, max: { x: 6000, y: 3300 } };
+    plan.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 6000, y: 0 } },
+      { layer: 'BEAM', a: { x: 0, y: 300 }, b: { x: 6000, y: 300 } },
+      { layer: 'BEAM', a: { x: 0, y: 3300 }, b: { x: 6000, y: 3300 } },
+      { layer: 'BEAM', a: { x: 0, y: -3000 }, b: { x: 6000, y: -3000 } },
+      ...[0, 2000, 4000, 6000].map((x) => ({ layer: 'BEAM', a: { x, y: 300 }, b: { x, y: 3300 } })),
+      { layer: 'BEAM', a: { x: 0, y: -3000 }, b: { x: 0, y: 0 } },
+      { layer: 'BEAM', a: { x: 6000, y: -3000 }, b: { x: 6000, y: 0 } },
+    ];
+    plan.texts = [
+      { layer: 'BEAM NO', text: 'B1', pos: { x: 3000, y: 150 } },
+      { layer: 'TEXT', text: '300X700', pos: { x: 3300, y: 150 } },
+      { layer: 'SLAB NO', text: 'S1', pos: { x: 1000, y: 1500 } },
+      { layer: 'SLAB THK', text: '150 THK', pos: { x: 1000, y: 1800 } },
+      { layer: 'SLAB NO', text: 'S2', pos: { x: 3000, y: 1500 } },
+      { layer: 'SLAB THK', text: '150 THK', pos: { x: 3000, y: 1800 } },
+      { layer: 'SLAB NO', text: 'S3', pos: { x: 5000, y: 1500 } },
+      { layer: 'SLAB THK', text: '175 THK', pos: { x: 5000, y: 1800 } },
+      { layer: 'SLAB NO', text: 'S4', pos: { x: 3000, y: -1500 } },
+      { layer: 'SLAB THK', text: '125 THK', pos: { x: 3000, y: -1800 } },
+    ];
+    expect(extractMembers(plan, 'beam')).toEqual([
+      expect.objectContaining({ member: 'B1', slabThicknessSide1: 0.15, slabThicknessSide2: 0.125 }),
+    ]);
+  });
+
   it('prefers an intact exact-baseline face over a width-clustered adjoining run', () => {
     const plan = base('exact-face-at-junction.dwg');
     plan.segments = [

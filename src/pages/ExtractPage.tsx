@@ -132,7 +132,7 @@ export function ExtractPage() {
               let review;
               try {
                 const beamMarkContext = dwg.texts
-                  .filter((text) => /^(?:T\d+)?M?B\d+[A-Z]?$/i.test(text.text.replace(/\s/g, ''))
+                  .filter((text) => /^(?:T\d+)?[A-Z]{0,2}B\d+[A-Z]?$/i.test(text.text.replace(/\s/g, ''))
                     && text.pos.x >= tile.x0 && text.pos.x <= tile.x1
                     && text.pos.y >= tile.y0 && text.pos.y <= tile.y1)
                   .slice(0, 60)
@@ -205,7 +205,7 @@ export function ExtractPage() {
               } catch (error) { failedTiles.push(tileBounds.length + i + 1); reviewErrors.push((error as Error).message); }
             }
             const beamFaces = dwg.segments.filter((segment) => /(?:^|[-_\s])beam(?:$|[-_\s])/i.test(segment.layer));
-            const beamMarks = dwg.texts.filter((text) => /^(?:T\d+)?M?B\d+[A-Z]?$/i.test(text.text.replace(/\s/g, '')))
+            const beamMarks = dwg.texts.filter((text) => /^(?:T\d+)?[A-Z]{0,2}B\d+[A-Z]?$/i.test(text.text.replace(/\s/g, '')))
               .map((text) => text.pos);
             // The full-plan tiles establish context. Reinspect at most three
             // ambiguous bays at finer scale, instead of asking the model to

@@ -37,7 +37,7 @@ export function uncoveredReviewBounds(dwg: NormalizedDwg, panels: PanelProposalB
   for (let x = footprint.x0 + 1000; x < footprint.x1 - 1000; x += 1200) {
     for (let y = footprint.y0 + 1000; y < footprint.y1 - 1000; y += 1200) {
       const point = { x, y };
-      if (covered(point) || dwg.texts.some((text) => /^(?:T\d+)?M?B\d+[A-Z]?$/i.test(text.text.replace(/\s/g, ''))
+      if (covered(point) || dwg.texts.some((text) => /^(?:T\d+)?[A-Z]{0,2}B\d+[A-Z]?$/i.test(text.text.replace(/\s/g, ''))
         && Math.hypot(text.pos.x - x, text.pos.y - y) < 550)) continue;
       const left = vertical.filter((line) => line.a.x < x - 400 && line.a.x > x - 6500
         && Math.min(line.a.y, line.b.y) <= y + 350 && Math.max(line.a.y, line.b.y) >= y - 350)

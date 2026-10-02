@@ -6,7 +6,7 @@ import { polygoniseCadFaces } from './topology.js';
 import { applyPanelMeasurementPriority } from './panelMeasurement.js';
 import { bayImageShowsFullX, mirroredBaySimilarity, segmentVisualBay, unionVisualPolygons } from '../vision/bayImage.js';
 
-const isBeamMarkText = (text: string) => /^(?:T\d+)?(?:M|X)?B\d+[A-Z]?(?:\(\d{2,4}[X×]\d{2,4}\))?$/i
+const isBeamMarkText = (text: string) => /^(?:T\d+)?[A-Z]{0,2}B\d+[A-Z]?(?:\(\d{2,4}[X×]\d{2,4}\))?$/i
   .test(text.replace(/\s/g, ''));
 
 export interface PanelProposalBox {
@@ -673,8 +673,12 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     const visualBays: ReturnType<typeof segmentVisualBay>[] = [];
     const pointInsideBox = (point: Pt, box: PanelProposalBox['box']) => point.x > box.x0
       && point.x < box.x1 && point.y > box.y0 && point.y < box.y1;
-    for (let y = footprint.y0 - 2200; y < footprint.y1 + 2200; y += 1600) {
-      for (let x = footprint.x0 - 2200; x < footprint.x1 + 2200; x += 1600) {
+    // A single coarse lattice can miss a narrow bay completely when every
+    // sample lands on its boundary or an adjacent labelled panel. Use an
+    // 800 mm lattice so ordinary beam bays remain discoverable regardless of
+    // drawing origin (including the narrow YB-bounded bay beside P81).
+    for (let y = footprint.y0 - 2200; y < footprint.y1 + 2200; y += 800) {
+      for (let x = footprint.x0 - 2200; x < footprint.x1 + 2200; x += 800) {
         const seed = { x, y };
         if (stablePanels.some((panel) => pointInsideBox(seed, panel.box))) continue;
         const region = segmentVisualBay(visualSegments, seed, visualSearch, 512);
@@ -686,7 +690,11 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         const duplicateVisual = visualBays.some((other) => other && overlapFrac(other.box, region.box) > 0.5);
         const stairStroke = allSegs.some((segment) => /(?:^|[-_$\s])(?:stair|step|flight)(?:$|[-_$\s])/i.test(segment.layer)
           && pointInPolygon(mid(segment.a, segment.b), region.polygon));
-        if (width < 600 || height < 600 || region.areaM2 < 2 || region.areaM2 > 200
+        // Small toilets/service bays are still slab panels. The previous 2 m²
+        // floor discarded a visibly enclosed bay even though the same engine
+        // accepts labelled panels down to 0.2 m². Keep a conservative 0.4 m²
+        // minimum here and retain all structural/X/stair/overlap safeguards.
+        if (width < 600 || height < 600 || region.areaM2 < 0.4 || region.areaM2 > 200
           || region.box.x0 < footprint.x0 - 3000 || region.box.x1 > footprint.x1 + 3000
           || region.box.y0 < footprint.y0 - 3000 || region.box.y1 > footprint.y1 + 3000
           || stableOverlap || duplicateVisual || stairStroke || excludedDetailPoint(centre)

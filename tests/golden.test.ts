@@ -48,8 +48,11 @@ describe('golden: GPL SIG3 T3 basement slab shuttering', () => {
   it('produces a sane panel count and marks review reasons', async () => {
     const dwg = await parseDwg(new Uint8Array(readFileSync(FILE)), 'ST-300', { wasmPath: WASM });
     const panels = autoProposePanels(dwg);
-    expect(panels.length).toBeGreaterThanOrEqual(45);
-    expect(panels.length).toBeLessThanOrEqual(65);
+    // Includes the previously omitted small enclosed service bay. Keep this
+    // broad enough for deterministic polygon ordering while preventing a
+    // regression back to the incomplete extraction.
+    expect(panels.length).toBeGreaterThanOrEqual(86);
+    expect(panels.length).toBeLessThanOrEqual(95);
     // void-distorted panels must be flagged, not silently shipped
     const distorted = panels.filter((p) => {
       const gross = (p.lengthMm / 1000) * (p.breadthMm / 1000);
@@ -76,5 +79,12 @@ describe('member extraction → rule engine (app path)', () => {
     expect(members.every((m) => m.needsReview && m.breadth === 0 && m.height === 0)).toBe(true);
     expect(members.reduce((a, m) => a + RULES.beam_shuttering.calculate(m, 'excluded'), 0)).toBe(0);
     expect(members.reduce((a, m) => a + RULES.beam_concrete.calculate(m, 'excluded'), 0)).toBe(0);
+  }, 30000);
+
+  it('extracts both XB and YB framing beams from the real drawing', async () => {
+    const dwg = await parseDwg(new Uint8Array(readFileSync(FILE)), 'ST-300', { wasmPath: WASM });
+    const members = extractMembers(dwg, 'beam');
+    expect(members.some((member) => /^XB\d/i.test(member.member))).toBe(true);
+    expect(members.filter((member) => /^YB\d/i.test(member.member)).length).toBeGreaterThanOrEqual(20);
   }, 30000);
 });

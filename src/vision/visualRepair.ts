@@ -8,7 +8,7 @@ export type VisualRepairEvidence = {
   accepted: boolean;
 };
 
-const beamNumber = /^(?:T\d+)?M?B\d+[A-Z]?$/i;
+const beamNumber = /^(?:T\d+)?[A-Z]{0,2}B\d+[A-Z]?$/i;
 const structuralLayer = /beam|wall|col|pardi|rcc/i;
 const detailLayer = /dimension|text|number|schedule|grid|axis/i;
 

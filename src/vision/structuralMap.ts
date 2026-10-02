@@ -12,7 +12,7 @@ export interface StructuralBayQuestion {
 
 const structural = /beam|wall|col|pardi|rcc|slab|chajja/i;
 const excluded = /grid|axis|centre|center|dim|text|number|schedule|section|detail|cut|void|shaft|lift|duct/i;
-const beamNumber = /^(?:T\d+)?M?B\d+[A-Z]?$/i;
+const beamNumber = /^(?:T\d+)?[A-Z]{0,2}B\d+[A-Z]?$/i;
 const length = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y);
 const inside = (p: Pt, box: PlanBounds) => p.x >= box.x0 && p.x <= box.x1 && p.y >= box.y0 && p.y <= box.y1;
 const inPolygon = (point: Pt, polygon: Pt[]) => {

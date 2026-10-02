@@ -121,6 +121,17 @@ describe('cross-sheet beam extraction', () => {
     expect(member).toMatchObject({ member: 'XB2', length: 5, breadth: 0.3, height: 0.5, nos: 1 });
   });
 
+  it('reads YB and other directional beam marks without depending on orientation', () => {
+    const plan = base('directional-framing-plan.dwg');
+    plan.segments = [
+      { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 0, y: 5000 } },
+      { layer: 'BEAM', a: { x: 300, y: 0 }, b: { x: 300, y: 5000 } },
+    ];
+    plan.texts = [{ layer: 'BEAM NO', text: 'YB7(300x650)', pos: { x: 150, y: 2500 } }];
+    const [member] = extractMembers(plan, 'beam');
+    expect(member).toMatchObject({ member: 'YB7', length: 5, breadth: 0.3, height: 0.65, nos: 1 });
+  });
+
   it('uses a drawing U.N.O. beam size only when no specific size is associated', () => {
     const plan = base('uno.dwg');
     plan.segments = [

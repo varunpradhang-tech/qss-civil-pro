@@ -1844,7 +1844,8 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
     // A beam mark is positive evidence that its location belongs to a beam.
     // Reject an inferred slab that encloses that mark in its interior; a mark
     // on the shared beam boundary is allowed beside a real slab bay.
-    if (!/^S\d+[A-Z]?$/i.test(panel.label || '') && !panel.cantileverBoundary) {
+    if (!/^S\d+[A-Z]?$/i.test(panel.label || '') && !panel.cantileverBoundary
+      && !panel.visualBoundary) {
       const beamMarkInside = dwg.texts.some((text) => {
         if (!isBeamMarkText(text.text)) return false;
         const margin = Math.min(350, (panel.box.x1 - panel.box.x0) * 0.15,
@@ -1865,7 +1866,41 @@ export function autoProposePanels(dwg: NormalizedDwg): PanelProposalBox[] {
         : midpoint.x >= panel.box.x0 && midpoint.x <= panel.box.x1
           && midpoint.y >= panel.box.y0 && midpoint.y <= panel.box.y1;
     });
-    if (stairStrokes.length >= 4) return false;
+    // Any geometry explicitly assigned to a stair/flight layer makes this a
+    // staircase zone. Requiring four strokes allowed compact flights drawn as
+    // one or two polylines to be billed as slab shuttering.
+    if (stairStrokes.length >= 1) return false;
+    // Stair flights are frequently drafted on generic/xref layers, so layer
+    // names alone cannot protect quantities. Detect the repeated, closely
+    // spaced parallel tread lines inside an inferred panel. Ordinary grids
+    // are much farther apart and therefore do not satisfy this sequence.
+    if (!/^S\d+[A-Z]?$/i.test(panel.label || '') && !panel.cantileverBoundary) {
+      const contains = (point: Pt) => panel.polygonParts?.length
+        ? panel.polygonParts.some((part) => pointInPolygon(point, part))
+        : panel.polygon ? pointInPolygon(point, panel.polygon)
+        : point.x >= panel.box.x0 && point.x <= panel.box.x1
+          && point.y >= panel.box.y0 && point.y <= panel.box.y1;
+      const minSpan = Math.min(panel.box.x1 - panel.box.x0, panel.box.y1 - panel.box.y0) * 0.22;
+      const treadCoords = (horizontal: boolean) => {
+        const coords = allSegs.filter((segment) => {
+        const dx = Math.abs(segment.b.x - segment.a.x), dy = Math.abs(segment.b.y - segment.a.y);
+        const axisAligned = horizontal ? dy <= ALIGN_TOL && dx >= minSpan : dx <= ALIGN_TOL && dy >= minSpan;
+        return axisAligned && Math.hypot(dx, dy) <= 2500 && contains(mid(segment.a, segment.b));
+      }).map((segment) => Math.round((horizontal
+          ? (segment.a.y + segment.b.y) / 2 : (segment.a.x + segment.b.x) / 2) / 25) * 25);
+        return [...new Set(coords)].sort((a, b) => a - b);
+      };
+      const hasTreadSequence = (coords: number[]) => {
+        let run = 1;
+        for (let index = 1; index < coords.length; index++) {
+          const gap = coords[index] - coords[index - 1];
+          run = gap >= 80 && gap <= 450 ? run + 1 : 1;
+          if (run >= 6) return true;
+        }
+        return false;
+      };
+      if (hasTreadSequence(treadCoords(true)) || hasTreadSequence(treadCoords(false))) return false;
+    }
     // Final sheet-level safeguard: later recovery passes (hatches, mixed
     // cantilever faces and closed-strip detection) must not re-introduce a
     // section, projection or schedule cell that the primary plan pass

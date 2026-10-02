@@ -32,9 +32,11 @@ export function extractMembers(input: NormalizedDwg | NormalizedDwg[], workGroup
 
 function beamLabel(text: string): string | null {
   const value = text.replace(/\s/g, '').toUpperCase();
-  // Projects use plain B1/MB1/XB1 as well as tower-prefixed labels. Some
-  // consultants combine the mark and size in one entity: XB2(300x500).
-  const match = value.match(/^((?:T\d+)?(?:M|X)?B\d+[A-Z]?)(?:\(\d{2,4}[X×]\d{2,4}\))?$/);
+  // Beam prefixes describe grids/directions differently between consultants
+  // (B/MB/XB/YB/GB/...). Do not use the prefix as an allow-list: geometry and
+  // the BEAM NO/SIZE context establish that this is a beam. Limiting the
+  // prefix to two letters avoids treating words such as SLAB1 as beam marks.
+  const match = value.match(/^((?:T\d+)?[A-Z]{0,2}B\d+[A-Z]?)(?:\(\d{2,4}[X×]\d{2,4}\))?$/);
   return match?.[1] ?? null;
 }
 
@@ -43,7 +45,7 @@ const isBeamGeometryLayer = (layer: string) => /(?:^|[-_\s])beam(?:$|[-_\s])/i.t
 const isBeamNumberLayer = (layer: string) => /b(?:ea|ra)m\s*(?:no|number)/i.test(layer);
 
 function compareBeamLabels(a: string, b: string): number {
-  const am = a.match(/^T(\d+)((?:M|X)?B)(\d+)([A-Z]?)$/), bm = b.match(/^T(\d+)((?:M|X)?B)(\d+)([A-Z]?)$/);
+  const am = a.match(/^T(\d+)([A-Z]{0,2}B)(\d+)([A-Z]?)$/), bm = b.match(/^T(\d+)([A-Z]{0,2}B)(\d+)([A-Z]?)$/);
   if (am && bm) return Number(am[1]) - Number(bm[1]) || Number(am[3]) - Number(bm[3]) || am[4].localeCompare(bm[4]) || am[2].localeCompare(bm[2]);
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 }
@@ -1239,7 +1241,7 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       row.nos = Math.max(row.nos, copies);
       const reference = referenceLengths.get(row.member);
       const conflictRatio = reference ? reference / Math.max(row.length * 1000, 1) : 1;
-      if (!/^XB\d/i.test(row.member) && row.nos <= 1 && row.measurementSource !== 'exact beam face'
+      if (!/^[A-Z]{1,2}B\d/i.test(row.member) && row.nos <= 1 && row.measurementSource !== 'exact beam face'
         && reference && (conflictRatio < 0.4 || conflictRatio > 2)) {
         // Conflicting plan/detail evidence must never become a confident
         // quantity. Retain an auditable review row but count zero until the

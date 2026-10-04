@@ -860,6 +860,18 @@ describe('unmarked slab geometry', () => {
     expect(autoProposePanels(small)[0].openingM2).toBe(0);
   });
 
+  it('keeps a rectangular slab gross when a service notch is below 0.40 square metres', () => {
+    const panel = { label: 'UNMARKED SLAB', box: { x0: 0, y0: 0, x1: 4000, y1: 3000 },
+      lengthMm: 4000, breadthMm: 3000, openingM2: 0, thicknessMm: 150,
+      confident: false, duplicate: false, visualBoundary: true,
+      polygon: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 2200 },
+        { x: 3600, y: 2200 }, { x: 3600, y: 3000 }, { x: 0, y: 3000 }],
+      netAreaM2: 11.68 };
+    normalizeNearRectangularPanels([panel]);
+    expect(panel.netAreaM2).toBe(12);
+    expect(panel.polygon).toHaveLength(4);
+  });
+
   it('deducts a large unlabelled X-void only when fully contained in an S-coded slab bay', () => {
     const plan = drawing();
     plan.segments.push(

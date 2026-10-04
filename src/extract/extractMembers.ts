@@ -405,6 +405,10 @@ function slabMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, nu
 
 // --- beam: group BEAM face segments into collinear runs (bridging support gaps), size from BEAM SIZE text ---
 function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { widthMm: number; depthMm: number }>, slabThicknesses: Map<string, number>, slabUnoThicknessMm?: number, unoSize?: { widthMm: number; depthMm: number }, referenceLengths = new Map<string, number>()): MemberRow[] {
+  // Use the same physical slab bays as the slab takeoff. Beam-side thickness
+  // is selected by the thickness covering the greatest longitudinal length
+  // on that side, rather than by whichever slab label is nearest the mark.
+  const adjacentPanels = autoProposePanels(dwg).filter((panel) => !panel.duplicate);
   const allSlabLabels = dwg.texts
     .filter((t) => /slabs?\s*(?:no|number)/i.test(t.layer) && /^S\d+[A-Z]?$/i.test(t.text.replace(/\s/g, '')))
     .map((t) => ({ ...t, code: t.text.replace(/\s/g, '').toUpperCase() }));
@@ -685,6 +689,8 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       // well away from their label (for example T3B1 in the validation drawing).
       const useMarkedDimension = !!markedDimension && markedDimension.distance <= 1200 && markedDimension.distance < nearestDistance * 0.75;
       const lengthMm = useMarkedDimension ? markedDimension.dimension.measurement : nearest ? Math.hypot(nearest.b.x - nearest.a.x, nearest.b.y - nearest.a.y) : 0;
+      const sourceA = useMarkedDimension ? markedDimension.dimension.p1 : nearest?.a;
+      const sourceB = useMarkedDimension ? markedDimension.dimension.p2 : nearest?.b;
       const maxAlong = Math.max(lengthMm / 2 + 2000, 3500);
       const adjacent = (side: -1 | 1) => slabLabels
         .map((slab) => {
@@ -695,6 +701,36 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
         .filter((x) => Math.sign(x.perpendicular) === side && Math.abs(x.along) <= maxAlong && Math.abs(x.perpendicular) <= 8000)
         .sort((a, b) => a.score - b.score)[0]?.slab;
       const side1 = adjacent(1), side2 = adjacent(-1);
+      const dominantAdjacent = (side: -1 | 1) => {
+        if (!sourceA || !sourceB || !beamDirection) return undefined;
+        const horizontal = beamDirection === 'H';
+        const lo = horizontal ? Math.min(sourceA.x, sourceB.x) : Math.min(sourceA.y, sourceB.y);
+        const hi = horizontal ? Math.max(sourceA.x, sourceB.x) : Math.max(sourceA.y, sourceB.y);
+        const normal = horizontal ? (sourceA.y + sourceB.y) / 2 : (sourceA.x + sourceB.x) / 2;
+        const coverage = new Map<number, { mm: number; length: number; code?: string; best: number }>();
+        for (const panel of adjacentPanels) {
+          const centre = horizontal ? (panel.box.y0 + panel.box.y1) / 2 : (panel.box.x0 + panel.box.x1) / 2;
+          if (Math.sign(centre - normal) !== side) continue;
+          const panelLo = horizontal ? panel.box.x0 : panel.box.y0;
+          const panelHi = horizontal ? panel.box.x1 : panel.box.y1;
+          const overlap = Math.max(0, Math.min(hi, panelHi) - Math.max(lo, panelLo));
+          const gap = normal < (horizontal ? panel.box.y0 : panel.box.x0)
+            ? (horizontal ? panel.box.y0 : panel.box.x0) - normal
+            : normal > (horizontal ? panel.box.y1 : panel.box.x1)
+              ? normal - (horizontal ? panel.box.y1 : panel.box.x1) : 0;
+          if (overlap < 200 || gap > 1500) continue;
+          const code = /^S\d+[A-Z]?$/i.test(panel.label || '') ? panel.label!.toUpperCase()
+            : panel.inferredSlabCode?.toUpperCase();
+          const mm = panel.thicknessMm || (code ? slabThicknesses.get(code) : undefined) || 0;
+          if (!mm) continue;
+          const item = coverage.get(mm) ?? { mm, length: 0, code, best: 0 };
+          item.length += overlap;
+          if (overlap > item.best) { item.best = overlap; item.code = code; }
+          coverage.set(mm, item);
+        }
+        return [...coverage.values()].sort((a, b) => b.length - a.length || b.best - a.best)[0];
+      };
+      const dominant1 = dominantAdjacent(1), dominant2 = dominantAdjacent(-1);
       const midpoint = nearest ? { x: (nearest.a.x + nearest.b.x) / 2, y: (nearest.a.y + nearest.b.y) / 2 } : text.pos;
       const beamCoord = beamDirection === 'H' ? midpoint.y : beamDirection === 'V' ? midpoint.x : 0;
       const inlineSize = sizeForBeam(text.pos, beamDirection, beamCoord);
@@ -709,8 +745,8 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       r.breadth = size ? round3(size.widthMm / 1000) : 0;
       r.height = size ? round3(size.depthMm / 1000) : 0;
       r.slabThickness = 0.175;
-      r.slabCodeSide1 = side1?.code;
-      r.slabCodeSide2 = side2?.code;
+      r.slabCodeSide1 = dominant1?.code ?? side1?.code;
+      r.slabCodeSide2 = dominant2?.code ?? side2?.code;
       // Slab thickness is a universal beam-side deduction. A missing/ambiguous
       // slab mark must not silently turn the exposed beam side into full depth;
       // use the standard 175 mm slab fallback and keep the row reviewable.
@@ -718,13 +754,13 @@ function beamMembers(dwg: NormalizedDwg, floor: string, schedule: Map<string, { 
       // A framing-plan beam normally meets the floor slab on both longitudinal
       // faces. Missing slab text is a recognition gap, not evidence that the
       // slab disappears; retain the universal fallback on that face.
-      r.slabThicknessSide1 = round3(((side1 ? slabThicknesses.get(side1.code) : undefined) ?? defaultSlabThickness) / 1000);
-      r.slabThicknessSide2 = round3(((side2 ? slabThicknesses.get(side2.code) : undefined) ?? defaultSlabThickness) / 1000);
+      r.slabThicknessSide1 = round3((dominant1?.mm
+        ?? (side1 ? slabThicknesses.get(side1.code) : undefined) ?? defaultSlabThickness) / 1000);
+      r.slabThicknessSide2 = round3((dominant2?.mm
+        ?? (side2 ? slabThicknesses.get(side2.code) : undefined) ?? defaultSlabThickness) / 1000);
       r.slabThickness = round3(Math.max(r.slabThicknessSide1, r.slabThicknessSide2));
       r.innerSideCount = 2;
       r.nos = 1;
-      const sourceA = useMarkedDimension ? markedDimension.dimension.p1 : nearest?.a;
-      const sourceB = useMarkedDimension ? markedDimension.dimension.p2 : nearest?.b;
       if (sourceA && sourceB) {
         r.cadX0 = sourceA.x; r.cadY0 = sourceA.y;
         r.cadX1 = sourceB.x; r.cadY1 = sourceB.y;
@@ -1403,17 +1439,21 @@ function consolidateBeamRows(rows: MemberRow[]): MemberRow[] {
     // Repeated labels create one source span per physical copy. Weight slab
     // thickness by those source lengths, not by the averaged consolidated
     // length; otherwise two identical 175 mm slabs incorrectly become 350 mm.
-    const thicknessWeight = spans.reduce((sum, span) => sum + (span.sideLength || span.length), 0);
-    const weightedThickness = (side: 1 | 2) => thicknessWeight > 0
-      ? spans.reduce((sum, span) => sum + (span.sideLength || span.length)
-        * (side === 1 ? span.slabThicknessSide1 || 0 : span.slabThicknessSide2 || 0), 0) / thicknessWeight
-      : 0;
+    const dominantThickness = (side: 1 | 2) => {
+      const covered = new Map<number, number>();
+      for (const span of spans) {
+        const thickness = side === 1 ? span.slabThicknessSide1 || 0 : span.slabThicknessSide2 || 0;
+        if (!thickness) continue;
+        covered.set(thickness, (covered.get(thickness) || 0) + (span.sideLength || span.length));
+      }
+      return [...covered].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
+    };
     const row = { ...spans[0] };
     row.length = round3(grossLength);
     row.sideLength = round3(totalSideLength);
     row.breadth = selectedSize[0]; row.height = selectedSize[1];
-    row.slabThicknessSide1 = round3(weightedThickness(1));
-    row.slabThicknessSide2 = round3(weightedThickness(2));
+    row.slabThicknessSide1 = round3(dominantThickness(1));
+    row.slabThicknessSide2 = round3(dominantThickness(2));
     row.innerSideCount = Number(!!row.slabThicknessSide1) + Number(!!row.slabThicknessSide2);
     const supportLength = Math.max(grossLength - clearLength, 0);
     row.columnCapDeduction = round3(supportLength * row.breadth * row.height);

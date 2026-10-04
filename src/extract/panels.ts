@@ -2140,7 +2140,7 @@ export function separateCoreMirrorOverlaps(panels: PanelProposalBox[], segments:
 
 export function normalizeNearRectangularPanels(panels: PanelProposalBox[]): void {
   for (const panel of panels) {
-    if (panel.polygon?.length !== 4 || panel.netAreaM2 === undefined) continue;
+    if (!panel.polygon || panel.polygon.length < 4 || panel.netAreaM2 === undefined) continue;
     const rectAreaM2 = boxArea(panel.box) / 1e6;
     const skewRatio = panel.visualBoundary ? 0.07 : 0.035;
     const fillRatio = panel.visualBoundary ? 0.9 : 0.985;
@@ -2149,7 +2149,15 @@ export function normalizeNearRectangularPanels(panels: PanelProposalBox[]): void
       const dx = Math.abs(next.x - point.x), dy = Math.abs(next.y - point.y);
       return Math.min(dx, dy) <= Math.max(80, Math.max(dx, dy) * skewRatio);
     });
-    if (rectAreaM2 > 0 && orthogonal && panel.netAreaM2 / rectAreaM2 >= fillRatio) {
+    // IS 1200 measures openings below 0.40 m² in the slab soffit. A small
+    // service opening/notch must therefore not turn an otherwise rectangular
+    // slab into an irregular net polygon: retain the gross rectangle and let
+    // assignCutouts create a separate deduction only when the opening reaches
+    // the universal threshold. This applies to every uploaded drawing.
+    const omittedAreaM2 = Math.max(0, rectAreaM2 - panel.netAreaM2);
+    const underOpeningThreshold = orthogonal && omittedAreaM2 < 0.4;
+    if (rectAreaM2 > 0 && orthogonal
+      && (underOpeningThreshold || (panel.polygon.length === 4 && panel.netAreaM2 / rectAreaM2 >= fillRatio))) {
       panel.polygon = [
         { x: panel.box.x0, y: panel.box.y0 }, { x: panel.box.x1, y: panel.box.y0 },
         { x: panel.box.x1, y: panel.box.y1 }, { x: panel.box.x0, y: panel.box.y1 },

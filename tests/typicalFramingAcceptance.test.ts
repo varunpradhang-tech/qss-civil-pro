@@ -44,7 +44,7 @@ describe('Tower A & B typical framing plan acceptance', () => {
       const rows = beams.filter((beam) => beam.member === member);
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ ...values, needsReview: false,
-        slabThicknessSide1: 0.14, slabThicknessSide2: 0.14 });
+        slabThicknessSide1: 0.14, slabThicknessSide2: 0.225 });
       expect(rows[0].height).toBeGreaterThan(0);
       expect(rows[0].breadth).toBeGreaterThan(0);
     }

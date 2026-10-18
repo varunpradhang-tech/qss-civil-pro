@@ -8,6 +8,7 @@ import { appendVisualSlabMembers } from '../vision/visualPanelAdapter.js';
 import { deleteProject, getProject, listProjects, projectFromJson, projectToJson, saveProject, type StoredProject } from './persistence.js';
 import { loadDraftingProfile, saveDraftingProfile } from './draftingProfiles.js';
 import { hasBundledDraftingProfile, loadBundledDraftingProfile } from './bundledDraftingProfiles.js';
+import { approveMember as confirmMemberApproval, engineeringInputSignature, invalidateApproval, isApprovedMember } from '../takeoff/quantityApproval.js';
 
 export interface Sheet { id: string; name: string; dwg: NormalizedDwg; slabDimCount: number; sourceBytes?: ArrayBuffer; visualPanels?: Array<{ id: string; polygon: { x: number; y: number }[]; areaM2: number; confidence: number; type?: string }>; }
 export type OutputType = 'total' | 'member' | 'floor';
@@ -45,6 +46,7 @@ interface AppState {
   addMember: () => void;
   duplicateMember: (id: string) => void;
   updateMember: (id: string, patch: Partial<MemberRow>) => void;
+  approveMember: (id: string) => void;
   deleteMember: (id: string) => void;
 
   refreshProjects: () => Promise<void>;
@@ -61,7 +63,22 @@ const mid = () => `m${mseq++}`;
 
 // Increment whenever extraction or quantity rules change in a way that makes
 // previously saved member rows stale. Drawings are then re-extracted on open.
+// P0.1 changes approval metadata and totals only; keeping the extraction
+// version preserves manually edited member rows in existing version-28 projects.
+// Approval fields are migrated conservatively in place by migrateMemberApproval.
 const EXTRACTION_VERSION = 28;
+
+function migrateMemberApproval(member: MemberRow): MemberRow {
+  if (isApprovedMember(member)) return member;
+  return {
+    ...member,
+    quantityStatus: 'provisional',
+    approvalSource: undefined,
+    approvedQuantityKey: undefined,
+    approvedInputSignature: undefined,
+    reviewReason: member.reviewReason || 'legacy saved row requires validation or explicit approval',
+  };
+}
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function snapshot(s: AppState): StoredProject | null {
@@ -207,11 +224,18 @@ export const useStore = create<AppState>((set, get) => ({
   duplicateMember: (id) => set((s) => {
     const src = s.members.find((m) => m.id === id); if (!src) return {};
     const i = s.members.findIndex((m) => m.id === id);
-    const copy = { ...src, id: mid() };
+    const copy = invalidateApproval({ ...src, id: mid() }, 'duplicated member requires explicit approval');
     const members = [...s.members.slice(0, i + 1), copy, ...s.members.slice(i + 1)];
     autosave(get); return { members };
   }),
-  updateMember: (id, patch) => { set((s) => ({ members: s.members.map((m) => (m.id === id ? { ...m, ...patch } : m)) })); autosave(get); },
+  updateMember: (id, patch) => { set((s) => ({ members: s.members.map((member) => {
+    if (member.id !== id) return member;
+    const updated = { ...member, ...patch };
+    return isApprovedMember(member) && engineeringInputSignature(updated) !== engineeringInputSignature(member)
+      ? invalidateApproval(updated) : updated;
+  }) })); autosave(get); },
+  approveMember: (id) => { set((s) => ({ members: s.members.map((member) => member.id === id
+    ? confirmMemberApproval(member, s.quantityKey) : member) })); autosave(get); },
   deleteMember: (id) => { set((s) => ({ members: s.members.filter((m) => m.id !== id) })); autosave(get); },
 
   refreshProjects: async () => set({ savedProjects: await listProjects() }),
@@ -225,7 +249,7 @@ export const useStore = create<AppState>((set, get) => ({
     mseq = (p.members?.length || 0) + 1;
     set({
       projectId: p.id, projectName: p.name, sheets: p.sheets, activeSheetId: p.activeSheetId, dwg: active?.dwg ?? null,
-      members: p.members ?? [],
+      members: (p.members ?? []).map(migrateMemberApproval),
       drawingType: st.drawingType ?? 'structural', workGroup: st.workGroup ?? 'slab', quantityKey: st.quantityKey ?? 'slab_shuttering',
       capMode: st.capMode ?? 'excluded', outputType: st.outputType ?? 'member', defaultFloor: st.defaultFloor ?? 'Basement',
       status: needsReextract

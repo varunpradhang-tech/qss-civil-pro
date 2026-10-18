@@ -1,6 +1,7 @@
 // Excel Measurement Book (.xlsx) — member-row based, review rows highlighted, total row.
 import ExcelJS from 'exceljs';
 import type { NormalizedDwg } from '../domain/types.js';
+import { isApprovedMember, summarizeQuantities } from '../takeoff/quantityApproval.js';
 import { RULES, UNIT_LABEL, type CapMode, type MemberRow } from '../takeoff/rules.js';
 import { MB_COLUMNS, membersToRows } from './mb.js';
 
@@ -44,9 +45,36 @@ function addSheetTitle(ws: ExcelJS.Worksheet, text: string) {
   ws.getRow(1).height = 30;
 }
 
-function addFormulaTotal(ws: ExcelJS.Worksheet, qtyCol: string, unitCol: string, label: string, unit: string, result: number) {
+function addApprovalTotals(ws: ExcelJS.Worksheet, members: MemberRow[], quantityKey: string, capMode: CapMode, qtyCol: string, unitCol: string, labelCol: string, unit: string) {
+  const summary = summarizeQuantities(members, quantityKey, capMode);
+  const formulaFor = (selected: MemberRow[]) => {
+    const cells = selected.map((member) => `${qtyCol}${members.indexOf(member) + 3}`);
+    if (!cells.length) return '0';
+    if (cells.length === 1) return `SUM(${cells[0]}:${cells[0]})`;
+    const rows = cells.map((cell) => Number(cell.replace(/^[A-Z]+/, '')));
+    return rows.every((value, index) => !index || value === rows[index - 1] + 1)
+      ? `SUM(${cells[0]}:${cells[cells.length - 1]})` : cells.join('+');
+  };
+  if (summary.provisionalMembers.length) {
+    const row = ws.addRow({});
+    row.getCell(labelCol).value = `Provisional subtotal — ${RULES[quantityKey].label}`;
+    row.getCell(qtyCol).value = { formula: formulaFor(summary.provisionalMembers), result: Math.round(summary.provisionalTotal * 1000) / 1000 };
+    row.getCell(unitCol).value = unit;
+    row.font = { bold: true, color: { argb: 'FF9A6700' } };
+  }
+  const approved = ws.addRow({});
+  approved.getCell(labelCol).value = `Approved total — ${RULES[quantityKey].label}`;
+  approved.getCell(qtyCol).value = { formula: formulaFor(summary.approvedMembers), result: Math.round(summary.approvedTotal * 1000) / 1000 };
+  approved.getCell(unitCol).value = unit;
+  approved.font = { bold: true };
+}
+
+function addCategorizedFormulaTotal(ws: ExcelJS.Worksheet, cells: string[], qtyCol: string, unitCol: string, label: string, unit: string, result: number) {
   const row = ws.addRow([label]);
-  row.getCell(qtyCol).value = { formula: `SUM(${qtyCol}3:${qtyCol}${row.number - 1})`, result: Math.round(result * 1000) / 1000 };
+  const rowNumbers = cells.map((cell) => Number(cell.replace(/^[A-Z]+/, '')));
+  const contiguous = rowNumbers.length > 1 && rowNumbers.every((value, index) => !index || value === rowNumbers[index - 1] + 1);
+  const formula = contiguous ? `SUM(${cells[0]}:${cells[cells.length - 1]})` : cells.join('+') || '0';
+  row.getCell(qtyCol).value = { formula, result: Math.round(result * 1000) / 1000 };
   row.getCell(unitCol).value = unit;
   row.font = { bold: true };
 }
@@ -59,11 +87,12 @@ function buildBeamShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
     { header: 'Side 1 slab', key: 'side1Code', width: 12 }, { header: 'Side 1 thk (m)', key: 'side1Thickness', width: 14 },
     { header: 'Side 2 slab', key: 'side2Code', width: 12 }, { header: 'Side 2 thk (m)', key: 'side2Thickness', width: 14 },
     { header: 'Quantity (m²)', key: 'quantity', width: 15 }, { header: 'Unit', key: 'unit', width: 9 },
-    { header: 'Remarks', key: 'remarks', width: 34 },
+    { header: 'Remarks', key: 'remarks', width: 34 }, { header: 'Approval status', key: 'approval', width: 16 },
   ];
   addSheetTitle(ws, title);
   styleHeader(ws);
   const sorted = [...members].sort(naturalSort);
+  const approvedCells: string[] = [], provisionalCells: string[] = [];
   for (const [index, m] of sorted.entries()) {
     const length = Math.max(m.length || 0, 0), width = Math.max(m.breadth || 0, 0), depth = Math.max(m.height || 0, 0);
     const side1Thickness = Math.min(Math.max(m.slabThicknessSide1 ?? (m.innerSideCount >= 1 ? m.slabThickness : 0), 0), depth);
@@ -71,20 +100,24 @@ function buildBeamShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
     const remarks = m.needsReview ? `need review${m.reviewReason ? ` (${m.reviewReason})` : ''}` : '';
     const nos = Math.max(m.nos || 0, 0);
     const member = `${m.member || m.id} ${Math.round(width * 1000)}x${Math.round(depth * 1000)}`;
-    const bottom = ws.addRow({ serial: index + 1, member, item: 'Beam bottom', length, nos, width, unit: 'm²', remarks: remarks || null });
+    const approval = isApprovedMember(m, 'beam_shuttering') ? 'Approved' : 'Provisional';
+    const bottom = ws.addRow({ serial: index + 1, member, item: 'Beam bottom', length, nos, width, unit: 'm²', remarks: remarks || null, approval });
     bottom.getCell('quantity').value = { formula: `D${bottom.number}*E${bottom.number}*F${bottom.number}`, result: length * nos * width };
     const sideFaces = nos * 2;
     const sideLength = Math.max(m.sideLength || length, 0);
-    const sides = ws.addRow({ serial: index + 1, member, item: 'Beam sides', length: sideLength, nos: sideFaces, depth, side1Code: m.slabCodeSide1 ?? null, side1Thickness, side2Code: m.slabCodeSide2 ?? null, side2Thickness, unit: 'm²', remarks: remarks || null });
+    const sides = ws.addRow({ serial: index + 1, member, item: 'Beam sides', length: sideLength, nos: sideFaces, depth, side1Code: m.slabCodeSide1 ?? null, side1Thickness, side2Code: m.slabCodeSide2 ?? null, side2Thickness, unit: 'm²', remarks: remarks || null, approval });
     // E contains individual side faces (two per physical beam). H/J identify
     // the adjacent slabs; I/K contain their numeric thickness deductions.
     sides.getCell('quantity').value = {
       formula: `D${sides.number}*(E${sides.number}/2)*(MAX(G${sides.number}-I${sides.number},0)+MAX(G${sides.number}-K${sides.number},0))`,
       result: sideLength * (sideFaces / 2) * (Math.max(depth - side1Thickness, 0) + Math.max(depth - side2Thickness, 0)),
     };
+    (isApprovedMember(m, 'beam_shuttering') ? approvedCells : provisionalCells).push(`L${bottom.number}`, `L${sides.number}`);
     if (remarks) for (const row of [bottom, sides]) row.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF1F2' } }));
   }
-  addFormulaTotal(ws, 'L', 'M', 'Total — Beam shuttering', 'm²', sorted.reduce((sum, m) => sum + RULES.beam_shuttering.calculate(m, capMode), 0));
+  const summary = summarizeQuantities(sorted, 'beam_shuttering', capMode);
+  if (summary.provisionalMembers.length) addCategorizedFormulaTotal(ws, provisionalCells, 'L', 'M', 'Provisional subtotal — Beam shuttering', 'm²', summary.provisionalTotal);
+  addCategorizedFormulaTotal(ws, approvedCells, 'L', 'M', 'Approved total — Beam shuttering', 'm²', summary.approvedTotal);
   for (const c of ['D', 'F', 'G', 'I', 'K', 'L']) ws.getColumn(c).numFmt = '0.000';
 }
 
@@ -94,16 +127,17 @@ function buildBeamConcrete(ws: ExcelJS.Worksheet, members: MemberRow[], capMode:
     { header: 'Length (m)', key: 'length', width: 12 }, { header: 'Beam width (m)', key: 'breadth', width: 15 },
     { header: 'Beam depth (m)', key: 'height', width: 15 }, { header: 'Nos', key: 'nos', width: 8 },
     { header: 'Quantity (m³)', key: 'quantity', width: 15 }, { header: 'Unit', key: 'unit', width: 9 },
-    { header: 'Remarks', key: 'remarks', width: 34 }, { header: 'Measurement basis', key: 'basis', width: 44 },
+    { header: 'Remarks', key: 'remarks', width: 34 }, { header: 'Measurement basis', key: 'basis', width: 44 }, { header: 'Approval status', key: 'approval', width: 16 },
   ];
   addSheetTitle(ws, title);
   styleHeader(ws);
-  const rows = membersToRows([...members].sort(naturalSort), 'beam_concrete', capMode);
+  const sorted = [...members].sort(naturalSort);
+  const rows = membersToRows(sorted, 'beam_concrete', capMode);
   for (const [index, data] of rows.entries()) {
     const row = ws.addRow({
       serial: index + 1, member: data.member, length: data.length,
       breadth: data.breadth, height: data.height, nos: data.nos, unit: data.unit,
-      remarks: data.remarks || null, basis: data.basis,
+      remarks: data.remarks || null, basis: data.basis, approval: data.approval,
     });
     row.getCell('quantity').value = {
       formula: `C${row.number}*D${row.number}*E${row.number}*F${row.number}`,
@@ -111,7 +145,7 @@ function buildBeamConcrete(ws: ExcelJS.Worksheet, members: MemberRow[], capMode:
     };
     if (data.remarks) row.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF1F2' } }));
   }
-  addFormulaTotal(ws, 'G', 'H', 'Total — Beam concrete', 'm³', members.reduce((sum, member) => sum + RULES.beam_concrete.calculate(member, capMode), 0));
+  addApprovalTotals(ws, sorted, 'beam_concrete', capMode, 'G', 'H', 'F', 'm³');
   for (const column of ['C', 'D', 'E', 'G']) ws.getColumn(column).numFmt = '0.000';
 }
 
@@ -121,7 +155,7 @@ function buildSlabShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
     { header: 'Shuttering item', key: 'item', width: 18 }, { header: 'Length (m)', key: 'length', width: 12 },
     { header: 'Breadth (m)', key: 'breadth', width: 13 }, { header: 'Openings (m²)', key: 'openings', width: 15 },
     { header: 'Exact polygon area (m²)', key: 'exactArea', width: 22 }, { header: 'Quantity (m²)', key: 'quantity', width: 15 }, { header: 'Unit', key: 'unit', width: 9 },
-    { header: 'Remarks', key: 'remarks', width: 34 },
+    { header: 'Remarks', key: 'remarks', width: 34 }, { header: 'Approval status', key: 'approval', width: 16 },
   ];
   addSheetTitle(ws, title);
   styleHeader(ws);
@@ -131,11 +165,11 @@ function buildSlabShuttering(ws: ExcelJS.Worksheet, members: MemberRow[], capMod
     const remarks = m.needsReview ? `need review${m.reviewReason ? ` (${m.reviewReason})` : ''}` : '';
     const exactArea = m.netArea != null ? Math.max(m.netArea + openings, 0) : null;
     const result = exactArea != null ? Math.max(exactArea - openings, 0) : Math.max(length * breadth - openings, 0);
-    const row = ws.addRow({ serial: index + 1, member: m.member || m.id, item: 'Slab soffit', length, breadth, openings, exactArea, unit: 'm²', remarks: remarks || null });
+    const row = ws.addRow({ serial: index + 1, member: m.member || m.id, item: 'Slab soffit', length, breadth, openings, exactArea, unit: 'm²', remarks: remarks || null, approval: isApprovedMember(m, 'slab_shuttering') ? 'Approved' : 'Provisional' });
     row.getCell('quantity').value = { formula: `MAX(IF(G${row.number}>0,G${row.number},D${row.number}*E${row.number})-F${row.number},0)`, result };
     if (remarks) row.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF1F2' } }));
   }
-  addFormulaTotal(ws, 'H', 'I', 'Total — Slab shuttering', 'm²', sorted.reduce((sum, m) => sum + RULES.slab_shuttering.calculate(m, capMode), 0));
+  addApprovalTotals(ws, sorted, 'slab_shuttering', capMode, 'H', 'I', 'G', 'm²');
   for (const c of ['D', 'E', 'F', 'G', 'H']) ws.getColumn(c).numFmt = '0.000';
 }
 
@@ -193,10 +227,7 @@ export async function buildMbXlsx(members: MemberRow[], quantityKey: string, cap
     };
     if (r.remarks) row.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF1F2' } }));
   }
-  const total = members.reduce((a, m) => a + rule.calculate(m, capMode), 0);
-  const totalRow = ws.addRow({ member: `Total — ${rule.label}`, unit: UNIT_LABEL[rule.unit] });
-  totalRow.getCell('quantity').value = { formula: `SUM(I3:I${totalRow.number - 1})`, result: Math.round(total * 1000) / 1000 };
-  totalRow.font = { bold: true };
+  addApprovalTotals(ws, members, quantityKey, capMode, 'I', 'J', 'H', UNIT_LABEL[rule.unit]);
   ws.getColumn('I').numFmt = '0.000';
   return new Blob([await wb.xlsx.writeBuffer()], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 }

@@ -3,9 +3,15 @@ import { membersToCsv, membersToRows } from '../src/export/mb.js';
 import { buildMbXlsx } from '../src/export/xlsx.js';
 import ExcelJS from 'exceljs';
 import { emptyRow, type MemberRow } from '../src/takeoff/rules.js';
+import { engineeringInputSignature } from '../src/takeoff/quantityApproval.js';
 
 function row(over: Partial<MemberRow>): MemberRow {
-  return { ...emptyRow('m1', 'Basement'), member: 'S1', length: 4, breadth: 3, nos: 1, ...over };
+  const value = { ...emptyRow('m1', 'Basement'), member: 'S1', length: 4, breadth: 3, nos: 1, ...over };
+  if (!value.needsReview && over.quantityStatus !== 'provisional') {
+    value.quantityStatus = 'approved'; value.approvalSource = 'user-confirmation';
+    value.approvedInputSignature = engineeringInputSignature(value);
+  }
+  return value;
 }
 
 describe('MB export (member rows)', () => {
@@ -53,14 +59,29 @@ describe('MB export (member rows)', () => {
     expect(r.quantity).toBe(1.35); // 5 × 0.3 × (0.6−0.15) × 2
   });
 
-  it('CSV has header, review remarks, and a total row', () => {
+  it('CSV keeps review rows visible but excludes them from the approved total', () => {
     const csv = membersToCsv([row({ member: 'S1, corner' }), row({ member: 'S2', length: 2, breadth: 4, needsReview: true, reviewReason: 'dim uncertain' })], 'slab_shuttering', 'excluded');
     const lines = csv.split('\r\n');
     expect(lines[0]).toContain('Quantity');
     expect(csv).toContain('"S1, corner"');       // RFC-4180 quoting
     expect(csv).toContain('need review');
-    expect(lines[lines.length - 1]).toMatch(/^Total — Slab shuttering,/);
-    expect(lines[lines.length - 1]).toContain('20'); // 12 + 8
+    expect(csv).toContain('Provisional subtotal — Slab shuttering');
+    expect(lines[lines.length - 1]).toMatch(/^Approved total — Slab shuttering,/);
+    expect(lines[lines.length - 1]).toContain('12');
+  });
+
+  it('XLSX keeps a provisional slab row visible but out of the approved total', async () => {
+    const blob = await buildMbXlsx([
+      row({ member: 'S1', length: 4, breadth: 3 }),
+      row({ member: 'S2', length: 2, breadth: 4, needsReview: true, reviewReason: 'dim uncertain' }),
+    ], 'slab_shuttering', 'excluded');
+    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await blob.arrayBuffer()); const ws = wb.worksheets[0];
+    expect(ws.getCell('B4').value).toBe('S2');
+    expect((ws.getCell('H4').value as ExcelJS.CellFormulaValue).result).toBe(8);
+    expect(ws.getCell('G5').value).toBe('Provisional subtotal — Slab shuttering');
+    expect((ws.getCell('H5').value as ExcelJS.CellFormulaValue).result).toBe(8);
+    expect(ws.getCell('G6').value).toBe('Approved total — Slab shuttering');
+    expect((ws.getCell('H6').value as ExcelJS.CellFormulaValue).result).toBe(12);
   });
 
   it('exports sorted beam bottom and side rows with formulas', async () => {

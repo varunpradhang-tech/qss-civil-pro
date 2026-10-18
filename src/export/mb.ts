@@ -2,19 +2,20 @@
 // IS-code measurement-basis column (QSS-Pro style). Pure/testable.
 import { RULES, UNIT_LABEL, beamConcreteBreakdown, type CapMode, type MemberRow } from '../takeoff/rules.js';
 import { round3 as round } from '../lib/num.js';
+import { isApprovedMember, summarizeQuantities } from '../takeoff/quantityApproval.js';
 
 export interface MBRow {
   member: string; floor: string;
   length: number; breadth: number; height: number;
   dia: number; spacing: number; nos: number; openings: number;
-  quantity: number; unit: string; remarks: string; basis: string;
+  quantity: number; unit: string; approval: string; remarks: string; basis: string;
 }
 
 export const MB_COLUMNS: { key: keyof MBRow; header: string }[] = [
   { key: 'member', header: 'Member' },
   { key: 'length', header: 'Length (m)' }, { key: 'breadth', header: 'Breadth/Thk (m)' }, { key: 'height', header: 'Height/Depth (m)' },
   { key: 'openings', header: 'Openings (m²)' }, { key: 'dia', header: 'Dia (mm)' }, { key: 'spacing', header: 'Spacing (mm)' }, { key: 'nos', header: 'Nos' },
-  { key: 'quantity', header: 'Quantity' }, { key: 'unit', header: 'Unit' }, { key: 'remarks', header: 'Remarks' }, { key: 'basis', header: 'Measurement basis' },
+  { key: 'quantity', header: 'Quantity' }, { key: 'unit', header: 'Unit' }, { key: 'approval', header: 'Approval status' }, { key: 'remarks', header: 'Remarks' }, { key: 'basis', header: 'Measurement basis' },
 ];
 
 export function membersToRows(members: MemberRow[], quantityKey: string, capMode: CapMode): MBRow[] {
@@ -35,7 +36,7 @@ export function membersToRows(members: MemberRow[], quantityKey: string, capMode
     floor: m.floor,
     length: round(Math.max(m.length - supportDeduction, 0)), breadth: round(m.breadth), height: round(effectiveHeight),
     dia: m.dia, spacing: m.spacing, nos: m.nos, openings: round(m.openings),
-    quantity: round(rule.calculate(m, capMode)), unit: UNIT_LABEL[rule.unit],
+    quantity: round(rule.calculate(m, capMode)), unit: UNIT_LABEL[rule.unit], approval: isApprovedMember(m, quantityKey) ? 'Approved' : 'Provisional',
     remarks: m.needsReview ? `need review${m.reviewReason ? ` (${m.reviewReason})` : ''}` : '',
     basis: rule.note,
     });
@@ -45,12 +46,16 @@ export function membersToRows(members: MemberRow[], quantityKey: string, capMode
 export function membersToCsv(members: MemberRow[], quantityKey: string, capMode: CapMode): string {
   const rule = RULES[quantityKey];
   const rows = membersToRows(members, quantityKey, capMode);
-  const total = round(members.reduce((a, m) => a + rule.calculate(m, capMode), 0));
+  const summary = summarizeQuantities(members, quantityKey, capMode);
   const header = MB_COLUMNS.map((c) => c.header);
   const body = rows.map((r) => MB_COLUMNS.map((c) => csvCell(r[c.key])));
-  const totalObj: Record<string, unknown> = { member: `Total — ${rule.label}`, quantity: total, unit: UNIT_LABEL[rule.unit] };
-  const totalRow = MB_COLUMNS.map((c) => csvCell(totalObj[c.key] ?? ''));
-  return [header.map(csvCell), ...body, totalRow].map((cells) => cells.join(',')).join('\r\n');
+  const provisionalObj: Record<string, unknown> = { member: `Provisional subtotal — ${rule.label}`, quantity: round(summary.provisionalTotal), unit: UNIT_LABEL[rule.unit], approval: 'Provisional' };
+  const approvedObj: Record<string, unknown> = { member: `Approved total — ${rule.label}`, quantity: round(summary.approvedTotal), unit: UNIT_LABEL[rule.unit], approval: 'Approved' };
+  const totals = [
+    ...(summary.provisionalMembers.length ? [provisionalObj] : []),
+    approvedObj,
+  ].map((value) => MB_COLUMNS.map((column) => csvCell(value[column.key] ?? '')));
+  return [header.map(csvCell), ...body, ...totals].map((cells) => cells.join(',')).join('\r\n');
 }
 
 function csvCell(v: unknown): string { const s = v == null ? '' : String(v); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }

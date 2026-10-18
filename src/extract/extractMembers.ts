@@ -6,6 +6,7 @@ import { emptyRow, type MemberRow } from '../takeoff/rules.js';
 import { hasMarkedPanelCorrections, reconcileMarkedPanelCorrections } from './markedPanelCorrections.js';
 import { applyPanelMeasurementPriority } from './panelMeasurement.js';
 import { round3 } from '../lib/num.js';
+import { applyAutomaticApproval } from '../takeoff/quantityApproval.js';
 
 // Parse common CAD beam-size notation: 300X650 / 300x900 / 300×600.
 function parseBeamSize(text: string): { widthMm: number; depthMm: number } | null {
@@ -23,10 +24,12 @@ export function extractMembers(input: NormalizedDwg | NormalizedDwg[], workGroup
   if (workGroup === 'slab') {
     const teacher = dwgs.filter((candidate) => candidate !== dwg && hasMarkedPanelCorrections(candidate)
       && samePlanGeometry(dwg, candidate)).sort((a, b) => b.dimensions.length - a.dimensions.length)[0] ?? learnedTeacher;
-    return slabMembers(dwg, floor, slabSchedule(dwgs), slabUnoThickness(dwgs), teacher);
+    return slabMembers(dwg, floor, slabSchedule(dwgs), slabUnoThickness(dwgs), teacher)
+      .map((member) => applyAutomaticApproval(member, workGroup));
   }
   if (workGroup === 'beam') return beamMembers(dwg, floor, beamSchedule(dwgs), slabSchedule(dwgs),
-    slabUnoThickness(dwgs), beamUnoSize(dwgs), beamReferenceLengths(dwgs));
+    slabUnoThickness(dwgs), beamUnoSize(dwgs), beamReferenceLengths(dwgs))
+    .map((member) => applyAutomaticApproval(member, workGroup));
   return []; // column/raft/wall/floor: start empty, user adds (auto-extraction not reliable on this data)
 }
 

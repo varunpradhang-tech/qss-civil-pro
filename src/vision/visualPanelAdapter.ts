@@ -3,6 +3,7 @@ import type { Sheet } from '../state/store.js';
 import { emptyRow, type MemberRow } from '../takeoff/rules.js';
 import { assessVisualRepair } from './visualRepair.js';
 import { applyPanelMeasurementPriority } from '../extract/panelMeasurement.js';
+import { invalidateApproval } from '../takeoff/quantityApproval.js';
 
 function contains(point: Pt, polygon: Pt[]): boolean {
   let inside = false;
@@ -68,6 +69,7 @@ export function appendVisualSlabMembers(members: MemberRow[], sheet: Sheet, floo
       existing.reviewReason = measured.measurementBasis === 'marked dimensions'
         ? 'Gemini contour repaired against CAD faces; area calibrated from associated dimensions'
         : 'Gemini contour repaired against CAD beam/wall faces; verify panel boundary and area';
+      Object.assign(existing, invalidateApproval(existing, existing.reviewReason));
       added++;
       continue;
     }

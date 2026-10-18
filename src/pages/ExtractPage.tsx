@@ -24,6 +24,7 @@ import { assessVisualRepair } from '../vision/visualRepair.js';
 import { autoProposePanels } from '../extract/panels.js';
 import { uncoveredReviewBounds } from '../vision/reviewGaps.js';
 import { buildStructuralBayQuestions } from '../vision/structuralMap.js';
+import { engineeringInputSignature, isApprovedMember, summarizeQuantities } from '../takeoff/quantityApproval.js';
 
 const REQUIREMENTS = [
   'Grid lines are shown on the drawing',
@@ -80,18 +81,21 @@ export function ExtractPage() {
 
   const rule = RULES[s.quantityKey];
   const fields = (RULE_FIELDS[s.quantityKey] ?? ['length', 'breadth', 'height', 'nos']) as (keyof MemberRow)[];
-  const colCount = 3 + fields.length + 1; // select + member + floor + rule fields + quantity
+  const colCount = 3 + fields.length + 2; // select + member + floor + rule fields + approval + quantity
   const isBeamCap = s.quantityKey === 'beam_concrete' || s.quantityKey === 'beam_shuttering';
   const isFraming = s.drawingType === 'structural' && ['slab', 'beam', 'raft'].includes(s.workGroup);
   const isColumn = s.drawingType === 'structural' && s.workGroup === 'column';
   const quantityMember = (r: MemberRow): MemberRow => {
     if (deductionMode !== 'none' || !/^slab_(?:shuttering|concrete)$/.test(s.quantityKey)
       || !r.openings) return r;
-    return { ...r, netArea: r.netArea !== undefined ? r.netArea + r.openings : r.netArea, openings: 0 };
+    const adjusted = { ...r, netArea: r.netArea !== undefined ? r.netArea + r.openings : r.netArea, openings: 0 };
+    if (isApprovedMember(r)) adjusted.approvedInputSignature = engineeringInputSignature(adjusted);
+    return adjusted;
   };
   const quantityMembers = s.members.map(quantityMember);
   const rowQty = (r: MemberRow) => rule.calculate(quantityMember(r), s.capMode);
-  const total = s.members.reduce((a, r) => a + rowQty(r), 0);
+  const quantitySummary = summarizeQuantities(quantityMembers, s.quantityKey, s.capMode);
+  const total = quantitySummary.approvedTotal;
   const canDetail = plan === 'premium' || s.outputType === 'total';
   const showDownloads = canDetail && s.members.length > 0;
 
@@ -325,7 +329,7 @@ export function ExtractPage() {
   }
 
   const byFloor: Record<string, number> = {};
-  for (const r of s.members) byFloor[r.floor || '—'] = (byFloor[r.floor || '—'] || 0) + rowQty(r);
+  for (const r of s.members.filter((member) => isApprovedMember(member, s.quantityKey))) byFloor[r.floor || '—'] = (byFloor[r.floor || '—'] || 0) + rowQty(r);
 
   return (
     <section className="page">
@@ -489,6 +493,7 @@ export function ExtractPage() {
               <tr>
                 <th></th><th>Member / room</th><th>Floor</th>
                 {fields.map((f) => <th key={f}>{FIELD_LABEL[f] ?? f}</th>)}
+                <th>Approval</th>
                 <th>Quantity ({unitLabel(rule.unit)})</th>
               </tr>
             </thead>
@@ -515,7 +520,10 @@ export function ExtractPage() {
                       ? <span title="Irregular slab—measured by exact net area">Area only</span>
                       : <input type="number" value={r[f] as number} onChange={(e) => s.updateMember(r.id, { [f]: +e.target.value } as Partial<MemberRow>)} />}</td>;
                   })}
-                  <td className="qty-cell">{qtyText(disp(rowQty(r), rule.unit).v)}</td>
+                  <td>{isApprovedMember(r, s.quantityKey)
+                    ? <span title={r.approvalSource === 'user-confirmation' ? 'Approved by user confirmation' : 'Passed automatic validation'}>Approved</span>
+                    : <div><strong>Provisional</strong>{r.reviewReason && <small style={{ display: 'block' }}>{r.reviewReason}</small>}<button type="button" className="ghost-button" onClick={() => s.approveMember(r.id)}>Approve</button></div>}</td>
+                  <td className="qty-cell" title={!isApprovedMember(r, s.quantityKey) ? `Provisional: ${r.reviewReason || 'not approved'}` : undefined}>{qtyText(disp(rowQty(r), rule.unit).v)}</td>
                 </tr>
               ))}
             </tbody>
@@ -549,8 +557,9 @@ export function ExtractPage() {
         </div>
         <div className="result-grid">
           <div className="result-card"><span className="metric-label"><Layers size={13} /> Selected item</span><strong>{rule.label}</strong></div>
-          <div className="result-card result-hero"><span className="metric-label">Total quantity</span><strong>{qtyText(disp(total, rule.unit).v)} <em>{disp(total, rule.unit).u}</em></strong></div>
-          <div className="result-card"><span className="metric-label"><Hash size={13} /> Rows counted</span><strong>{s.members.length}</strong></div>
+          <div className="result-card result-hero"><span className="metric-label">Approved total</span><strong>{qtyText(disp(total, rule.unit).v)} <em>{disp(total, rule.unit).u}</em></strong></div>
+          <div className="result-card"><span className="metric-label">Provisional subtotal</span><strong>{qtyText(disp(quantitySummary.provisionalTotal, rule.unit).v)} <em>{disp(quantitySummary.provisionalTotal, rule.unit).u}</em></strong></div>
+          <div className="result-card"><span className="metric-label"><Hash size={13} /> Approved / provisional rows</span><strong>{quantitySummary.approvedMembers.length} / {quantitySummary.provisionalMembers.length}</strong></div>
         </div>
         <div className="reader-status standard-status">
           <strong><Info size={15} /> IS code mode of measurement</strong>

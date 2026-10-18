@@ -35,4 +35,39 @@ describe('project JSON', () => {
       vi.useRealTimers();
     }
   });
+
+  it('migrates a legacy saved row without approval evidence as provisional', () => {
+    const legacy = { ...project, sheets: [], activeSheetId: null, extractionVersion: 28,
+      members: [{ ...emptyRow('legacy'), member: 'S1', length: 4, breadth: 3, height: 0.175 }] };
+    useStore.getState().loadStoredProject(legacy);
+    expect(useStore.getState().members[0]).toMatchObject({
+      quantityStatus: 'provisional',
+      reviewReason: 'legacy saved row requires validation or explicit approval',
+    });
+  });
+
+  it('preserves manual member edits in a version-28 drawing project during approval migration', () => {
+    const edited = { ...project, extractionVersion: 28,
+      members: [{ ...emptyRow('edited'), member: 'S1 manual', length: 4.123, breadth: 3.456, height: 0.16 }] };
+    useStore.getState().loadStoredProject(edited);
+    expect(useStore.getState().members[0]).toMatchObject({
+      member: 'S1 manual', length: 4.123, breadth: 3.456, height: 0.16,
+      quantityStatus: 'provisional',
+    });
+    expect(useStore.getState().status).toContain('Opened');
+    expect(useStore.getState().status).not.toContain('recalculating');
+  });
+
+  it('invalidates explicit approval when a quantity input is edited', () => {
+    const manual = { ...project, sheets: [], activeSheetId: null, extractionVersion: 28,
+      members: [{ ...emptyRow('manual'), member: 'S1', length: 4, breadth: 3, height: 0.175 }] };
+    useStore.getState().loadStoredProject(manual);
+    useStore.getState().approveMember('manual');
+    expect(useStore.getState().members[0].quantityStatus).toBe('approved');
+    useStore.getState().updateMember('manual', { length: 5 });
+    expect(useStore.getState().members[0]).toMatchObject({
+      quantityStatus: 'provisional', needsReview: true,
+      reviewReason: 'engineering inputs changed after approval',
+    });
+  });
 });

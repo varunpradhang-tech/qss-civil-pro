@@ -4,6 +4,8 @@
 export type Unit = 'm3' | 'm2' | 'kg';
 export type DrawingType = 'structural' | 'architectural';
 export type CapMode = 'included' | 'excluded';
+export type QuantityApprovalStatus = 'approved' | 'provisional';
+export type QuantityApprovalSource = 'automatic-validation' | 'user-confirmation';
 
 // A measurement-book member row. Every field a QSS-Pro row can carry; unused ones stay 0.
 export interface MemberRow {
@@ -33,6 +35,11 @@ export interface MemberRow {
   netArea?: number; // m², exact polygonal slab area when not rectangular
   needsReview: boolean;
   reviewReason?: string;
+  quantityStatus: QuantityApprovalStatus;
+  approvalSource?: QuantityApprovalSource;
+  approvedQuantityKey?: string;
+  approvedInputSignature?: string;
+  approvalNote?: string;
   measurementSource?: 'marked dimension' | 'drawing geometry' | 'exact beam face' | 'rcc support faces';
   cadX?: number; // source drawing coordinate in mm, used by reference CAD export
   cadY?: number;
@@ -50,7 +57,7 @@ export function emptyRow(id: string, floor = 'Basement'): MemberRow {
   return {
     id, member: '', floor, length: 0, breadth: 0, height: 0, capHeight: 0, capExposedPerimeter: 0,
     slabThickness: 0, innerSideCount: 2, sideLength: 0, bottomJointDeduction: 0, sideJointDeduction: 0, columnCapDeduction: 0,
-    dia: 0, spacing: 0, nos: 1, openings: 0, needsReview: false,
+    dia: 0, spacing: 0, nos: 1, openings: 0, needsReview: false, quantityStatus: 'provisional',
   };
 }
 

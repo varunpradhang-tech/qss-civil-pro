@@ -2262,7 +2262,7 @@ function assignCutouts(panels: PanelProposalBox[], cutouts: Cutout[]): void {
       // containment therefore applies to their union, not to one panel alone.
       if (coveredBySlabs / c.areaM2 < 0.9) continue;
     }
-    if (!overlaps.length && c.explicitX) {
+    if (!overlaps.length && c.explicitX && c.labelledVoid) {
       // In many framing plans the X is drawn inside a shaft bounded by beam or
       // wall faces, leaving a narrow 200–300 mm gap to every extracted slab
       // proposal. Associate that explicit CUT-layer void with the closest
@@ -2417,10 +2417,12 @@ interface Cutout {
   box: { x0: number; y0: number; x1: number; y1: number };
   inferredX?: boolean;
   explicitX?: boolean;
+  labelledVoid?: boolean;
 }
 function extractCutouts(dwg: NormalizedDwg): Cutout[] {
   const out: Cutout[] = [];
   const voidNotes = dwg.texts.filter((t) => /\b(?:OPENING|VOID|LIFT|STAIR|SHAFT|DUCT|OTS)\b/i.test(t.text));
+  const explicitOpeningNotes = voidNotes.filter((t) => !/\bSTAIR\b/i.test(t.text));
   for (const pl of dwg.polylines.filter((p) => CUTOUT_LAYERS.test(p.layer))) {
     // Many consultant layers named *SHAFT* also contain leaders, dimensions,
     // curves and other open detail geometry. Only a compact rectangular loop
@@ -2430,6 +2432,14 @@ function extractCutouts(dwg: NormalizedDwg): Cutout[] {
       || Math.hypot(point.x - points[index - 1].x, point.y - points[index - 1].y) > 1);
     if (unique.length < 4 || unique.length > 5) continue;
     const box = bbox(unique), boxM2 = boxArea(box) / 1e6;
+    // An open U is also the standard leader around many slab-panel marks and
+    // staircase references. Do not invent its missing fourth edge unless a
+    // local note explicitly identifies the geometry as an opening/void/shaft.
+    // A STAIR note alone is insufficient: it can label a flight beginning
+    // above or beside the measured slab without creating a slab penetration.
+    const locallyLabelledOpening = explicitOpeningNotes.some((note) => note.pos.x >= box.x0 - 250
+      && note.pos.x <= box.x1 + 250 && note.pos.y >= box.y0 - 250 && note.pos.y <= box.y1 + 250);
+    if (!pl.closed && !locallyLabelledOpening) continue;
     const polygonM2 = Math.abs(shoelace(unique)) / 1e6;
     const axisAligned = unique.slice(1).every((point, index) => {
       const before = unique[index];
@@ -2470,7 +2480,7 @@ function extractCutouts(dwg: NormalizedDwg): Cutout[] {
     if (inferredX && (areaM2 < 0.4 || aspect < 0.25 || aspect > 4)) continue;
     const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
     if (!out.some((o) => Math.hypot(o.cx - cx, o.cy - cy) < 1500)) out.push({
-      cx, cy, areaM2, box: b, inferredX, explicitX: explicitVoidLayer || labelledVoid,
+      cx, cy, areaM2, box: b, inferredX, explicitX: explicitVoidLayer || labelledVoid, labelledVoid,
     });
   }
   return out;

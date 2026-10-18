@@ -937,9 +937,12 @@ describe('unmarked slab geometry', () => {
     expect(panel?.openingM2).toBe(0);
   });
 
-  it('deducts one rectangular U-outline once and ignores decorative open geometry on the same shaft layer', () => {
+  it('deducts an explicitly labelled rectangular U-outline once and ignores decorative open geometry on the same shaft layer', () => {
     const plan = drawing();
-    plan.texts = [{ layer: 'SLAB NO', text: 'S1', pos: { x: 2000, y: 1500 } }];
+    plan.texts = [
+      { layer: 'SLAB NO', text: 'S1', pos: { x: 2000, y: 1500 } },
+      { layer: 'NOTE', text: 'SHAFT OPENING', pos: { x: 1200, y: 1200 } },
+    ];
     plan.segments = [
       { layer: 'BEAM', a: { x: 0, y: 0 }, b: { x: 4000, y: 0 } },
       { layer: 'BEAM', a: { x: 4000, y: 0 }, b: { x: 4000, y: 3000 } },
@@ -956,8 +959,18 @@ describe('unmarked slab geometry', () => {
     expect(autoProposePanels(plan)[0].openingM2).toBeCloseTo(0.58, 3);
   });
 
+  it('does not close a panel-mark U leader or a staircase reference into an opening', () => {
+    const plan = drawing();
+    plan.texts.push({ layer: 'NOTE', text: 'STAIRCASE ABOVE', pos: { x: 1200, y: 1200 } });
+    plan.polylines = [{ layer: 'PL-SHAFT', closed: false, pts: [
+      { x: 1000, y: 500 }, { x: 1000, y: 1950 }, { x: 1400, y: 1950 }, { x: 1400, y: 500 },
+    ] }];
+    expect(autoProposePanels(plan)[0].openingM2).toBe(0);
+  });
+
   it('associates an explicit CUT-layer X void across a narrow beam-width gap', () => {
     const plan = drawing();
+    plan.texts.push({ layer: 'NOTE', text: 'OPENING', pos: { x: 5300, y: 1500 } });
     plan.segments.push(
       { layer: 'CUT', a: { x: 4300, y: 500 }, b: { x: 6300, y: 2500 } },
       { layer: 'CUT', a: { x: 4300, y: 2500 }, b: { x: 6300, y: 500 } },

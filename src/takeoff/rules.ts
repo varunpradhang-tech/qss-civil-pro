@@ -92,10 +92,9 @@ export function beamConcreteBreakdown(r: MemberRow, capMode: CapMode) {
   const length = Math.max(r.length || 0, 0);
   const breadth = Math.max(r.breadth || 0, 0);
   const fullDepth = Math.max(r.height || 0, 0);
-  const slabThickness = Math.min(Math.max(
-    r.slabThickness || r.slabThicknessSide1 || r.slabThicknessSide2 || 0,
-  0), fullDepth);
-  const effectiveDepth = Math.max(fullDepth - slabThickness, 0);
+  // Beam concrete is measured using the full structural beam depth. Adjacent
+  // slab thickness affects only the exposed beam-side shuttering faces.
+  const effectiveDepth = fullDepth;
   const nos = Math.max(r.nos || 0, 0);
   const gross = length * breadth * effectiveDepth * nos;
   const supportLength = (r.supportWidths || []).reduce((sum, width) => sum + Math.max(width, 0), 0);
@@ -119,7 +118,7 @@ export const RULES: Record<string, QuantityRule> = {
   column_concrete: { key: 'column_concrete', label: 'Column concrete', unit: 'm3', calculate: (r) => columnMainConcrete(r) + columnCapConcrete(r), note: 'Column concrete shows main quantity up to beam bottom and column cap from beam bottom to slab top separately.' },
   column_shuttering: { key: 'column_shuttering', label: 'Column shuttering', unit: 'm2', calculate: (r) => columnMainShuttering(r) + columnCapShuttering(r), note: 'Column shuttering: main up to beam bottom plus only exposed cap faces; faces covered by beam sides are not measured again.' },
   column_steel: { key: 'column_steel', label: 'Column steel BBS', unit: 'kg', calculate: (r) => r.length * r.nos * steelUnitWeight(r.dia), note: 'Column reinforcement BBS by bar mark, diameter, cutting length, number of bars, unit weight d²/162 kg/m.' },
-  beam_concrete: { key: 'beam_concrete', label: 'Beam concrete', unit: 'm3', calculate: (r, cap) => beamConcreteBreakdown(r, cap).net, note: 'Beam concrete = length × width × (overall beam depth − slab thickness). With caps excluded, RCC support overlap is also deducted.' },
+  beam_concrete: { key: 'beam_concrete', label: 'Beam concrete', unit: 'm3', calculate: (r, cap) => beamConcreteBreakdown(r, cap).net, note: 'Beam concrete = length × width × full structural beam depth. Slab thickness is not deducted from concrete; with caps excluded, RCC support overlap is deducted.' },
   beam_shuttering: { key: 'beam_shuttering', label: 'Beam shuttering', unit: 'm2', calculate: (r, cap) => beamShutteringBreakdown(r, cap).total, note: 'Beam shuttering = one bottom per beam plus two longitudinal side faces per beam. Slab thickness is deducted from both side-face depths.' },
   beam_steel: { key: 'beam_steel', label: 'Beam steel BBS', unit: 'kg', calculate: (r) => r.length * r.nos * steelUnitWeight(r.dia), note: 'Beam reinforcement BBS by bar mark, diameter, cutting length, number of bars, unit weight d²/162 kg/m.' },
   slab_concrete: { key: 'slab_concrete', label: 'Slab concrete', unit: 'm3', calculate: (r) => Math.max(r.netArea ?? (r.length * r.breadth - r.openings), 0) * r.height * r.nos, note: 'Slab concrete = net slab area after cutout/opening deductions × thickness (IS 1200).' },

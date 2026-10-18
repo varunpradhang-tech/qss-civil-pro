@@ -53,10 +53,10 @@ describe('MB export (member rows)', () => {
     expect(r.quantity).toBe(4.97);
   });
 
-  it('beam concrete universally excludes slab thickness', () => {
+  it('beam concrete uses full beam depth and does not deduct slab thickness', () => {
     const [r] = membersToRows([row({ length: 5, breadth: 0.3, height: 0.6, slabThickness: 0.15, nos: 2 })], 'beam_concrete', 'included');
-    expect(r.height).toBe(0.45);
-    expect(r.quantity).toBe(1.35); // 5 × 0.3 × (0.6−0.15) × 2
+    expect(r.height).toBe(0.6);
+    expect(r.quantity).toBe(1.8); // 5 × 0.3 × 0.6 × 2
   });
 
   it('CSV keeps review rows visible but excludes them from the approved total', () => {
